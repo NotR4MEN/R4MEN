@@ -41,6 +41,9 @@ end
 -- =====================================================
 local settings: { [string]: any } = {
 	toggleKey = Enum.KeyCode.K,
+	saveKey = Enum.KeyCode.LeftBracket,
+	tpKey = Enum.KeyCode.RightBracket,
+	cycleKey = Enum.KeyCode.Quote,
 	floatUpKey = Enum.KeyCode.PageUp,
 	floatDownKey = Enum.KeyCode.PageDown,
 }
@@ -1895,7 +1898,7 @@ sectionLabel(teleportPage, 1, "Loot & Item ESP")
 do
 
 -- ---------- UI ----------
-local scannerCard = makeCard(teleportPage, 366, 2)
+local scannerCard = makeCard(teleportPage, 296, 2)
 
 local scanBtn = new("TextButton", {
 	Position = UDim2.fromOffset(14, 12),
@@ -2006,7 +2009,7 @@ hover(clearSelBtn, T.bg)
 -- Daftar item unik
 local lootScroll = new("ScrollingFrame", {
 	Position = UDim2.fromOffset(14, 162),
-	Size = UDim2.new(1, -28, 0, 192),
+	Size = UDim2.new(1, -28, 0, 122),
 	BackgroundTransparency = 1,
 	BorderSizePixel = 0,
 	CanvasSize = UDim2.new(),
@@ -2025,7 +2028,7 @@ local emptyLbl = text(scannerCard, {
 	TextColor3 = T.sub,
 	TextXAlignment = Enum.TextXAlignment.Center,
 	Position = UDim2.fromOffset(14, 162),
-	Size = UDim2.new(1, -28, 0, 192),
+	Size = UDim2.new(1, -28, 0, 122),
 })
 
 -- =====================================================
@@ -3149,11 +3152,11 @@ runScanner()
 
 end -- tutup do (Item ESP v2)
 
-sectionLabel(teleportPage, 3, "Free Cam & Waypoint")
+sectionLabel(teleportPage, 3, "Waypoint & Free Cam")
 
-addSliderCard(teleportPage, 4, "Free Cam", "WASD + E/Q, Shift cepat, klik kanan = lihat", "freecam", 5, 600, 1000)
+addSliderCard(teleportPage, 90, "Free Cam", "WASD + E/Q, Shift cepat, klik kanan = lihat", "freecam", 5, 600, 1000)
 
-local topCard = makeCard(teleportPage, 112, 5)
+local topCard = makeCard(teleportPage, 112, 4)
 text(topCard, {
 	Text = "Waypoint",
 	Font = Enum.Font.GothamBold,
@@ -3208,7 +3211,7 @@ rowButton(1, "+ Simpan Posisi", T.accent, saveWaypoint)
 rowButton(2, "Teleport", T.accent2, teleportSelected)
 
 local emptyLabel = text(teleportPage, {
-	LayoutOrder = 6,
+	LayoutOrder = 5,
 	Text = "Belum ada waypoint. Tekan \"Simpan Posisi\" untuk menyimpan posisimu sekarang.",
 	TextSize = 12,
 	TextColor3 = T.sub,
