@@ -58,7 +58,6 @@ local state: { [string]: boolean } = {
 	walkFling = false,
 	esp = false,
 	freecam = false,
-	npcEsp = false,
 	antiAfk = false,
 	fullbright = false,
 	noFog = false,
@@ -438,7 +437,6 @@ local effects: { [string]: (boolean) -> () } = {
 	end,
 	esp = function(on) setEsp(on) end,
 	freecam = function(on) setFreecam(on) end,
-	npcEsp = function(on) ext.npc(on) end,
 	antiAfk = function() end,
 	fullbright = function(on) ext.light(on) end,
 	noFog = function(on) ext.fog(on) end,
@@ -2021,7 +2019,7 @@ do
 		groups = {}, byModel = {}, order = {}, sel = {}, rows = {}, vis = {},
 		folder = nil, addConn = nil, remConn = nil,
 		scanning = false, scanned = false, dirty = false, orderDirty = true,
-		acc = 0, acc2 = 0, interval = 0.15, cand = {},
+		acc = 0, acc2 = 0, interval = 0.15, cand = {}, cat = "Semua",
 		shown = 0, inRange = 0, selTotal = 0, base = "", err = nil, live = false,
 		setStatus = function() end, -- diisi di bagian UI
 	}
@@ -2032,6 +2030,80 @@ do
 		local p = m.PrimaryPart
 		if p then return p end
 		return m:FindFirstChildWhichIsA("BasePart")
+	end
+
+	-- ---------- kategori (tebakan dari nama model + teks tombol interaksi NPC) ----------
+	local CAT_ANIMAL = { "cat", "dog", "pig", "cow", "hen", "duck", "goat", "deer", "bear", "wolf", "fox", "bird", "crow", "owl", "bat", "rat",
+		"fish", "frog", "lion", "ape", "ox", "elk", "yak", "emu", "sheep", "horse", "boar", "mouse", "snake", "tiger", "zebra", "hippo",
+		"croc", "monkey", "elephant", "giraffe", "buffalo", "rabbit", "hare", "squirrel", "turkey", "chicken", "rooster", "camel", "moose",
+		"bison", "cheetah", "leopard", "panther", "jaguar", "gorilla", "rhino", "hyena", "eagle", "hawk", "falcon", "vulture", "parrot",
+		"penguin", "seal", "whale", "shark", "dolphin", "turtle", "lizard", "gecko", "crab", "kangaroo", "koala", "panda", "otter", "beaver",
+		"badger", "skunk", "raccoon", "possum", "lynx", "coyote", "jackal", "animal", "creature", "wildlife", "pony", "donkey", "mule", "llama",
+		"alpaca", "kucing", "anjing", "rusa", "gajah", "singa", "harimau", "babi", "sapi", "ayam", "kambing", "kelinci", "ular", "burung",
+		"ikan", "kerbau", "kuda", "domba", "hewan", "monyet", "buaya", "beruang", "serigala" }
+	local CAT_SHOP = { "shop", "store", "merchant", "vendor", "trader", "seller", "dealer", "buyer", "market", "toko", "penjual", "pedagang",
+		"blacksmith", "smith", "armorer", "weaponsmith", "cashier", "bazaar" }
+	local CAT_QUEST = { "quest", "mission", "dialog", "dialogue", "guide", "tutorial", "questgiver", "misi", "elder", "villager", "mentor",
+		"trainer", "instructor", "teacher", "storyteller", "wizard" }
+	local CAT_ENEMY = { "zombie", "enemy", "enemies", "boss", "mob", "monster", "bandit", "skeleton", "orc", "goblin", "demon", "ghost",
+		"raider", "guard", "soldier", "bot", "minion", "dragon", "slime", "spider", "troll", "undead", "musuh" }
+	local PROMPT_SHOP = { "buy", "sell", "shop", "trade", "store", "purchase", "beli", "jual", "toko", "dagang" }
+	local PROMPT_QUEST = { "talk", "chat", "quest", "mission", "dialog", "speak", "bicara", "misi", "ngobrol", "interact" }
+
+	local function nameWords(s: string): { string }
+		local spaced = string.gsub(s, "(%l)(%u)", "%1 %2") -- "LionCub" -> "Lion Cub"
+		local sp = string.lower(spaced)
+		local t: { string } = {}
+		for w in string.gmatch(sp, "%a+") do
+			t[#t + 1] = w
+			if #w > 3 and string.sub(w, -1) == "s" then
+				t[#t + 1] = string.sub(w, 1, -2) -- bentuk jamak: "Lions" -> "lion"
+			end
+		end
+		return t
+	end
+
+	-- kata pendek (<5 huruf) harus cocok sebagai kata utuh (supaya "Merchant" tidak dianggap "ant");
+	-- kata panjang boleh cocok sebagian ("PolarBear2", "elephantBull")
+	local function nameHit(lower: string, toks: { string }, list: { string }): boolean
+		for _, w in ipairs(list) do
+			if #w >= 5 then
+				if string.find(lower, w, 1, true) then return true end
+			else
+				for _, t in ipairs(toks) do
+					if t == w then return true end
+				end
+			end
+		end
+		return false
+	end
+
+	local function textHit(s: string, list: { string }): boolean
+		for _, w in ipairs(list) do
+			if string.find(s, w, 1, true) then return true end
+		end
+		return false
+	end
+
+	local function npcClassify(m: Model, lower: string): string
+		local toks = nameWords(m.Name)
+		local shopP, questP = false, false
+		for _, d in ipairs(m:GetDescendants()) do
+			if d:IsA("ProximityPrompt") then
+				local t = string.lower(d.ActionText .. " " .. d.ObjectText)
+				if textHit(t, PROMPT_SHOP) then shopP = true end
+				if textHit(t, PROMPT_QUEST) then questP = true end
+			end
+		end
+		if shopP or nameHit(lower, toks, CAT_SHOP) then return "Toko" end
+		if nameHit(lower, toks, CAT_ANIMAL) then return "Hewan" end
+		if questP or nameHit(lower, toks, CAT_QUEST) then return "Quest" end
+		if nameHit(lower, toks, CAT_ENEMY) then return "Musuh" end
+		-- model beranimasi tanpa Humanoid (AnimationController) biasanya hewan/makhluk
+		if not m:FindFirstChildOfClass("Humanoid") and m:FindFirstChildWhichIsA("AnimationController", true) then
+			return "Hewan"
+		end
+		return "Lainnya"
 	end
 
 	local function npcAdd(inst: Instance, tries: number)
@@ -2054,7 +2126,9 @@ do
 		local name = m.Name
 		local g = N.groups[name]
 		if not g then
-			g = { name = name, lower = string.lower(name), list = {} }
+			local lower = string.lower(name)
+			local okc, cat = pcall(npcClassify, m :: Model, lower)
+			g = { name = name, lower = lower, list = {}, cat = okc and cat or "Lainnya" }
 			N.groups[name] = g
 			N.orderDirty = true
 		end
@@ -2281,12 +2355,15 @@ do
 		N.setStatus()
 	end
 
+	-- ESP NPC selalu aktif: yang ditandai = jenis yang dicentang. "Matikan semua" = kosongkan pilihan.
 	ext.npc = function(on: boolean)
 		if on then
 			N.acc = 1 -- langsung gambar di frame berikutnya
 		else
+			table.clear(N.sel)
 			npcClearVis()
 			N.shown, N.inRange = 0, 0
+			N.refreshRows()
 		end
 		N.setStatus()
 	end
@@ -2296,20 +2373,14 @@ do
 
 	-- Diletakkan di tab Teleport, tepat di atas "Loot & Item ESP" (scan NPC di atas, scan barang di bawah).
 	sectionLabel(pages.Teleport, 1, "ESP NPC / Hewan")
-	local card = makeCard(pages.Teleport, 334, 2)
+	local card = makeCard(pages.Teleport, 364, 2)
 	text(card, {
 		Text = "ESP NPC / Hewan",
 		Font = Enum.Font.GothamBold,
 		TextSize = 14,
 		Position = UDim2.fromOffset(14, 11),
-		Size = UDim2.new(1, -84, 0, 18),
+		Size = UDim2.new(1, -28, 0, 18),
 	})
-	switches.npcEsp = makeSwitch(card, UDim2.new(1, -14, 0, 22), false, function(on)
-		state.npcEsp = on
-		effects.npcEsp(on)
-		refreshActive()
-		npcRefreshList() -- perbarui petunjuk status
-	end, cardGlow(card))
 
 	local scanBtn = new("TextButton", {
 		Position = UDim2.fromOffset(14, 42),
@@ -2461,7 +2532,7 @@ do
 	-- Status = ringkasan daftar + keadaan ESP (berapa NPC yang benar-benar tergambar).
 	N.setStatus = function()
 		local s: string = N.base
-		if s ~= "" and not N.scanning and N.selTotal > 0 and state.npcEsp then
+		if s ~= "" and not N.scanning and N.selTotal > 0 then
 			if N.inRange == 0 then
 				s ..= " · di luar jarak slider"
 			else
@@ -2491,8 +2562,53 @@ do
 	stroke(searchBox, T.stroke, 1, 0.3)
 	new("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10) }, searchBox)
 
-	local actionRow = new("Frame", {
+	-- Chip kategori: Semua / Hewan / Toko / Quest / Musuh / Lainnya
+	local chipRow = new("Frame", {
 		Position = UDim2.fromOffset(14, 162),
+		Size = UDim2.new(1, -28, 0, 24),
+		BackgroundTransparency = 1,
+	}, card)
+	new("UIListLayout", {
+		FillDirection = Enum.FillDirection.Horizontal,
+		Padding = UDim.new(0, 4),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	}, chipRow)
+	local CAT_CHIPS = { "Semua", "Hewan", "Toko", "Quest", "Musuh", "Lainnya" }
+	local chipBtns: { [string]: any } = {}
+	do
+		local n = #CAT_CHIPS
+		local pad = math.ceil(4 * (n - 1) / n)
+		for i, nm in ipairs(CAT_CHIPS) do
+			local b = new("TextButton", {
+				LayoutOrder = i,
+				Size = UDim2.new(1 / n, -pad, 1, 0),
+				BackgroundColor3 = nm == "Semua" and T.accent or T.bg,
+				Text = nm,
+				TextColor3 = nm == "Semua" and WHITE or T.sub,
+				Font = Enum.Font.GothamMedium,
+				TextSize = 10,
+				AutoButtonColor = false,
+				BorderSizePixel = 0,
+			}, chipRow)
+			round(b, 6)
+			stroke(b, T.stroke, 1, 0.4)
+			chipBtns[nm] = b
+			b.MouseButton1Click:Connect(function()
+				N.cat = nm
+				for name2, b2 in pairs(chipBtns) do
+					local active = name2 == nm
+					tween(b2, {
+						BackgroundColor3 = active and T.accent or T.bg,
+						TextColor3 = active and WHITE or T.sub,
+					}, 0.12)
+				end
+				npcRefreshList()
+			end)
+		end
+	end
+
+	local actionRow = new("Frame", {
+		Position = UDim2.fromOffset(14, 192),
 		Size = UDim2.new(1, -28, 0, 24),
 		BackgroundTransparency = 1,
 	}, card)
@@ -2518,7 +2634,7 @@ do
 	local clrBtn = miniBtn("Kosongkan", UDim2.new(0.5, 3, 0, 0))
 
 	local scroll = new("ScrollingFrame", {
-		Position = UDim2.fromOffset(14, 192),
+		Position = UDim2.fromOffset(14, 222),
 		Size = UDim2.new(1, -28, 0, 130),
 		BackgroundTransparency = 1,
 		BorderSizePixel = 0,
@@ -2534,11 +2650,12 @@ do
 		TextSize = 11,
 		TextColor3 = T.sub,
 		TextXAlignment = Enum.TextXAlignment.Center,
-		Position = UDim2.fromOffset(14, 192),
+		Position = UDim2.fromOffset(14, 222),
 		Size = UDim2.new(1, -28, 0, 130),
 	})
 
 	local function matches(g: any, q: string): boolean
+		if N.cat ~= "Semua" and g.cat ~= N.cat then return false end
 		return q == "" or string.find(g.lower, q, 1, true) ~= nil
 	end
 
@@ -2666,8 +2783,13 @@ do
 		apply()
 	end
 
+	N.refreshRows = function()
+		npcRefreshList()
+	end
+
 	npcRefreshList = function()
 		if unloaded then return end
+		N.acc = 1 -- pilihan/daftar berubah -> ESP digambar ulang segera
 
 		local order = N.order
 		-- Urutan hanya dihitung ulang kalau ada JENIS baru/hilang (bukan tiap hewan spawn).
@@ -2739,9 +2861,6 @@ do
 			s = string.format("%d jenis · %d objek · %d dipilih", #order, objs, selN)
 			if pending then
 				s ..= string.format(" · memuat daftar %d/%d...", shown, total)
-			end
-			if selN > 0 and not state.npcEsp then
-				s ..= " · nyalakan saklar ESP"
 			end
 		end
 		N.base = s
@@ -2854,7 +2973,7 @@ do
 		N.acc += dt
 		if N.acc >= N.interval then
 			N.acc = 0
-			if state.npcEsp then
+			if next(N.sel) ~= nil or next(N.vis) ~= nil then
 				local ok, err = pcall(npcUpdate)
 				if not ok and not N.warned then
 					N.warned = true
