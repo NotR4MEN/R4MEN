@@ -20,7 +20,7 @@ end
 -- ================================================
 
 -- LocalScript: taruh di StarterPlayer > StarterPlayerScripts
--- Universal R4MEN v7.6 (Speed/Run Fix + Item Scanner v2: live tracking)
+-- Universal R4MEN v7.7 (+ tab Visual: ESP NPC/Hewan, Fullbright, FOV, Anti-AFK)
 
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
@@ -40,6 +40,7 @@ end
 -- STATE
 -- =====================================================
 local settings: { [string]: any } = {
+	saveFolder = "R4MEN", -- nama folder penyimpanan di dalam folder workspace executor (boleh diganti)
 	toggleKey = Enum.KeyCode.K,
 	saveKey = Enum.KeyCode.LeftBracket,
 	tpKey = Enum.KeyCode.RightBracket,
@@ -57,12 +58,21 @@ local state: { [string]: boolean } = {
 	walkFling = false,
 	esp = false,
 	freecam = false,
+	npcEsp = false,
+	antiAfk = false,
+	fullbright = false,
+	noFog = false,
+	fov = false,
 }
 
 local values: { [string]: number } = {
 	speed = 50,
 	jump = 100,
 	freecam = 60,
+	bright = 2,
+	clock = 14,
+	fov = 70,
+	npcDist = 2000,
 }
 
 local targetUsername = ""
@@ -407,6 +417,14 @@ local setFreecam: (boolean) -> () = function() end
 local refreshActive: () -> () = function() end
 local clearMarkings: () -> () = function() end
 
+-- Hook fitur tab Visual (diisi di bagian GUI Visual; satu tabel = hemat jatah 200 local)
+local ext: { [string]: (boolean) -> () } = {
+	npc = function() end,
+	light = function() end,
+	fog = function() end,
+	fov = function() end,
+}
+
 local effects: { [string]: (boolean) -> () } = {
 	speed = function(on) if not on then restoreSpeed() end end,
 	jump = function(on) if not on then restoreJump() end end,
@@ -420,6 +438,11 @@ local effects: { [string]: (boolean) -> () } = {
 	end,
 	esp = function(on) setEsp(on) end,
 	freecam = function(on) setFreecam(on) end,
+	npcEsp = function(on) ext.npc(on) end,
+	antiAfk = function() end,
+	fullbright = function(on) ext.light(on) end,
+	noFog = function(on) ext.fog(on) end,
+	fov = function(on) ext.fov(on) end,
 }
 
 local function setFeature(key: string, on: boolean)
@@ -444,6 +467,10 @@ local function disableAllFeatures()
 	restoreNoclip()
 	setEsp(false)
 	setFreecam(false)
+	ext.npc(false)
+	ext.light(false)
+	ext.fog(false)
+	ext.fov(false)
 	clearMarkings()
 	refreshActive()
 end
@@ -532,8 +559,17 @@ local function saveWaypoint()
 		toast("Maksimal " .. tostring(MAX_WP) .. " waypoint")
 		return
 	end
-	wpCounter += 1
-	table.insert(waypoints, { name = "Waypoint " .. tostring(wpCounter), cf = cf })
+	-- pakai nomor terkecil yang belum dipakai (hapus semua -> mulai dari 1 lagi)
+	local used: { [string]: boolean } = {}
+	for _, w in ipairs(waypoints) do
+		used[w.name] = true
+	end
+	local n = 1
+	while used["Waypoint " .. tostring(n)] do
+		n += 1
+	end
+	wpCounter = n
+	table.insert(waypoints, { name = "Waypoint " .. tostring(n), cf = cf })
 	selected = #waypoints
 	rebuildList()
 	toast(waypoints[selected].name .. (state.freecam and " tersimpan (posisi free cam)" or " tersimpan"))
@@ -874,6 +910,7 @@ local function getControls(): any
 	if ok then fcControls = res end
 	return fcControls
 end
+task.spawn(getControls) -- siapkan lebih awal di latar belakang supaya free cam tidak menunggu
 
 local function fcStep(dt: number)
 	local cam = workspace.CurrentCamera
@@ -952,12 +989,16 @@ setFreecam = function(on: boolean)
 		if hrp then hrp.Anchored = true end
 		if hum then hum.PlatformStand = true end
 
-		local c = getControls()
-		if c then pcall(function() c:Disable() end) end
-
 		cam.CameraType = Enum.CameraType.Scriptable
 		RunService:BindToRenderStep(FC_BIND, Enum.RenderPriority.Camera.Value + 1, fcStep)
 		fcBound = true
+
+		task.spawn(function()
+			local c = getControls()
+			if c and fcBound and not unloaded then
+				pcall(function() c:Disable() end)
+			end
+		end)
 	else
 		if fcBound then
 			RunService:UnbindFromRenderStep(FC_BIND)
@@ -1439,7 +1480,7 @@ local teleportPage = newPage("Teleport")
 local configPage = newPage("Config")
 local settingsPage = newPage("Settings")
 
-for i, name in ipairs({ "Movement", "Physics", "Teleport", "Config", "Settings" }) do
+for i, name in ipairs({ "Movement", "Physics", "Visual", "Teleport", "Config", "Settings" }) do
 	local b = new("TextButton", {
 		LayoutOrder = i,
 		Size = UDim2.new(1, 0, 0, 38),
@@ -1679,7 +1720,7 @@ local function addToggleCard(page: Instance, order: number, title: string, desc:
 	return descLabel
 end
 
-local function addSliderCard(page: Instance, order: number, title: string, hint: string, key: string, min: number, max: number, hardMax: number)
+local function addSliderCard(page: Instance, order: number, title: string, hint: string, key: string, min: number, max: number, hardMax: number, bare: boolean?)
 	local card = makeCard(page, 100, order)
 	text(card, {
 		Text = title,
@@ -1696,11 +1737,13 @@ local function addSliderCard(page: Instance, order: number, title: string, hint:
 		Position = UDim2.fromOffset(14, 30),
 		Size = UDim2.new(1, -84, 0, 14),
 	})
-	switches[key] = makeSwitch(card, UDim2.new(1, -14, 0, 25), false, function(on)
-		state[key] = on
-		effects[key](on)
-		refreshActive()
-	end, cardGlow(card))
+	if not bare then -- bare = kartu slider tanpa saklar (nilai dipakai fitur lain)
+		switches[key] = makeSwitch(card, UDim2.new(1, -14, 0, 25), false, function(on)
+			state[key] = on
+			effects[key](on)
+			refreshActive()
+		end, cardGlow(card))
+	end
 
 	local hit = new("Frame", {
 		Position = UDim2.fromOffset(14, 58),
@@ -1825,6 +1868,1015 @@ addToggleCard(physicsPage, 4, "ESP Chams",
 	"Siluet pemain tembus tembok + username, darah, jarak. Warna ikut tim; tanpa tim: putih lembut.", "esp")
 
 -- =====================================================
+-- GUI: HALAMAN VISUAL (Fullbright, FOV, Anti-AFK) -- blok 1
+-- Dibungkus do...end supaya local-nya tidak menghabiskan jatah 200 local.
+-- =====================================================
+do
+	local visualPage = newPage("Visual")
+
+	sectionLabel(visualPage, 0, "Pencahayaan")
+	addToggleCard(visualPage, 1, "Fullbright", "Terang penuh tanpa bayangan. Atur kecerahan dan jam di bawah.", "fullbright")
+	addSliderCard(visualPage, 2, "Kecerahan", "Brightness 1-10 (bawaan game biasanya 1-3)", "bright", 1, 10, 10, true)
+	addSliderCard(visualPage, 3, "Jam Dunia", "1-24 (12 = siang, 24 = tengah malam)", "clock", 1, 24, 24, true)
+	addToggleCard(visualPage, 4, "Hilangkan Kabut", "Menghapus fog dan haze agar pandangan jauh jelas.", "noFog")
+
+	sectionLabel(visualPage, 5, "Kamera")
+	addSliderCard(visualPage, 6, "FOV", "Bawaan Roblox: 70", "fov", 30, 120, 120)
+
+	-- ESP NPC / Hewan ada di tab Teleport (satu tempat dengan scan barang) -- lihat blok 2
+
+	sectionLabel(visualPage, 10, "Utilitas")
+	addToggleCard(visualPage, 11, "Anti-AFK", "Mencegah kick karena diam 20 menit.", "antiAfk")
+
+	-- ---------- Fullbright / kabut / FOV ----------
+	local Lighting = game:GetService("Lighting")
+	local L: any = Lighting
+	local lightOrig: any = nil
+	local fogOrig: any = nil
+	local fovOrig: number? = nil
+
+	local function setProp(obj: any, prop: string, v: any)
+		if obj[prop] ~= v then
+			obj[prop] = v
+		end
+	end
+
+	ext.light = function(on: boolean)
+		if on then
+			if not lightOrig then
+				lightOrig = {
+					Brightness = L.Brightness,
+					ClockTime = L.ClockTime,
+					Ambient = L.Ambient,
+					OutdoorAmbient = L.OutdoorAmbient,
+					GlobalShadows = L.GlobalShadows,
+				}
+			end
+		elseif lightOrig then
+			local o = lightOrig
+			lightOrig = nil
+			for k, v in pairs(o) do
+				pcall(function() L[k] = v end)
+			end
+		end
+	end
+
+	ext.fog = function(on: boolean)
+		if on then
+			if not fogOrig then
+				local atm = Lighting:FindFirstChildOfClass("Atmosphere")
+				fogOrig = {
+					FogEnd = L.FogEnd,
+					FogStart = L.FogStart,
+					atm = atm,
+					density = atm and (atm :: any).Density,
+					haze = atm and (atm :: any).Haze,
+				}
+			end
+		elseif fogOrig then
+			local o = fogOrig
+			fogOrig = nil
+			pcall(function()
+				L.FogEnd = o.FogEnd
+				L.FogStart = o.FogStart
+				if o.atm and o.atm.Parent then
+					o.atm.Density = o.density
+					o.atm.Haze = o.haze
+				end
+			end)
+		end
+	end
+
+	ext.fov = function(on: boolean)
+		local cam = workspace.CurrentCamera
+		if on then
+			if cam and not fovOrig then fovOrig = cam.FieldOfView end
+		else
+			if cam and fovOrig then cam.FieldOfView = fovOrig end
+			fovOrig = nil
+		end
+	end
+
+	-- Ditulis ulang tiap frame supaya tidak ditimpa script day-night / sprint milik game.
+	track(RunService.RenderStepped:Connect(function()
+		if unloaded then return end
+
+		if state.fullbright then
+			if not lightOrig then ext.light(true) end
+			local lv = math.clamp(0.35 + values.bright * 0.13, 0, 1)
+			local amb = Color3.new(lv, lv, lv)
+			setProp(L, "Brightness", values.bright)
+			setProp(L, "ClockTime", values.clock % 24)
+			setProp(L, "Ambient", amb)
+			setProp(L, "OutdoorAmbient", amb)
+			setProp(L, "GlobalShadows", false)
+		end
+
+		if state.noFog then
+			if not fogOrig then ext.fog(true) end
+			setProp(L, "FogEnd", 1e9)
+			setProp(L, "FogStart", 0)
+			local atm: any = Lighting:FindFirstChildOfClass("Atmosphere")
+			if atm then
+				setProp(atm, "Density", 0)
+				setProp(atm, "Haze", 0)
+			end
+		end
+
+		if state.fov then
+			local cam = workspace.CurrentCamera
+			if cam then
+				if not fovOrig then fovOrig = cam.FieldOfView end
+				setProp(cam, "FieldOfView", values.fov)
+			end
+		end
+	end))
+
+	-- ---------- Anti-AFK ----------
+	local VirtualUser = game:GetService("VirtualUser")
+	track(player.Idled:Connect(function()
+		if unloaded or not state.antiAfk then return end
+		pcall(function()
+			VirtualUser:CaptureController()
+			VirtualUser:ClickButton2(Vector2.new(0, 0))
+		end)
+	end))
+end
+
+-- =====================================================
+-- GUI: ESP NPC / HEWAN -- blok 2
+-- Pola sama dengan Item ESP: SCAN -> daftar nama unik -> centang yang mau ditandai.
+-- Pelacakan live lewat DescendantAdded/Removing; visual hanya untuk yang dipilih,
+-- dalam jarak slider, dan dibatasi NPC terdekat (Highlight Roblox maks. ~31 sekaligus).
+-- =====================================================
+do
+	local NPC_COL = Color3.fromRGB(255, 176, 72)
+	local NPC_MAX = math.huge      -- tanpa batas: semua NPC terpilih dalam jarak ditandai (label nama+jarak)
+	local NPC_HL_MAX = 30          -- siluet: batas keras mesin Roblox ~31 Highlight sekaligus (sisanya tetap berlabel)
+	local NPC_ROW_LIMIT = math.huge -- tanpa batas baris daftar
+	local ROWS_PER_PASS = 30       -- baris baru dibuat bertahap (30/langkah) agar layar tidak freeze
+	local NPC_CLASS: { [string]: boolean } = { Humanoid = true, AnimationController = true }
+
+	local N: any = {
+		groups = {}, byModel = {}, order = {}, sel = {}, rows = {}, vis = {},
+		folder = nil, addConn = nil, remConn = nil,
+		scanning = false, scanned = false, dirty = false, orderDirty = true,
+		acc = 0, acc2 = 0, interval = 0.15, cand = {},
+		shown = 0, inRange = 0, selTotal = 0, base = "", err = nil, live = false,
+		setStatus = function() end, -- diisi di bagian UI
+	}
+
+	local function npcRootOf(m: Model): BasePart?
+		local r = m:FindFirstChild("HumanoidRootPart")
+		if r and r:IsA("BasePart") then return r end
+		local p = m.PrimaryPart
+		if p then return p end
+		return m:FindFirstChildWhichIsA("BasePart")
+	end
+
+	local function npcAdd(inst: Instance, tries: number)
+		local m = inst.Parent
+		if not m or not m:IsA("Model") or N.byModel[m] then return end
+		if not m:IsDescendantOf(workspace) then return end
+		if Players:GetPlayerFromCharacter(m) then return end
+		local root = npcRootOf(m :: Model)
+		if not root then
+			-- struktur belum lengkap (streaming) -> coba lagi sebentar lagi
+			if tries < 4 then
+				task.delay(1, function()
+					if not unloaded and inst.Parent then
+						npcAdd(inst, tries + 1)
+					end
+				end)
+			end
+			return
+		end
+		local name = m.Name
+		local g = N.groups[name]
+		if not g then
+			g = { name = name, lower = string.lower(name), list = {} }
+			N.groups[name] = g
+			N.orderDirty = true
+		end
+		local e: any = { model = m, root = root, name = name }
+		g.list[#g.list + 1] = e
+		e.gi = #g.list
+		N.byModel[m] = e
+		N.dirty = true
+	end
+
+	local function npcDropVis(e: any)
+		local v = N.vis[e]
+		if v then
+			if v.hl then v.hl:Destroy() end
+			v.bb:Destroy()
+			N.vis[e] = nil
+		end
+	end
+
+	local function npcRemove(e: any)
+		N.byModel[e.model] = nil
+		npcDropVis(e)
+		local g = N.groups[e.name]
+		if g then
+			local gl = g.list
+			local m = #gl
+			local gi = e.gi
+			if gl[gi] == e then
+				if gi ~= m then
+					local last = gl[m]
+					gl[gi] = last
+					last.gi = gi
+				end
+				gl[m] = nil
+			end
+			if #gl == 0 then
+				N.groups[e.name] = nil
+				N.orderDirty = true
+			end
+		end
+		N.dirty = true
+	end
+
+	local function npcStopLive()
+		if N.addConn then N.addConn:Disconnect() N.addConn = nil end
+		if N.remConn then N.remConn:Disconnect() N.remConn = nil end
+		N.live = false
+	end
+
+	local function npcStartLive()
+		N.live = true
+		if N.addConn then return end
+		N.addConn = track(workspace.DescendantAdded:Connect(function(inst)
+			if NPC_CLASS[inst.ClassName] then
+				task.defer(npcAdd, inst, 0)
+			end
+		end))
+		N.remConn = track(workspace.DescendantRemoving:Connect(function(inst)
+			if NPC_CLASS[inst.ClassName] then
+				local m = inst.Parent
+				local e = m and N.byModel[m]
+				if e then npcRemove(e) end
+			end
+		end))
+	end
+
+	-- ---------- visual ----------
+	local function npcOrigin(): Vector3?
+		local cam = workspace.CurrentCamera
+		if state.freecam and cam then
+			return cam.CFrame.Position
+		end
+		local r = getRoot()
+		if r then return r.Position end
+		return cam and cam.CFrame.Position or nil
+	end
+
+	local function npcClearVis()
+		for e in pairs(N.vis) do
+			npcDropVis(e)
+		end
+		if N.folder then
+			N.folder:Destroy()
+			N.folder = nil
+		end
+	end
+
+	local function npcBuildVis(e: any): any
+		if not (N.folder and N.folder.Parent) then
+			N.folder = new("Folder", { Name = "UU_NPC" }, workspace.CurrentCamera or workspace)
+		end
+		local head = e.model:FindFirstChild("Head")
+		local adornee = (head and head:IsA("BasePart")) and head or e.root
+		local bb = new("BillboardGui", {
+			Adornee = adornee,
+			AlwaysOnTop = true,
+			Size = UDim2.fromOffset(160, 30),
+			StudsOffsetWorldSpace = Vector3.new(0, 2.4, 0),
+			MaxDistance = math.huge,
+		}, N.folder)
+		local nameL = text(bb, {
+			Text = e.name,
+			Size = UDim2.new(1, 0, 0.5, 0),
+			Font = Enum.Font.GothamBold,
+			TextSize = 12,
+			TextColor3 = NPC_COL,
+			TextXAlignment = Enum.TextXAlignment.Center,
+			TextStrokeColor3 = Color3.new(0, 0, 0),
+			TextStrokeTransparency = 0.25,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+		})
+		local infoL = text(bb, {
+			Position = UDim2.fromScale(0, 0.5),
+			Size = UDim2.new(1, 0, 0.5, 0),
+			Font = Enum.Font.GothamBold,
+			TextSize = 11,
+			TextColor3 = ESP_SOFT_WHITE,
+			TextXAlignment = Enum.TextXAlignment.Center,
+			TextStrokeColor3 = Color3.new(0, 0, 0),
+			TextStrokeTransparency = 0.25,
+			RichText = true,
+		})
+		local v: any = { bb = bb, name = nameL, info = infoL }
+		N.vis[e] = v
+		return v
+	end
+
+	-- Gambar/perbarui satu NPC. Dipanggil lewat pcall: satu NPC bermasalah tidak mematikan yang lain.
+	local function npcShow(e: any, d: number, i: number)
+		local v = N.vis[e]
+		if v and not v.bb:IsDescendantOf(workspace) then
+			npcDropVis(e) -- folder hilang (mis. kamera diganti game) -> bangun ulang
+			v = nil
+		end
+		if not v then v = npcBuildVis(e) end
+
+		if i <= NPC_HL_MAX then
+			if not v.hl then
+				v.hl = new("Highlight", {
+					Adornee = e.model,
+					DepthMode = Enum.HighlightDepthMode.AlwaysOnTop,
+					FillColor = NPC_COL,
+					OutlineColor = NPC_COL,
+					FillTransparency = 0.65,
+					OutlineTransparency = 0.2,
+				}, N.folder)
+			end
+		elseif v.hl then
+			v.hl:Destroy()
+			v.hl = nil
+		end
+
+		local hpTxt = ""
+		local hum = e.model:FindFirstChildOfClass("Humanoid")
+		if hum then
+			local h, mh = hum.Health, hum.MaxHealth
+			-- HP tak hingga / NaN (umum di NPC game) tidak boleh merusak format teks
+			if h == h and h ~= math.huge and mh == mh and mh ~= math.huge and mh > 0 then
+				local ratio = math.clamp(h / mh, 0, 1)
+				local hex = Color3.fromHSV(ratio * 0.33, 0.6, 1):ToHex()
+				hpTxt = '<font color="#' .. hex .. '">' .. tostring(math.max(0, math.floor(h + 0.5))) .. " HP</font>  "
+			end
+		end
+		v.info.Text = hpTxt .. tostring(math.floor(d + 0.5)) .. "st"
+	end
+
+	local function npcUpdate()
+		local origin = npcOrigin()
+		if not origin then return end
+		local maxD = values.npcDist
+
+		-- Hanya jenis yang DIPILIH yang diproses; array dipakai ulang (tanpa alokasi tabel baru).
+		local cand: { any } = N.cand
+		table.clear(cand)
+		local n, total = 0, 0
+		for name in pairs(N.sel) do
+			local g = N.groups[name]
+			if g then
+				local list = g.list
+				total += #list
+				for i = 1, #list do
+					local e = list[i]
+					local root = e.root
+					if root.Parent then
+						local d = (root.Position - origin).Magnitude
+						if d <= maxD then
+							e.d = d
+							n += 1
+							cand[n] = e
+						end
+					end
+				end
+			end
+		end
+		-- semakin banyak objek terpilih, semakin jarang diperbarui (0.15 s .. 0.6 s)
+		N.interval = math.clamp(total / 4000, 0.15, 0.6)
+		table.sort(cand, function(a, b) return a.d < b.d end)
+
+		local keep: { [any]: boolean } = {}
+		local shown = 0
+		for i = 1, math.min(n, NPC_MAX) do
+			local e = cand[i]
+			keep[e] = true
+			local ok, err = pcall(npcShow, e, e.d, i)
+			if ok then
+				shown += 1
+			else
+				npcDropVis(e)
+				if not N.err then
+					N.err = tostring(err)
+					warn("[NpcEsp] " .. N.err)
+					toast("ESP NPC error: " .. N.err)
+				end
+			end
+		end
+
+		for e in pairs(N.vis) do
+			if not keep[e] then
+				npcDropVis(e)
+			end
+		end
+
+		N.shown, N.inRange, N.selTotal = shown, n, total
+		N.setStatus()
+	end
+
+	ext.npc = function(on: boolean)
+		if on then
+			N.acc = 1 -- langsung gambar di frame berikutnya
+		else
+			npcClearVis()
+			N.shown, N.inRange = 0, 0
+		end
+		N.setStatus()
+	end
+
+	-- ---------- UI ----------
+	local npcRefreshList: () -> () = function() end
+
+	-- Diletakkan di tab Teleport, tepat di atas "Loot & Item ESP" (scan NPC di atas, scan barang di bawah).
+	sectionLabel(pages.Teleport, 1, "ESP NPC / Hewan")
+	local card = makeCard(pages.Teleport, 334, 2)
+	text(card, {
+		Text = "ESP NPC / Hewan",
+		Font = Enum.Font.GothamBold,
+		TextSize = 14,
+		Position = UDim2.fromOffset(14, 11),
+		Size = UDim2.new(1, -84, 0, 18),
+	})
+	switches.npcEsp = makeSwitch(card, UDim2.new(1, -14, 0, 22), false, function(on)
+		state.npcEsp = on
+		effects.npcEsp(on)
+		refreshActive()
+		npcRefreshList() -- perbarui petunjuk status
+	end, cardGlow(card))
+
+	local scanBtn = new("TextButton", {
+		Position = UDim2.fromOffset(14, 42),
+		Size = UDim2.new(1, -28 - 94, 0, 30),
+		BackgroundColor3 = T.accent,
+		Text = "🔍 SCAN NPC / HEWAN",
+		TextColor3 = WHITE,
+		Font = Enum.Font.GothamBold,
+		TextSize = 12,
+		AutoButtonColor = false,
+	}, card)
+	round(scanBtn, 8)
+	hover(scanBtn, T.accent)
+
+	-- Auto scan (Live): NPC yang spawn belakangan langsung masuk daftar tanpa menekan SCAN lagi
+	local liveBtn = new("TextButton", {
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, -14, 0, 42),
+		Size = UDim2.fromOffset(88, 30),
+		BackgroundColor3 = T.bg,
+		Text = "Auto: OFF",
+		TextColor3 = T.sub,
+		Font = Enum.Font.GothamMedium,
+		TextSize = 11,
+		AutoButtonColor = false,
+		BorderSizePixel = 0,
+	}, card)
+	round(liveBtn, 8)
+	stroke(liveBtn, T.stroke, 1, 0.3)
+
+	local function setLiveUI()
+		liveBtn.Text = N.live and "Auto: ON" or "Auto: OFF"
+		tween(liveBtn, {
+			BackgroundColor3 = N.live and T.cardSel or T.bg,
+			TextColor3 = N.live and T.text or T.sub,
+		}, 0.12)
+	end
+
+	-- Slider jarak ringkas, tepat di bawah tombol SCAN (menggantikan kartu slider terpisah)
+	do
+		local DMIN, DMAX, DHARD = 50, 5000, 20000
+		local row = new("Frame", {
+			Position = UDim2.fromOffset(14, 80),
+			Size = UDim2.new(1, -28, 0, 28),
+			BackgroundTransparency = 1,
+		}, card)
+		text(row, {
+			Text = "Jarak",
+			Font = Enum.Font.GothamMedium,
+			TextSize = 11,
+			TextColor3 = T.sub,
+			Size = UDim2.fromOffset(34, 28),
+		})
+		local hit = new("Frame", {
+			Position = UDim2.fromOffset(38, 0),
+			Size = UDim2.new(1, -38 - 64, 1, 0),
+			BackgroundTransparency = 1,
+		}, row)
+		local bar = new("Frame", {
+			AnchorPoint = Vector2.new(0, 0.5),
+			Position = UDim2.fromScale(0, 0.5),
+			Size = UDim2.new(1, 0, 0, 6),
+			BackgroundColor3 = T.off,
+			BorderSizePixel = 0,
+		}, hit)
+		round(bar, 3)
+		local fill = new("Frame", {
+			Size = UDim2.fromScale(0, 1),
+			BackgroundColor3 = WHITE,
+			BorderSizePixel = 0,
+		}, bar)
+		round(fill, 3)
+		grad(fill, T.accent, T.accent2, 0)
+		local knob = new("Frame", {
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.fromScale(0, 0.5),
+			Size = UDim2.fromOffset(15, 15),
+			BackgroundColor3 = WHITE,
+			BorderSizePixel = 0,
+			ZIndex = 2,
+		}, bar)
+		round(knob, 8)
+		stroke(knob, T.accent, 2, 0)
+
+		local box = new("TextBox", {
+			AnchorPoint = Vector2.new(1, 0.5),
+			Position = UDim2.new(1, 0, 0.5, 0),
+			Size = UDim2.fromOffset(56, 24),
+			BackgroundColor3 = T.bg,
+			Text = tostring(values.npcDist),
+			TextColor3 = T.text,
+			Font = Enum.Font.GothamBold,
+			TextSize = 12,
+			ClearTextOnFocus = false,
+			BorderSizePixel = 0,
+		}, row)
+		round(box, 7)
+		stroke(box, T.stroke, 1, 0.3)
+
+		local function setValue(v: number)
+			v = math.clamp(math.floor(v + 0.5), 1, DHARD)
+			values.npcDist = v
+			box.Text = tostring(v)
+			local a = math.clamp((v - DMIN) / (DMAX - DMIN), 0, 1)
+			fill.Size = UDim2.fromScale(a, 1)
+			knob.Position = UDim2.fromScale(a, 0.5)
+		end
+		setValue(values.npcDist)
+		sliderSetters.npcDist = setValue -- ikut tersimpan di Config / file lokal
+
+		box.FocusLost:Connect(function()
+			setValue(tonumber(box.Text) or values.npcDist)
+		end)
+
+		local dragging = false
+		local function fromInput(input: InputObject)
+			local rel = (input.Position.X - bar.AbsolutePosition.X) / math.max(bar.AbsoluteSize.X, 1)
+			setValue(DMIN + math.clamp(rel, 0, 1) * (DMAX - DMIN))
+		end
+		hit.InputBegan:Connect(function(input)
+			if isPointer(input) then
+				dragging = true
+				setScrolling(false)
+				fromInput(input)
+			end
+		end)
+		track(UIS.InputChanged:Connect(function(input)
+			if dragging and isMove(input) then
+				fromInput(input)
+			end
+		end))
+		track(UIS.InputEnded:Connect(function(input)
+			if dragging and isPointer(input) then
+				dragging = false
+				setScrolling(true)
+			end
+		end))
+	end
+
+	local statusLbl = text(card, {
+		Text = "Belum scan",
+		TextSize = 11,
+		TextColor3 = T.sub,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Position = UDim2.fromOffset(14, 112),
+		Size = UDim2.new(1, -28, 0, 14),
+	})
+
+	-- Status = ringkasan daftar + keadaan ESP (berapa NPC yang benar-benar tergambar).
+	N.setStatus = function()
+		local s: string = N.base
+		if s ~= "" and not N.scanning and N.selTotal > 0 and state.npcEsp then
+			if N.inRange == 0 then
+				s ..= " · di luar jarak slider"
+			else
+				s ..= string.format(" · ESP %d/%d", N.shown, N.inRange)
+			end
+		end
+		if statusLbl.Text ~= s then
+			statusLbl.Text = s
+		end
+	end
+
+	local searchBox = new("TextBox", {
+		Position = UDim2.fromOffset(14, 130),
+		Size = UDim2.new(1, -28, 0, 28),
+		BackgroundColor3 = T.bg,
+		PlaceholderText = "🔎 Cari nama NPC / hewan...",
+		PlaceholderColor3 = T.sub,
+		Text = "",
+		TextColor3 = T.text,
+		Font = Enum.Font.GothamMedium,
+		TextSize = 11,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		ClearTextOnFocus = false,
+		BorderSizePixel = 0,
+	}, card)
+	round(searchBox, 8)
+	stroke(searchBox, T.stroke, 1, 0.3)
+	new("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10) }, searchBox)
+
+	local actionRow = new("Frame", {
+		Position = UDim2.fromOffset(14, 162),
+		Size = UDim2.new(1, -28, 0, 24),
+		BackgroundTransparency = 1,
+	}, card)
+
+	local function miniBtn(txt: string, pos: UDim2): any
+		local b = new("TextButton", {
+			Position = pos,
+			Size = UDim2.new(0.5, -3, 1, 0),
+			BackgroundColor3 = T.bg,
+			Text = txt,
+			TextColor3 = T.sub,
+			Font = Enum.Font.GothamMedium,
+			TextSize = 11,
+			AutoButtonColor = false,
+			BorderSizePixel = 0,
+		}, actionRow)
+		round(b, 6)
+		stroke(b, T.stroke, 1, 0.4)
+		hover(b, T.bg)
+		return b
+	end
+	local selAllBtn = miniBtn("Pilih hasil", UDim2.fromScale(0, 0))
+	local clrBtn = miniBtn("Kosongkan", UDim2.new(0.5, 3, 0, 0))
+
+	local scroll = new("ScrollingFrame", {
+		Position = UDim2.fromOffset(14, 192),
+		Size = UDim2.new(1, -28, 0, 130),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		CanvasSize = UDim2.new(),
+		AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		ScrollBarThickness = 3,
+		ScrollBarImageColor3 = T.stroke,
+	}, card)
+	new("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }, scroll)
+
+	local emptyLbl = text(card, {
+		Text = "Belum ada data - tekan SCAN NPC / HEWAN",
+		TextSize = 11,
+		TextColor3 = T.sub,
+		TextXAlignment = Enum.TextXAlignment.Center,
+		Position = UDim2.fromOffset(14, 192),
+		Size = UDim2.new(1, -28, 0, 130),
+	})
+
+	local function matches(g: any, q: string): boolean
+		return q == "" or string.find(g.lower, q, 1, true) ~= nil
+	end
+
+	local function npcTeleport(g: any)
+		local char = player.Character
+		local hrp = getRoot()
+		if not (char and hrp) then
+			toast("Karakter belum siap")
+			return
+		end
+		local best: any, bestD = nil, math.huge
+		for _, e in ipairs(g.list) do
+			if e.root.Parent then
+				local d = (e.root.Position - hrp.Position).Magnitude
+				if d < bestD then
+					best, bestD = e, d
+				end
+			end
+		end
+		if not best then
+			toast("NPC sudah tidak ada")
+			return
+		end
+		char:PivotTo(best.root.CFrame + Vector3.new(0, 4, 0))
+		hrp.AssemblyLinearVelocity = Vector3.zero
+		hrp.AssemblyAngularVelocity = Vector3.zero
+		floatY = nil
+		toast("Teleport ke " .. g.name)
+	end
+
+	local function npcBuildRow(g: any)
+		local name: string = g.name
+		local btn = new("TextButton", {
+			Name = string.sub(name, 1, 50),
+			Size = UDim2.new(1, -6, 0, 28),
+			BackgroundColor3 = T.bg,
+			Text = "",
+			AutoButtonColor = false,
+			BorderSizePixel = 0,
+		}, scroll)
+		round(btn, 6)
+
+		local box = new("Frame", {
+			Position = UDim2.new(0, 8, 0.5, -7),
+			Size = UDim2.fromOffset(14, 14),
+			BackgroundColor3 = T.off,
+			BorderSizePixel = 0,
+		}, btn)
+		round(box, 4)
+		stroke(box, T.stroke, 1, 0.2)
+		local check = text(box, {
+			Text = "✓",
+			Font = Enum.Font.GothamBold,
+			TextSize = 11,
+			TextColor3 = WHITE,
+			TextXAlignment = Enum.TextXAlignment.Center,
+			Size = UDim2.fromScale(1, 1),
+			Visible = false,
+		})
+
+		text(btn, {
+			Text = name,
+			Font = Enum.Font.GothamMedium,
+			TextSize = 11,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			Position = UDim2.fromOffset(30, 0),
+			Size = UDim2.new(1, -30 - 78, 1, 0),
+		})
+		local cnt = text(btn, {
+			Text = "×" .. #g.list,
+			TextSize = 10,
+			TextColor3 = T.sub,
+			TextXAlignment = Enum.TextXAlignment.Right,
+			AnchorPoint = Vector2.new(1, 0.5),
+			Position = UDim2.new(1, -40, 0.5, 0),
+			Size = UDim2.fromOffset(34, 14),
+		})
+
+		local tp = new("TextButton", {
+			AnchorPoint = Vector2.new(1, 0.5),
+			Position = UDim2.new(1, -5, 0.5, 0),
+			Size = UDim2.fromOffset(30, 20),
+			BackgroundColor3 = T.accent2,
+			Text = "TP",
+			TextColor3 = WHITE,
+			Font = Enum.Font.GothamBold,
+			TextSize = 10,
+			AutoButtonColor = false,
+			BorderSizePixel = 0,
+		}, btn)
+		round(tp, 5)
+		hover(tp, T.accent2)
+
+		local function baseColor(): Color3
+			return N.sel[name] and T.cardSel or T.bg
+		end
+		local function apply()
+			local sel = N.sel[name] == true
+			box.BackgroundColor3 = sel and T.good or T.off
+			check.Visible = sel
+			btn.BackgroundColor3 = baseColor()
+		end
+
+		btn.MouseEnter:Connect(function()
+			tween(btn, { BackgroundColor3 = lighten(baseColor()) }, 0.1)
+		end)
+		btn.MouseLeave:Connect(function()
+			tween(btn, { BackgroundColor3 = baseColor() }, 0.1)
+		end)
+		btn.MouseButton1Click:Connect(function()
+			N.sel[name] = (not N.sel[name]) or nil
+			apply()
+			npcRefreshList()
+		end)
+		tp.MouseButton1Click:Connect(function()
+			local cur = N.groups[name]
+			if cur then
+				npcTeleport(cur)
+			else
+				toast("NPC sudah tidak ada")
+			end
+		end)
+
+		N.rows[name] = { btn = btn, apply = apply, cnt = cnt }
+		apply()
+	end
+
+	npcRefreshList = function()
+		if unloaded then return end
+
+		local order = N.order
+		-- Urutan hanya dihitung ulang kalau ada JENIS baru/hilang (bukan tiap hewan spawn).
+		if N.orderDirty then
+			N.orderDirty = false
+			table.clear(order)
+			for name in pairs(N.groups) do
+				order[#order + 1] = name
+			end
+			table.sort(order, function(a, b)
+				local la, lb = N.groups[a].lower, N.groups[b].lower
+				if la ~= lb then return la < lb end
+				return a < b
+			end)
+
+			for name, r in pairs(N.rows) do -- buang baris grup yang sudah hilang
+				if not N.groups[name] then
+					r.btn:Destroy()
+					N.rows[name] = nil
+				end
+			end
+		end
+
+		local q = string.lower(searchBox.Text)
+		local shown, total, objs = 0, 0, 0
+		local built, pending = 0, false
+		for i, name in ipairs(order) do
+			local g = N.groups[name]
+			objs += #g.list
+			local r = N.rows[name]
+			if matches(g, q) then
+				total += 1
+				if not r then
+					if built < ROWS_PER_PASS then
+						npcBuildRow(g)
+						built += 1
+						r = N.rows[name]
+					else
+						pending = true -- sisanya dibuat di langkah berikutnya
+					end
+				end
+				if r then
+					shown += 1
+					r.btn.Visible = true
+					r.btn.LayoutOrder = i
+					r.cnt.Text = "×" .. #g.list
+					r.apply()
+				end
+			elseif r then
+				r.btn.Visible = false
+			end
+		end
+		if pending then
+			N.dirty = true
+			N.acc2 = 1 -- lanjutkan membangun daftar di frame berikutnya
+		end
+
+		local selN = 0
+		for name in pairs(N.sel) do
+			if N.groups[name] then selN += 1 end
+		end
+
+		local s: string
+		if N.scanning then
+			s = "Memindai..."
+		elseif #order == 0 then
+			s = N.live and "Auto scan aktif · belum ada NPC terdeteksi" or "Belum scan"
+		else
+			s = string.format("%d jenis · %d objek · %d dipilih", #order, objs, selN)
+			if pending then
+				s ..= string.format(" · memuat daftar %d/%d...", shown, total)
+			end
+			if selN > 0 and not state.npcEsp then
+				s ..= " · nyalakan saklar ESP"
+			end
+		end
+		N.base = s
+		N.selTotal = 0
+		for name in pairs(N.sel) do
+			local g = N.groups[name]
+			if g then N.selTotal += #g.list end
+		end
+		N.setStatus()
+
+		if shown == 0 then
+			if N.scanning then
+				emptyLbl.Text = "Memindai..."
+			elseif #order == 0 then
+				emptyLbl.Text = N.live and "Auto scan aktif - belum ada NPC terdeteksi" or "Belum ada data - tekan SCAN NPC / HEWAN"
+			else
+				emptyLbl.Text = "Tidak ada hasil"
+			end
+		end
+		emptyLbl.Visible = shown == 0
+	end
+
+	local function npcScan()
+		if N.scanning or unloaded then return end
+		N.scanning = true
+		scanBtn.Text = "⏳ Memindai..."
+		npcRefreshList()
+
+		local ok, err = pcall(function()
+			for _, e in pairs(table.clone(N.byModel)) do
+				npcRemove(e)
+			end
+			npcStartLive() -- tangkap juga NPC yang muncul selama & sesudah scan
+			setLiveUI()
+			N.scanned = true
+
+			local desc = workspace:GetDescendants()
+			local t0 = os.clock()
+			for i = 1, #desc do
+				local inst = desc[i]
+				if NPC_CLASS[inst.ClassName] then
+					npcAdd(inst, 0)
+				end
+				if i % 400 == 0 and os.clock() - t0 > 0.004 then
+					RunService.Heartbeat:Wait()
+					if unloaded then return end
+					t0 = os.clock()
+				end
+			end
+		end)
+
+		N.scanning = false
+		if unloaded then return end
+		scanBtn.Text = "🔍 SCAN NPC / HEWAN"
+		npcRefreshList()
+
+		if not ok then
+			warn("[NpcScan] " .. tostring(err))
+			toast("Scan error - lihat Output (F9)")
+		else
+			local kinds = 0
+			for _ in pairs(N.groups) do kinds += 1 end
+			if kinds == 0 then
+				toast("Tidak ada NPC/hewan terdeteksi (Auto scan tetap memantau)")
+			else
+				toast(string.format("Scan selesai: %d jenis NPC/hewan", kinds))
+			end
+		end
+	end
+
+	scanBtn.MouseButton1Click:Connect(npcScan)
+	liveBtn.MouseButton1Click:Connect(function()
+		if N.live then
+			npcStopLive()
+			setLiveUI()
+			npcRefreshList()
+			toast("Auto scan NPC dimatikan")
+		else
+			setLiveUI() -- npcScan menyalakan Auto dan memindai semua NPC yang sudah ada
+			task.spawn(npcScan)
+			toast("Auto scan NPC dinyalakan")
+		end
+	end)
+	searchBox:GetPropertyChangedSignal("Text"):Connect(function()
+		npcRefreshList()
+	end)
+
+	selAllBtn.MouseButton1Click:Connect(function()
+		local q = string.lower(searchBox.Text)
+		local picked = 0
+		for _, name in ipairs(N.order) do
+			local g = N.groups[name]
+			if g and matches(g, q) then
+				picked += 1
+				N.sel[name] = true
+			end
+		end
+		npcRefreshList()
+	end)
+
+	clrBtn.MouseButton1Click:Connect(function()
+		table.clear(N.sel)
+		npcRefreshList()
+	end)
+
+	-- ---------- loop ----------
+	track(RunService.Heartbeat:Connect(function(dt: number)
+		if unloaded then return end
+
+		N.acc += dt
+		if N.acc >= N.interval then
+			N.acc = 0
+			if state.npcEsp then
+				local ok, err = pcall(npcUpdate)
+				if not ok and not N.warned then
+					N.warned = true
+					warn("[NpcEsp] " .. tostring(err))
+				end
+			end
+		end
+
+		N.acc2 += dt
+		if N.acc2 >= 1.0 then
+			N.acc2 = 0
+			if N.dirty then
+				N.dirty = false
+				npcRefreshList()
+			end
+		end
+	end))
+
+	npcRefreshList()
+end
+
+-- =====================================================
 -- GUI: HALAMAN TELEPORT & ITEM DETECTOR
 -- =====================================================
 sectionLabel(teleportPage, 0, "Teleport ke Pemain")
@@ -1893,12 +2945,12 @@ end
 -- =====================================================
 -- ITEM ESP SELEKTIF (scan ringan + daftar pilihan + detail hanya untuk yang dipilih)
 -- =====================================================
-sectionLabel(teleportPage, 1, "Loot & Item ESP")
+sectionLabel(teleportPage, 4, "Loot & Item ESP")
 
 do
 
 -- ---------- UI ----------
-local scannerCard = makeCard(teleportPage, 296, 2)
+local scannerCard = makeCard(teleportPage, 296, 5)
 
 local scanBtn = new("TextButton", {
 	Position = UDim2.fromOffset(14, 12),
@@ -3152,11 +4204,11 @@ runScanner()
 
 end -- tutup do (Item ESP v2)
 
-sectionLabel(teleportPage, 3, "Waypoint & Free Cam")
+sectionLabel(teleportPage, 6, "Waypoint & Free Cam")
 
 addSliderCard(teleportPage, 90, "Free Cam", "WASD + E/Q, Shift cepat, klik kanan = lihat", "freecam", 5, 600, 1000)
 
-local topCard = makeCard(teleportPage, 112, 4)
+local topCard = makeCard(teleportPage, 112, 7)
 text(topCard, {
 	Text = "Waypoint",
 	Font = Enum.Font.GothamBold,
@@ -3211,7 +4263,7 @@ rowButton(1, "+ Simpan Posisi", T.accent, saveWaypoint)
 rowButton(2, "Teleport", T.accent2, teleportSelected)
 
 local emptyLabel = text(teleportPage, {
-	LayoutOrder = 5,
+	LayoutOrder = 8,
 	Text = "Belum ada waypoint. Tekan \"Simpan Posisi\" untuk menyimpan posisimu sekarang.",
 	TextSize = 12,
 	TextColor3 = T.sub,
@@ -3544,7 +4596,7 @@ end
 local function snapshot(withWP: boolean): any
 	local d: any = {
 		v = 1,
-		values = { speed = values.speed, jump = values.jump, freecam = values.freecam },
+		values = table.clone(values),
 		state = {},
 		keys = {},
 		size = { panelW, panelH },
@@ -3825,10 +4877,118 @@ end)
 
 local function updateMode()
 	modeLabel.Text = remote and "Penyimpanan: permanen (DataStore)"
+		or (writefile and "Penyimpanan: file lokal (folder workspace executor)")
 		or "Penyimpanan: sesi ini saja (hilang saat keluar)"
 end
 
 rebuildSlots()
+
+-- =====================================================
+-- PENYIMPANAN FILE LOKAL (writefile/readfile)
+--  settings.json     : keybind, speed/jump/freecam, ukuran panel (global, semua game)
+--  wp_<GameId>.json  : waypoint (terpisah per game)
+--  slots.json        : daftar Config yang kamu simpan (global)
+-- Semua dibungkus pcall; kalau executor tidak mendukung, bagian ini dilewati.
+-- =====================================================
+task.spawn(function()
+	if not (writefile and readfile and isfile) then return end
+	local HttpService = game:GetService("HttpService")
+
+	local folder = tostring(settings.saveFolder or "R4MEN")
+	local useFolder = false
+	if makefolder and isfolder then
+		pcall(function()
+			if not isfolder(folder) then makefolder(folder) end
+			useFolder = isfolder(folder) == true
+		end)
+	end
+
+	local function path(name: string): string
+		if useFolder then return folder .. "/" .. name end
+		return folder .. "_" .. name
+	end
+
+	local function readJson(name: string): any
+		local ok, res = pcall(function()
+			local p = path(name)
+			if not isfile(p) then return nil end
+			return HttpService:JSONDecode(readfile(p))
+		end)
+		if ok and type(res) == "table" then return res end
+		return nil
+	end
+
+	local function encode(t: any): string?
+		local ok, res = pcall(function() return HttpService:JSONEncode(t) end)
+		if ok and type(res) == "string" then return res end
+		return nil
+	end
+
+	local wpFile = "wp_" .. tostring(game.GameId) .. ".json"
+
+	local function globalData(): any
+		local d = snapshot(false)
+		-- hanya Anti-AFK yang ikut tersimpan otomatis (fitur lain sengaja mati saat game dibuka)
+		d.state = { antiAfk = state.antiAfk == true }
+		d.wps = nil
+		return d
+	end
+
+	local function wpData(): any
+		return { wps = snapshot(true).wps }
+	end
+
+	-- ---------- muat ----------
+	local g = readJson("settings.json")
+	if g then pcall(applySnapshot, g) end
+
+	local w = readJson(wpFile)
+	if w and type(w.wps) == "table" then pcall(applySnapshot, { wps = w.wps }) end
+
+	if not remote then
+		local sl = readJson("slots.json")
+		if sl then
+			for _, sv in ipairs(sl) do
+				if #slots >= MAX_SLOTS then break end
+				if type(sv) == "table" and type(sv.name) == "string" and type(sv.data) == "table"
+					and type(sv.data.values) == "table" and type(sv.data.state) == "table" then
+					table.insert(slots, { name = sv.name, data = sv.data })
+				end
+			end
+			if not unloaded then rebuildSlots() end
+		end
+	end
+
+	-- ---------- simpan otomatis (hanya menulis kalau ada perubahan) ----------
+	local lastG = encode(globalData())
+	local lastW = encode(wpData())
+	local lastS = encode(slots)
+
+	while not unloaded do
+		task.wait(3)
+		if unloaded then break end
+
+		local eg = encode(globalData())
+		if eg and eg ~= lastG then
+			lastG = eg
+			pcall(writefile, path("settings.json"), eg)
+		end
+
+		local ew = encode(wpData())
+		if ew and ew ~= lastW then
+			lastW = ew
+			pcall(writefile, path(wpFile), ew)
+		end
+
+		if not remote then
+			local es = encode(slots)
+			if es and es ~= lastS then
+				lastS = es
+				pcall(writefile, path("slots.json"), es)
+			end
+		end
+	end
+end)
 
 task.spawn(function()
 	local r = ReplicatedStorage:WaitForChild("CP_ConfigRemote", 5)
@@ -3836,6 +4996,7 @@ task.spawn(function()
 		local ok, res = pcall(function() return r:InvokeServer("load") end)
 		if ok and type(res) == "table" then
 			remote = r
+			table.clear(slots)
 			for _, s in ipairs(res) do
 				if type(s) == "table" and type(s.name) == "string" and type(s.data) == "table"
 					and type(s.data.values) == "table" and type(s.data.state) == "table" then
