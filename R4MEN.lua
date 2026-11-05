@@ -1,3 +1,19 @@
+local SRC = [==[
+-- ===== AUTO-RERUN SAAT PINDAH SERVER =====
+do
+	local q = queue_on_teleport or queueonteleport
+		or (syn and syn.queue_on_teleport) or (fluxus and fluxus.queue_on_teleport)
+	if q and readfile and isfile and isfile("R4MEN_auto.lua") then
+		pcall(q, [[
+			if not game:IsLoaded() then game.Loaded:Wait() end
+			task.wait(2)
+			local ok, e = pcall(function() loadstring(readfile("R4MEN_auto.lua"))() end)
+			if not ok then warn("R4MEN auto-run gagal: " .. tostring(e)) end
+		]])
+	end
+end
+-- ==========================================
+
 -- LocalScript: taruh di StarterPlayer > StarterPlayerScripts
 -- Universal R4MEN v7.6 (Speed/Run Fix + Item Scanner v2: live tracking)
 
@@ -4043,3 +4059,12 @@ task.spawn(function()
 	setUIState("open")
 	TweenService:Create(menuScale, BACK_OUT, { Scale = 1 }):Play()
 end)
+]==]
+
+if writefile then pcall(writefile, "R4MEN_auto.lua", SRC) end
+local fn, err = loadstring(SRC)
+if fn then
+	fn()
+else
+	warn("R4MEN gagal dimuat: " .. tostring(err))
+end
