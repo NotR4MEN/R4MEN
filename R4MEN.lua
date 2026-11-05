@@ -1,18 +1,23 @@
 local SRC = [==[
--- ===== AUTO-RERUN SAAT PINDAH SERVER =====
+-- ===== AUTO-RERUN: HANYA DI GAME YANG SAMA =====
 do
 	local q = queue_on_teleport or queueonteleport
 		or (syn and syn.queue_on_teleport) or (fluxus and fluxus.queue_on_teleport)
 	if q and readfile and isfile and isfile("R4MEN_auto.lua") then
-		pcall(q, [[
+		local gid = tostring(game.GameId)
+		pcall(q, "local GID = " .. gid .. "\n" .. [[
 			if not game:IsLoaded() then game.Loaded:Wait() end
+			if game.GameId ~= GID then return end
 			task.wait(2)
+			local lp = game:GetService("Players").LocalPlayer
+			local pg = lp and lp:WaitForChild("PlayerGui", 10)
+			if pg and pg:FindFirstChild("UniversalUrbee") then return end
 			local ok, e = pcall(function() loadstring(readfile("R4MEN_auto.lua"))() end)
 			if not ok then warn("R4MEN auto-run gagal: " .. tostring(e)) end
 		]])
 	end
 end
--- ==========================================
+-- ================================================
 
 -- LocalScript: taruh di StarterPlayer > StarterPlayerScripts
 -- Universal R4MEN v7.6 (Speed/Run Fix + Item Scanner v2: live tracking)
