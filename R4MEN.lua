@@ -20,7 +20,7 @@ end
 -- ================================================
 
 -- LocalScript: taruh di StarterPlayer > StarterPlayerScripts
--- Universal R4MEN v7.7 (+ tab Visual: ESP NPC/Hewan, Fullbright, FOV, Anti-AFK)
+-- Universal R4MEN v1 (+ tab Visual: ESP NPC/Hewan, Fullbright, FOV, Anti-AFK aktif otomatis; daftar pemain klik-untuk-TP)
 
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
@@ -58,7 +58,7 @@ local state: { [string]: boolean } = {
 	walkFling = false,
 	esp = false,
 	freecam = false,
-	antiAfk = false,
+	antiAfk = true, -- aktif sejak awal; bisa dimatikan lewat tombol di tab Visual
 	fullbright = false,
 	noFog = false,
 	fov = false,
@@ -209,6 +209,7 @@ do
 			resetAssist()
 			return
 		end
+		if hrp:GetAttribute("R4Fling") then return end
 		if not ASSIST_STATES[hum:GetState()] then return end
 
 		local move = hum.MoveDirection
@@ -346,43 +347,91 @@ end))
 -- =====================================================
 -- NOCLIP & FLING
 -- =====================================================
-local function noclipStep()
-	local char = player.Character
-	if not char then return end
-	for _, part in ipairs(char:GetDescendants()) do
-		if part:IsA("BasePart") and part.CanCollide then
-			part.CanCollide = false
+-- Nilai CanCollide asli dicatat per part, lalu dikembalikan persis saat Noclip/WalkFling
+-- dimatikan (part yang dari awal non-collide, mis. aksesori, tidak ikut diubah).
+-- Dibungkus do...end supaya tidak menambah jumlah local di level atas.
+local noclipStep: () -> ()
+local restoreNoclip: () -> ()
+do
+	local origCollide: { [BasePart]: boolean } = {}
+
+	noclipStep = function()
+		local char = player.Character
+		if not char then return end
+		for _, part in ipairs(char:GetDescendants()) do
+			if part:IsA("BasePart") and part.CanCollide then
+				if origCollide[part] == nil then
+					origCollide[part] = true
+				end
+				part.CanCollide = false
+			end
 		end
 	end
-end
 
-local function restoreNoclip()
-	local char = player.Character
-	if not char then return end
-	for _, part in ipairs(char:GetDescendants()) do
-		if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
-			part.CanCollide = true
+	restoreNoclip = function()
+		for part, was in pairs(origCollide) do
+			if part.Parent then
+				part.CanCollide = was
+			end
 		end
+		table.clear(origCollide)
 	end
 end
 
 -- WalkFling: velocity besar hanya dipasang sesaat (untuk direplikasi ke pemain lain),
--- lalu langsung dikembalikan sebelum fisika lokal berjalan. Jadi karaktermu sendiri
--- tidak ikut terlempar dan kamera tidak rusak (layar hitam putih).
+-- lalu langsung dikembalikan sebelum fisika lokal berjalan.
+-- PERBAIKAN BUG (tidak bisa lompat & jalan pelan):
+--  1. Spike HANYA dikirim saat ada pemain lain dalam jarak FLING_RANGE. Sebelumnya spike
+--     ditulis di SETIAP frame, sehingga velocity karaktermu terus-menerus ditimpa dan
+--     Humanoid tidak pernah bisa menumpuk kecepatan/lompatan.
+--  2. Pengaman ">500" dulu membuat velocity jadi Vector3.zero (karakter "dikunci" diam).
+--     Sekarang memakai velocity aman terakhir (lastSafe) sehingga gerakan tidak terhenti.
+--  3. Speed-assist tidak lagi membaca/menulis velocity saat spike sedang aktif (atribut R4Fling).
 local flingRunning = false
+local startFling: () -> ()
 
-local function startFling()
-	if flingRunning then return end
-	flingRunning = true
-	task.spawn(function()
-		while state.walkFling and not unloaded do
-			RunService.Heartbeat:Wait()
-			local hrp = getRoot()
-			if hrp and hrp.Parent and not state.freecam then
+do
+	local FLING_RANGE = 12
+
+	local function playerNearby(hrp: BasePart): boolean
+		for _, p in ipairs(Players:GetPlayers()) do
+			if p ~= player then
+				local ch = p.Character
+				local r = ch and ch:FindFirstChild("HumanoidRootPart") :: BasePart?
+				if r and (r.Position - hrp.Position).Magnitude <= FLING_RANGE then
+					return true
+				end
+			end
+		end
+		return false
+	end
+
+	startFling = function()
+		if flingRunning then return end
+		flingRunning = true
+		task.spawn(function()
+			local lastSafe = Vector3.zero
+			local lastHrp: BasePart? = nil
+
+			-- Satu iterasi spike. Dipisah supaya bisa dibungkus pcall: kalau terjadi error,
+			-- flingRunning TIDAK macet di true dan velocity/atribut selalu dibersihkan.
+			local function step()
+				RunService.Heartbeat:Wait()
+				if not state.walkFling or unloaded then return end -- dimatikan saat menunggu
+				local hrp = getRoot()
+				local hum = getHum()
+				if not (hrp and hrp.Parent and hum and hum.Health > 0)
+					or state.freecam or not playerNearby(hrp) then
+					return
+				end
+				lastHrp = hrp
 				local vel = hrp.AssemblyLinearVelocity
 				if vel.Magnitude > 500 then
-					vel = Vector3.zero -- pengaman: jangan pernah mewarisi kecepatan ekstrem
+					vel = lastSafe
+				else
+					lastSafe = vel
 				end
+				hrp:SetAttribute("R4Fling", true)
 				hrp.AssemblyLinearVelocity = vel * 10000 + Vector3.new(0, 10000, 0)
 				RunService.RenderStepped:Wait()
 				if hrp.Parent then
@@ -390,12 +439,33 @@ local function startFling()
 				end
 				RunService.Stepped:Wait()
 				if hrp.Parent then
-					hrp.AssemblyLinearVelocity = vel + Vector3.new(0, 0.1, 0)
+					-- kalau dimatikan di tengah iterasi, jangan tambahkan dorongan lagi
+					hrp.AssemblyLinearVelocity = state.walkFling and (vel + Vector3.new(0, 0.1, 0)) or vel
 				end
 			end
-		end
-		flingRunning = false
-	end)
+
+			while state.walkFling and not unloaded do
+				local ok, err = pcall(step)
+				if not ok then
+					warn("WalkFling error: " .. tostring(err))
+					task.wait(0.1)
+				end
+			end
+
+			-- BERSIHKAN TOTAL saat dimatikan: atribut, velocity ekstrem, dan tabrakan karakter.
+			local hrp = getRoot() or lastHrp
+			if hrp and hrp.Parent then
+				hrp:SetAttribute("R4Fling", nil)
+				if hrp.AssemblyLinearVelocity.Magnitude > 500 then
+					hrp.AssemblyLinearVelocity = Vector3.zero
+				end
+			end
+			if not state.noclip then
+				restoreNoclip()
+			end
+			flingRunning = false
+		end)
+	end
 end
 
 track(RunService.Stepped:Connect(function(_, dt)
@@ -433,7 +503,11 @@ local effects: { [string]: (boolean) -> () } = {
 	end,
 	noclip = function(on) if not on then restoreNoclip() end end,
 	walkFling = function(on)
-		if on then startFling() else restoreNoclip() end
+		if on then
+			startFling()
+		elseif not state.noclip then
+			restoreNoclip()
+		end
 	end,
 	esp = function(on) setEsp(on) end,
 	freecam = function(on) setFreecam(on) end,
@@ -454,9 +528,13 @@ end
 
 local function disableAllFeatures()
 	for key in pairs(state) do
-		state[key] = false
-		if switches[key] then
-			switches[key].Set(false)
+		-- Anti-AFK sengaja dikecualikan: "Matikan Semua" tidak boleh membuatmu ter-kick karena idle
+		-- (saat Unload handler-nya ikut diputus). Matikan manual lewat tombolnya.
+		if key ~= "antiAfk" then
+			state[key] = false
+			if switches[key] then
+				switches[key].Set(false)
+			end
 		end
 	end
 	restoreSpeed()
@@ -502,17 +580,20 @@ local function teleportTo(i: number)
 	toast("Teleport ke " .. wp.name)
 end
 
-local function teleportToUsername(name: string)
-	local targetPlayer = nil
+-- exactPlayer (opsional): pemain pasti dari daftar klik; kalau kosong, cari lewat potongan nama.
+local function teleportToUsername(name: string, exactPlayer: Player?)
+	local targetPlayer = exactPlayer
 	local lowerName = string.lower(name)
-	
-	for _, p in ipairs(Players:GetPlayers()) do
-		if p ~= player then
-			local pName = string.lower(p.Name)
-			local dName = string.lower(p.DisplayName)
-			if string.find(pName, lowerName, 1, true) or string.find(dName, lowerName, 1, true) then
-				targetPlayer = p
-				break
+
+	if not targetPlayer then
+		for _, p in ipairs(Players:GetPlayers()) do
+			if p ~= player then
+				local pName = string.lower(p.Name)
+				local dName = string.lower(p.DisplayName)
+				if string.find(pName, lowerName, 1, true) or string.find(dName, lowerName, 1, true) then
+					targetPlayer = p
+					break
+				end
 			end
 		end
 	end
@@ -1107,6 +1188,35 @@ local title = text(header, {
 })
 grad(title, WHITE, Color3.fromRGB(196, 176, 255), 0)
 
+-- Lencana versi di samping judul
+-- Naikkan VERSION HANYA untuk update besar; update kecil tidak mengubah versi.
+do
+	local VERSION = "v1"
+	local verBadge = new("Frame", {
+		Position = UDim2.fromOffset(54 + 124, 11),
+		Size = UDim2.fromOffset(34, 16),
+		BackgroundColor3 = T.card,
+		BorderSizePixel = 0,
+	}, header)
+	round(verBadge, 8)
+	local verStroke = stroke(verBadge, WHITE, 1, 0.3)
+	grad(verStroke, T.accent, T.accent2, 45)
+	text(verBadge, {
+		Text = VERSION,
+		Font = Enum.Font.GothamBold,
+		TextSize = 10,
+		TextColor3 = T.text,
+		TextXAlignment = Enum.TextXAlignment.Center,
+		Size = UDim2.fromScale(1, 1),
+	})
+	-- ikuti lebar judul sebenarnya supaya lencana selalu menempel di ujung teks
+	local function place()
+		verBadge.Position = UDim2.fromOffset(54 + title.TextBounds.X + 8, 11)
+	end
+	place()
+	title:GetPropertyChangedSignal("TextBounds"):Connect(place)
+end
+
 local subtitle = text(header, {
 	TextSize = 11,
 	TextColor3 = T.sub,
@@ -1335,8 +1445,8 @@ end)
 -- =====================================================
 refreshActive = function()
 	local n = 0
-	for _, v in pairs(state) do
-		if v then n += 1 end
+	for k, v in pairs(state) do
+		if v and k ~= "antiAfk" then n += 1 end -- Anti-AFK tidak dihitung (aktif sejak awal)
 	end
 	pillText.Text = tostring(n) .. " aktif"
 	pillDot.BackgroundColor3 = n > 0 and T.good or T.off
@@ -1884,7 +1994,8 @@ do
 	-- ESP NPC / Hewan ada di tab Teleport (satu tempat dengan scan barang) -- lihat blok 2
 
 	sectionLabel(visualPage, 10, "Utilitas")
-	addToggleCard(visualPage, 11, "Anti-AFK", "Mencegah kick karena diam 20 menit.", "antiAfk")
+	addToggleCard(visualPage, 11, "Anti-AFK", "Mencegah kick karena diam 20 menit. Aktif sejak awal.", "antiAfk")
+	switches.antiAfk.Set(true)
 
 	-- ---------- Fullbright / kabut / FOV ----------
 	local Lighting = game:GetService("Lighting")
@@ -3058,6 +3169,141 @@ tpTargetInput.FocusLost:Connect(function(enterPressed)
 		end
 	end
 end)
+
+-- ---------- Daftar pemain: klik baris / tombol TP untuk teleport ----------
+-- Dibungkus fungsi anonim langsung-jalan supaya local-nya punya jatah sendiri
+-- (tidak menambah hitungan 200 local di chunk utama).
+tpTargetCard.Size = UDim2.new(1, 0, 0, 232)
+;(function()
+	local plrCount = text(tpTargetCard, {
+		Text = "Pemain online: 0",
+		Font = Enum.Font.GothamMedium,
+		TextSize = 11,
+		TextColor3 = T.sub,
+		Position = UDim2.fromOffset(14, 70),
+		Size = UDim2.new(1, -28, 0, 14),
+	})
+
+	local plrScroll = new("ScrollingFrame", {
+		Position = UDim2.fromOffset(14, 88),
+		Size = UDim2.new(1, -28, 0, 134),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		CanvasSize = UDim2.new(),
+		AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		ScrollBarThickness = 3,
+		ScrollBarImageColor3 = T.stroke,
+	}, tpTargetCard)
+	new("UIListLayout", {
+		Padding = UDim.new(0, 4),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	}, plrScroll)
+
+	local plrEmpty = text(tpTargetCard, {
+		Text = "Tidak ada pemain lain di server",
+		TextSize = 11,
+		TextColor3 = T.sub,
+		TextXAlignment = Enum.TextXAlignment.Center,
+		Position = UDim2.fromOffset(14, 88),
+		Size = UDim2.new(1, -28, 0, 134),
+	})
+
+	local plrRows: { [Player]: any } = {}
+
+	local function buildPlayerRow(p: Player): any
+		local btn = new("TextButton", {
+			Name = string.sub(p.Name, 1, 40),
+			Size = UDim2.new(1, -6, 0, 28),
+			BackgroundColor3 = T.bg,
+			Text = "",
+			AutoButtonColor = false,
+			BorderSizePixel = 0,
+		}, plrScroll)
+		round(btn, 6)
+		hover(btn, T.bg)
+
+		local label = p.Name
+		if p.DisplayName ~= "" and p.DisplayName ~= p.Name then
+			label = p.DisplayName .. "  (@" .. p.Name .. ")"
+		end
+		text(btn, {
+			Text = label,
+			Font = Enum.Font.GothamMedium,
+			TextSize = 11,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			Position = UDim2.fromOffset(10, 0),
+			Size = UDim2.new(1, -58, 1, 0),
+		})
+
+		local tp = new("TextButton", {
+			AnchorPoint = Vector2.new(1, 0.5),
+			Position = UDim2.new(1, -5, 0.5, 0),
+			Size = UDim2.fromOffset(36, 20),
+			BackgroundColor3 = T.accent2,
+			Text = "TP",
+			TextColor3 = WHITE,
+			Font = Enum.Font.GothamBold,
+			TextSize = 10,
+			AutoButtonColor = false,
+			BorderSizePixel = 0,
+		}, btn)
+		round(tp, 5)
+		hover(tp, T.accent2)
+
+		local function go()
+			if p.Parent then
+				teleportToUsername(p.Name, p)
+			else
+				toast("Pemain sudah keluar")
+			end
+		end
+		btn.MouseButton1Click:Connect(go)
+		tp.MouseButton1Click:Connect(go)
+		return btn
+	end
+
+	local function refreshPlayerList()
+		if unloaded then return end
+		local others: { Player } = {}
+		for _, p in ipairs(Players:GetPlayers()) do
+			if p ~= player then
+				others[#others + 1] = p
+			end
+		end
+		table.sort(others, function(a, b)
+			local la, lb = string.lower(a.DisplayName), string.lower(b.DisplayName)
+			if la ~= lb then return la < lb end
+			return a.UserId < b.UserId
+		end)
+
+		local present: { [Player]: boolean } = {}
+		for i, p in ipairs(others) do
+			present[p] = true
+			local row = plrRows[p]
+			if not row then
+				row = buildPlayerRow(p)
+				plrRows[p] = row
+			end
+			row.LayoutOrder = i
+		end
+		for p, row in pairs(plrRows) do
+			if not present[p] then
+				row:Destroy()
+				plrRows[p] = nil
+			end
+		end
+
+		plrCount.Text = "Pemain online: " .. tostring(#others)
+		plrEmpty.Visible = #others == 0
+	end
+
+	track(Players.PlayerAdded:Connect(refreshPlayerList))
+	track(Players.PlayerRemoving:Connect(function()
+		-- PlayerRemoving terpanggil sebelum pemain benar-benar hilang dari GetPlayers
+		task.defer(refreshPlayerList)
+	end))
+	refreshPlayerList()
+end)()
 
 end
 
@@ -4778,7 +5024,10 @@ local function applySnapshot(d: any)
 
 	if type(d.state) == "table" then
 		for key in pairs(state) do
-			setFeature(key, d.state[key] == true)
+			-- data lama tidak punya antiAfk: biarkan nilainya, jangan dimatikan diam-diam
+			if key ~= "antiAfk" or d.state[key] ~= nil then
+				setFeature(key, d.state[key] == true)
+			end
 		end
 	end
 end
@@ -5059,7 +5308,12 @@ task.spawn(function()
 
 	-- ---------- muat ----------
 	local g = readJson("settings.json")
-	if g then pcall(applySnapshot, g) end
+	if g then
+		-- Anti-AFK selalu mulai AKTIF tiap kali skrip dijalankan; nilai lama di file tidak dipakai
+		-- (file lama menyimpan antiAfk = false dari versi sebelumnya).
+		g.state = nil
+		pcall(applySnapshot, g)
+	end
 
 	local w = readJson(wpFile)
 	if w and type(w.wps) == "table" then pcall(applySnapshot, { wps = w.wps }) end
