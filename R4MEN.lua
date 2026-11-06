@@ -20,7 +20,7 @@ end
 -- ================================================
 
 -- LocalScript: taruh di StarterPlayer > StarterPlayerScripts
--- Universal R4MEN v1 (+ tab Visual: ESP NPC/Hewan, Fullbright, FOV, Anti-AFK aktif otomatis; daftar pemain klik-untuk-TP)
+-- Universal R4MEN v1.1 (+ tab Visual: ESP NPC/Hewan, Fullbright, FOV, Anti-AFK aktif otomatis; daftar pemain klik-untuk-TP)
 
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
@@ -1224,7 +1224,7 @@ grad(title, WHITE, Color3.fromRGB(196, 176, 255), 0)
 -- Lencana versi di samping judul
 -- Naikkan VERSION HANYA untuk update besar; update kecil tidak mengubah versi.
 do
-	local VERSION = "v1"
+	local VERSION = "v1.1"
 	local verBadge = new("Frame", {
 		Position = UDim2.fromOffset(54 + 124, 11),
 		Size = UDim2.fromOffset(34, 16),
