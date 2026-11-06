@@ -20,7 +20,7 @@ end
 -- ================================================
 
 -- LocalScript: taruh di StarterPlayer > StarterPlayerScripts
--- Universal R4MEN v1.1 (+ tab Visual: ESP NPC/Hewan, Fullbright, FOV, Anti-AFK aktif otomatis; daftar pemain klik-untuk-TP)
+-- Universal R4MEN v1 (+ tab Visual: ESP NPC/Hewan, Fullbright, FOV, Anti-AFK aktif otomatis; daftar pemain klik-untuk-TP)
 
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
@@ -31,7 +31,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-for _, n in ipairs({ "UniversalUrbee", "ControlPanel" }) do
+for _, n in ipairs({ "UniversalUrbee", "ControlPanel", "UU_ITEMS", "UU_NPC" }) do
 	local old = playerGui:FindFirstChild(n)
 	if old then old:Destroy() end
 end
@@ -41,6 +41,8 @@ end
 -- =====================================================
 local settings: { [string]: any } = {
 	saveFolder = "R4MEN", -- nama folder penyimpanan di dalam folder workspace executor (boleh diganti)
+	clickTp = true, -- klik/tap label ESP (item & NPC) = teleport ke sana. Ubah ke false untuk mematikan
+	clickNeedsShift = false, -- true = harus menahan Shift kiri saat klik label (menghindari klik tembus ke game)
 	toggleKey = Enum.KeyCode.K,
 	saveKey = Enum.KeyCode.LeftBracket,
 	tpKey = Enum.KeyCode.RightBracket,
@@ -368,6 +370,11 @@ do
 		end
 	end
 
+	-- Bagian inti karakter yang selalu harus kembali bisa-tabrak setelah Noclip/WalkFling dimatikan
+	local CORE_PARTS: { [string]: boolean } = {
+		HumanoidRootPart = true, Head = true, Torso = true, UpperTorso = true, LowerTorso = true,
+	}
+
 	restoreNoclip = function()
 		for part, was in pairs(origCollide) do
 			if part.Parent then
@@ -375,6 +382,16 @@ do
 			end
 		end
 		table.clear(origCollide)
+		-- Pengaman: setelah mati/respawn, catatan lama bisa tidak mencakup bagian karakter yang baru,
+		-- sehingga tembok masih tembus walau toggle sudah OFF. Bagian inti dikembalikan langsung.
+		local char = player.Character
+		if char then
+			for _, part in ipairs(char:GetChildren()) do
+				if part:IsA("BasePart") and CORE_PARTS[part.Name] then
+					part.CanCollide = true
+				end
+			end
+		end
 	end
 end
 
@@ -439,8 +456,10 @@ do
 				end
 				RunService.Stepped:Wait()
 				if hrp.Parent then
-					-- kalau dimatikan di tengah iterasi, jangan tambahkan dorongan lagi
-					hrp.AssemblyLinearVelocity = state.walkFling and (vel + Vector3.new(0, 0.1, 0)) or vel
+					-- kalau dimatikan / karakter mati di tengah iterasi, jangan tambahkan dorongan lagi
+					local stillOn = state.walkFling and not unloaded and hum.Health > 0
+					hrp.AssemblyLinearVelocity = stillOn and (vel + Vector3.new(0, 0.1, 0)) or vel
+					if not stillOn then hrp:SetAttribute("R4Fling", nil) end
 				end
 			end
 
@@ -475,6 +494,34 @@ track(RunService.Stepped:Connect(function(_, dt)
 	if state.noclip or state.walkFling then
 		noclipStep()
 	end
+	-- Watchdog: saat WalkFling OFF, velocity ekstrem sisa spike (mis. karena mati/reset di tengah
+	-- iterasi) langsung dinolkan supaya tidak terus melempar pemain lain.
+	if not state.walkFling then
+		local hrp = getRoot()
+		if hrp then
+			if hrp:GetAttribute("R4Fling") then hrp:SetAttribute("R4Fling", nil) end
+			if hrp.AssemblyLinearVelocity.Magnitude > 500 then
+				hrp.AssemblyLinearVelocity = Vector3.zero
+				hrp.AssemblyAngularVelocity = Vector3.zero
+			end
+		end
+	end
+end))
+
+-- Karakter baru (mati / reset): kalau WalkFling OFF, pastikan bersih dari sisa efek karakter lama.
+track(player.CharacterAdded:Connect(function()
+	if state.walkFling then return end
+	if not state.noclip then
+		restoreNoclip()
+	end
+	task.defer(function()
+		local hrp = getRoot()
+		if hrp and not state.walkFling then
+			hrp:SetAttribute("R4Fling", nil)
+			hrp.AssemblyLinearVelocity = Vector3.zero
+			hrp.AssemblyAngularVelocity = Vector3.zero
+		end
+	end)
 end))
 
 -- =====================================================
@@ -904,16 +951,10 @@ local function updateEsp(dt: number)
 	local hasTeams = #teamsObj:GetChildren() > 0
 	local myRoot = getRoot()
 
-	local missing = 0
 	for _, p in ipairs(Players:GetPlayers()) do
 		if p ~= player then
 			local char = p.Character
 			local o = espObjs[p]
-
-			if workspace.StreamingEnabled
-				and not (char and char:FindFirstChild("HumanoidRootPart")) then
-				missing += 1
-			end
 
 			if o and (o.char ~= char or not o.char.Parent) then
 				removeEsp(p)
@@ -925,16 +966,6 @@ local function updateEsp(dt: number)
 			end
 
 			if o and char then
-				-- StreamingEnabled: saat pemain keluar-masuk jangkauan, Head/HRP dibuat ulang oleh
-				-- Roblox sehingga Adornee lama jadi nil. Pasang ulang setiap update.
-				local headNow = char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
-				if headNow and o.bb.Adornee ~= headNow then
-					o.bb.Adornee = headNow
-				end
-				if o.hl.Adornee ~= char then
-					o.hl.Adornee = char
-				end
-
 				local col = ESP_SOFT_WHITE
 				if hasTeams and p.Team then
 					col = p.TeamColor.Color
@@ -962,23 +993,6 @@ local function updateEsp(dt: number)
 				end
 
 				o.info.Text = string.format('<font color="#%s">%s HP</font>  %sst', hpHex, hpStr, distStr)
-			end
-		end
-	end
-
-	-- Beri tahu (maks. tiap 6 detik, hanya bila jumlahnya berubah) ada pemain yang tidak
-	-- bisa digambar karena di luar jangkauan streaming server (batas dari Roblox, bukan script).
-	if missing > 0 and not (espFolder and espFolder.Parent) then
-		espFolder = new("Folder", { Name = "UU_ESP" }, workspace.CurrentCamera or workspace)
-	end
-	if espFolder then
-		local prev = espFolder:GetAttribute("missing") or 0
-		local lastT = espFolder:GetAttribute("missingT") or 0
-		if missing ~= prev and os.clock() - lastT > 6 then
-			espFolder:SetAttribute("missing", missing)
-			espFolder:SetAttribute("missingT", os.clock())
-			if missing > 0 then
-				toast(missing .. " pemain di luar jangkauan streaming (tidak bisa dideteksi)")
 			end
 		end
 	end
@@ -1224,7 +1238,7 @@ grad(title, WHITE, Color3.fromRGB(196, 176, 255), 0)
 -- Lencana versi di samping judul
 -- Naikkan VERSION HANYA untuk update besar; update kecil tidak mengubah versi.
 do
-	local VERSION = "v1.1"
+	local VERSION = "v1"
 	local verBadge = new("Frame", {
 		Position = UDim2.fromOffset(54 + 124, 11),
 		Size = UDim2.fromOffset(34, 16),
@@ -1462,15 +1476,33 @@ minBtn.MouseButton1Click:Connect(function()
 	setUIState("mini") 
 end)
 
+-- Tombol X harus DOUBLE TAP (dua klik dalam 0.8 detik) supaya tidak tertutup karena salah pencet.
+-- Klik pertama hanya "mengaktifkan" (tombol memerah + info); klik kedua baru menutup.
+local CLOSE_DOUBLE_TAP = 0.8
+local closeArmedAt = 0
+local closeOrigBg = hideBtn.BackgroundColor3
 hideBtn.MouseButton1Click:Connect(function()
-	-- Tombol X = tutup sepenuhnya (unload). Untuk sekadar menyembunyikan UI pakai keybind K
-	-- atau tombol "-" (minimize).
-	if unloadFn then
-		unloadFn()
-	else
-		disableAllFeatures()
-		setUIState("hidden")
+	local now = os.clock()
+	if closeArmedAt > 0 and now - closeArmedAt <= CLOSE_DOUBLE_TAP then
+		closeArmedAt = 0
+		hideBtn.BackgroundColor3 = closeOrigBg
+		-- Tombol X = tutup sepenuhnya (unload). Untuk sekadar menyembunyikan UI pakai keybind K
+		-- atau tombol "-" (minimize).
+		if unloadFn then
+			unloadFn()
+		else
+			disableAllFeatures()
+			setUIState("hidden")
+		end
+		return
 	end
+	closeArmedAt = now
+	hideBtn.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	tween(hideBtn, { BackgroundColor3 = closeOrigBg }, CLOSE_DOUBLE_TAP)
+	toast("Tap X sekali lagi (double tap) untuk menutup script")
+	task.delay(CLOSE_DOUBLE_TAP, function()
+		if closeArmedAt == now then closeArmedAt = 0 end
+	end)
 end)
 
 -- =====================================================
@@ -2168,14 +2200,56 @@ do
 		setStatus = function() end, -- diisi di bagian UI
 	}
 
-	-- ---------- NAMA CUSTOM NPC ----------
-	-- settings.npcAlias[namaAsliModel] = "label buatanmu" (mis. Jono -> "Jono (jual)").
-	-- Tersimpan otomatis per game (file wp_<GameId>.json), jadi tetap ada saat rejoin.
-	settings.npcAlias = settings.npcAlias or {}
-	local function npcDisplay(name: string): string
-		local a = settings.npcAlias[name]
-		if type(a) == "string" and a ~= "" then return a end
-		return name
+	-- ---------- NAMA KUSTOM NPC (alias, disimpan per game) ----------
+	-- Contoh: "John" -> "1 John (jual)". Hanya tampilan: pilihan/centang tetap memakai nama asli.
+	N.alias = {}
+	do
+		local HttpSvc = game:GetService("HttpService")
+		local aliasPath = tostring(settings.saveFolder) .. "/npc_alias_" .. tostring(game.GameId) .. ".json"
+		if readfile and isfile and isfile(aliasPath) then
+			local okA, d = pcall(function() return HttpSvc:JSONDecode(readfile(aliasPath)) end)
+			if okA and type(d) == "table" then
+				for k, v in pairs(d) do
+					if type(k) == "string" and type(v) == "string" and v ~= "" then N.alias[k] = v end
+				end
+			end
+		end
+		N.saveAlias = function()
+			if not writefile then return end
+			if makefolder and isfolder and not isfolder(settings.saveFolder) then
+				pcall(makefolder, settings.saveFolder)
+			end
+			pcall(function() writefile(aliasPath, HttpSvc:JSONEncode(N.alias)) end)
+		end
+
+		-- Centang NPC (per game): dimuat lagi saat script jalan; ESP NPC langsung menandai yang sudah dicentang.
+		local selPath = tostring(settings.saveFolder) .. "/npc_sel_" .. tostring(game.GameId) .. ".json"
+		if readfile and isfile and isfile(selPath) then
+			local okS, d = pcall(function() return HttpSvc:JSONDecode(readfile(selPath)) end)
+			if okS and type(d) == "table" and type(d.sel) == "table" then
+				for _, nm in ipairs(d.sel) do
+					if type(nm) == "string" and nm ~= "" then N.sel[nm] = true end
+				end
+			end
+		end
+		N.saveSel = function()
+			if not writefile then return end
+			local names = {}
+			for nm, v in pairs(N.sel) do
+				if v then names[#names + 1] = nm end
+			end
+			if makefolder and isfolder and not isfolder(settings.saveFolder) then
+				pcall(makefolder, settings.saveFolder)
+			end
+			pcall(function() writefile(selPath, HttpSvc:JSONEncode({ sel = names })) end)
+		end
+	end
+	N.display = function(name: string): string
+		return N.alias[name] or name
+	end
+	-- Urut alami: "2 Albert" sebelum "10 Budi" (angka dipadatkan supaya urutannya numerik)
+	N.sortKey = function(s: string): string
+		return (string.lower(s):gsub("%d+", function(d) return string.rep("0", math.max(0, 9 - #d)) .. d end))
 	end
 
 	local function npcRootOf(m: Model): BasePart?
@@ -2372,19 +2446,20 @@ do
 
 	local function npcBuildVis(e: any): any
 		if not (N.folder and N.folder.Parent) then
-			N.folder = new("Folder", { Name = "UU_NPC" }, workspace.CurrentCamera or workspace)
+			N.folder = new("Folder", { Name = "UU_NPC" }, playerGui)
 		end
 		local head = e.model:FindFirstChild("Head")
 		local adornee = (head and head:IsA("BasePart")) and head or e.root
 		local bb = new("BillboardGui", {
 			Adornee = adornee,
 			AlwaysOnTop = true,
-			Size = UDim2.fromOffset(220, 30),
+			Active = true,
+			Size = UDim2.fromOffset(160, 30),
 			StudsOffsetWorldSpace = Vector3.new(0, 2.4, 0),
 			MaxDistance = math.huge,
 		}, N.folder)
 		local nameL = text(bb, {
-			Text = npcDisplay(e.name),
+			Text = N.display(e.name),
 			Size = UDim2.new(1, 0, 0.5, 0),
 			Font = Enum.Font.GothamBold,
 			TextSize = 12,
@@ -2405,6 +2480,29 @@ do
 			TextStrokeTransparency = 0.25,
 			RichText = true,
 		})
+		-- KLIK LABEL = TELEPORT ke NPC/hewan ini (tombol transparan di atas label)
+		local hit = new("TextButton", {
+			Size = UDim2.fromScale(1, 1),
+			BackgroundTransparency = 1,
+			Text = "",
+			AutoButtonColor = false,
+			ZIndex = 5,
+		}, bb)
+		hit.MouseButton1Click:Connect(function()
+			if unloaded or not settings.clickTp then return end
+			if settings.clickNeedsShift and not UIS:IsKeyDown(Enum.KeyCode.LeftShift) then return end
+			local root = e.root
+			local char, hrp = player.Character, getRoot()
+			if not (root and root.Parent and char and hrp) then
+				toast("NPC sudah tidak ada")
+				return
+			end
+			char:PivotTo(root.CFrame + Vector3.new(0, 4, 0))
+			hrp.AssemblyLinearVelocity = Vector3.zero
+			hrp.AssemblyAngularVelocity = Vector3.zero
+			floatY = nil
+			toast("Teleport ke " .. N.display(e.name))
+		end)
 		local v: any = { bb = bb, name = nameL, info = infoL }
 		N.vis[e] = v
 		return v
@@ -2413,7 +2511,7 @@ do
 	-- Gambar/perbarui satu NPC. Dipanggil lewat pcall: satu NPC bermasalah tidak mematikan yang lain.
 	local function npcShow(e: any, d: number, i: number)
 		local v = N.vis[e]
-		if v and not v.bb:IsDescendantOf(workspace) then
+		if v and not v.bb:IsDescendantOf(playerGui) then
 			npcDropVis(e) -- folder hilang (mis. kamera diganti game) -> bangun ulang
 			v = nil
 		end
@@ -2446,8 +2544,6 @@ do
 				hpTxt = '<font color="#' .. hex .. '">' .. tostring(math.max(0, math.floor(h + 0.5))) .. " HP</font>  "
 			end
 		end
-		local dn = npcDisplay(e.name)
-		if v.name.Text ~= dn then v.name.Text = dn end
 		v.info.Text = hpTxt .. tostring(math.floor(d + 0.5)) .. "st"
 	end
 
@@ -2810,32 +2906,106 @@ do
 		Size = UDim2.new(1, -28, 0, 130),
 	})
 
-	local function parseTerms(text: string): { string }
-		-- Pencarian fleksibel: beberapa kata dipisah spasi ATAU koma/titik-koma -> cocok bila SALAH SATU
-		-- kata ada di nama (potongan huruf cukup). Ada koma/titik-koma -> pemisahnya hanya itu,
-		-- jadi frasa berspasi tetap utuh ("giant pale, fox").
-		local out: { string } = {}
-		local low = string.lower(text)
-		local pat = (string.find(low, "[,;]") ~= nil) and "[^,;]+" or "%S+"
-		for w in string.gmatch(low, pat) do
-			local x = string.gsub(w, "^%s+", "")
-			x = string.gsub(x, "%s+$", "")
-			if x ~= "" then out[#out + 1] = x end
+	-- Editor ganti nama: muncul di atas baris tombol "Pilih hasil" saat "Ubah" ditekan
+	do
+		local ov = new("Frame", {
+			Position = UDim2.fromOffset(14, 190),
+			Size = UDim2.new(1, -28, 0, 62),
+			BackgroundColor3 = T.bg,
+			BorderSizePixel = 0,
+			Visible = false,
+			ZIndex = 20,
+		}, card)
+		round(ov, 8)
+		stroke(ov, T.accent, 1, 0.2)
+		local title = text(ov, {
+			Text = "",
+			TextSize = 10,
+			TextColor3 = T.sub,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			Position = UDim2.fromOffset(8, 4),
+			Size = UDim2.new(1, -16, 0, 14),
+		})
+		local box = new("TextBox", {
+			Position = UDim2.fromOffset(8, 24),
+			Size = UDim2.new(1, -16 - 112, 0, 30),
+			BackgroundColor3 = T.off,
+			PlaceholderText = "contoh: 1 John (jual)",
+			PlaceholderColor3 = T.sub,
+			Text = "",
+			TextColor3 = T.text,
+			Font = Enum.Font.GothamMedium,
+			TextSize = 12,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			ClearTextOnFocus = false,
+			BorderSizePixel = 0,
+		}, ov)
+		round(box, 6)
+		new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }, box)
+
+		local function ovBtn(txt: string, x: number, col: Color3): any
+			local b = new("TextButton", {
+				AnchorPoint = Vector2.new(1, 0),
+				Position = UDim2.new(1, x, 0, 24),
+				Size = UDim2.fromOffset(52, 30),
+				BackgroundColor3 = col,
+				Text = txt,
+				TextColor3 = WHITE,
+				Font = Enum.Font.GothamBold,
+				TextSize = 11,
+				AutoButtonColor = false,
+				BorderSizePixel = 0,
+			}, ov)
+			round(b, 6)
+			hover(b, col)
+			return b
 		end
-		return out
+		local saveB = ovBtn("Simpan", -64, T.accent)
+		local cancelB = ovBtn("Batal", -8, T.off)
+
+		local target: string? = nil
+		local function close()
+			ov.Visible = false
+			target = nil
+		end
+		local function commit()
+			local nm = target
+			if not nm then return end
+			local v = (box.Text:gsub("^%s+", "")):gsub("%s+$", "")
+			if v == "" or v == nm then
+				N.alias[nm] = nil
+			else
+				N.alias[nm] = string.sub(v, 1, 40)
+			end
+			N.saveAlias()
+			N.orderDirty = true
+			for e, vis in pairs(N.vis) do -- label ESP yang sudah tergambar ikut berganti
+				if e.name == nm and vis.name then vis.name.Text = N.display(nm) end
+			end
+			close()
+			npcRefreshList()
+			toast("Nama NPC: " .. N.display(nm))
+		end
+		N.openRename = function(name: string)
+			target = name
+			title.Text = "Nama asli: " .. name .. "  (kosongkan = kembali ke nama asli)"
+			box.Text = N.alias[name] or name
+			ov.Visible = true
+			box:CaptureFocus()
+		end
+		saveB.MouseButton1Click:Connect(commit)
+		cancelB.MouseButton1Click:Connect(close)
+		box.FocusLost:Connect(function(enter: boolean)
+			if enter then commit() end
+		end)
 	end
 
-	local function matches(g: any, q: { string }): boolean
+	local function matches(g: any, q: string): boolean
 		if N.cat ~= "Semua" and g.cat ~= N.cat then return false end
-		local nq = #q
-		if nq == 0 then return true end
-		local a = settings.npcAlias[g.name]
-		local al = type(a) == "string" and string.lower(a) or nil
-		for i = 1, nq do
-			if string.find(g.lower, q[i], 1, true) then return true end
-			if al and string.find(al, q[i], 1, true) then return true end
-		end
-		return false
+		if q == "" then return true end
+		if string.find(g.lower, q, 1, true) then return true end
+		local al = N.alias[g.name]
+		return al ~= nil and string.find(string.lower(al), q, 1, true) ~= nil
 	end
 
 	local function npcTeleport(g: any)
@@ -2862,7 +3032,7 @@ do
 		hrp.AssemblyLinearVelocity = Vector3.zero
 		hrp.AssemblyAngularVelocity = Vector3.zero
 		floatY = nil
-		toast("Teleport ke " .. g.name)
+		toast("Teleport ke " .. N.display(g.name))
 	end
 
 	local function npcBuildRow(g: any)
@@ -2896,48 +3066,13 @@ do
 		})
 
 		local nameLbl = text(btn, {
-			Text = npcDisplay(name),
+			Text = N.display(name),
 			Font = Enum.Font.GothamMedium,
 			TextSize = 11,
 			TextTruncate = Enum.TextTruncate.AtEnd,
 			Position = UDim2.fromOffset(30, 0),
-			Size = UDim2.new(1, -30 - 120, 1, 0),
+			Size = UDim2.new(1, -30 - 122, 1, 0),
 		})
-
-		-- Tombol "Ubah": beri nama/label custom (mis. "Jono (jual)", "Albert (beli)", "Sari (masak)")
-		local editBtn = new("TextButton", {
-			AnchorPoint = Vector2.new(1, 0.5),
-			Position = UDim2.new(1, -78, 0.5, 0),
-			Size = UDim2.fromOffset(36, 20),
-			BackgroundColor3 = T.off,
-			Text = "Ubah",
-			TextColor3 = WHITE,
-			Font = Enum.Font.GothamBold,
-			TextSize = 9,
-			AutoButtonColor = false,
-			BorderSizePixel = 0,
-		}, btn)
-		round(editBtn, 5)
-		hover(editBtn, T.off)
-
-		local editBox = new("TextBox", {
-			Position = UDim2.fromOffset(28, 3),
-			Size = UDim2.new(1, -28 - 80, 1, -6),
-			BackgroundColor3 = T.bg,
-			TextColor3 = WHITE,
-			PlaceholderText = "Nama custom, mis. Jono (jual)",
-			PlaceholderColor3 = T.sub,
-			Text = "",
-			ClearTextOnFocus = false,
-			Font = Enum.Font.GothamMedium,
-			TextSize = 11,
-			TextXAlignment = Enum.TextXAlignment.Left,
-			Visible = false,
-			ZIndex = 5,
-			BorderSizePixel = 0,
-		}, btn)
-		round(editBox, 5)
-		stroke(editBox, T.accent, 1, 0.2)
 		local cnt = text(btn, {
 			Text = "×" .. #g.list,
 			TextSize = 10,
@@ -2947,6 +3082,24 @@ do
 			Position = UDim2.new(1, -40, 0.5, 0),
 			Size = UDim2.fromOffset(34, 14),
 		})
+
+		local edit = new("TextButton", {
+			AnchorPoint = Vector2.new(1, 0.5),
+			Position = UDim2.new(1, -76, 0.5, 0),
+			Size = UDim2.fromOffset(38, 20),
+			BackgroundColor3 = T.off,
+			Text = "Ubah",
+			TextColor3 = WHITE,
+			Font = Enum.Font.GothamBold,
+			TextSize = 10,
+			AutoButtonColor = false,
+			BorderSizePixel = 0,
+		}, btn)
+		round(edit, 5)
+		hover(edit, T.off)
+		edit.MouseButton1Click:Connect(function()
+			if N.openRename then N.openRename(name) end
+		end)
 
 		local tp = new("TextButton", {
 			AnchorPoint = Vector2.new(1, 0.5),
@@ -2979,31 +3132,22 @@ do
 		btn.MouseLeave:Connect(function()
 			tween(btn, { BackgroundColor3 = baseColor() }, 0.1)
 		end)
-		btn.MouseButton1Click:Connect(function()
+		-- Centang HANYA berubah kalau area kotak centang (kiri, sampai sebelum nama) yang diklik.
+		local hit = new("TextButton", {
+			Name = "CheckHit",
+			Position = UDim2.fromOffset(0, 0),
+			Size = UDim2.fromOffset(28, 28),
+			BackgroundTransparency = 1,
+			Text = "",
+			AutoButtonColor = false,
+			BorderSizePixel = 0,
+			ZIndex = 5,
+		}, btn)
+		hit.MouseButton1Click:Connect(function()
 			N.sel[name] = (not N.sel[name]) or nil
+			N.saveSel()
 			apply()
 			npcRefreshList()
-		end)
-		editBtn.MouseButton1Click:Connect(function()
-			editBox.Text = npcDisplay(name)
-			editBox.Visible = true
-			editBox:CaptureFocus()
-		end)
-		editBox.FocusLost:Connect(function()
-			local t = editBox.Text
-			t = string.gsub(t, "^%s+", "")
-			t = string.gsub(t, "%s+$", "")
-			-- tulis hanya "(jual)" -> otomatis jadi "NamaAsli (jual)"
-			if string.sub(t, 1, 1) == "(" then t = name .. " " .. t end
-			t = string.sub(t, 1, 40)
-			local a = settings.npcAlias
-			if t == "" or t == name then a[name] = nil else a[name] = t end
-			editBox.Visible = false
-			nameLbl.Text = npcDisplay(name)
-			N.orderDirty = true -- urutan daftar dihitung ulang sesuai nama baru
-			npcRefreshList()
-			N.acc = 1 -- gambar ulang label ESP segera
-			toast(a[name] and ("Label: " .. a[name]) or ("Label direset: " .. name))
 		end)
 		tp.MouseButton1Click:Connect(function()
 			local cur = N.groups[name]
@@ -3014,15 +3158,11 @@ do
 			end
 		end)
 
-		N.rows[name] = { btn = btn, apply = apply, cnt = cnt, nameLbl = nameLbl }
+		N.rows[name] = { btn = btn, apply = apply, cnt = cnt, lbl = nameLbl }
 		apply()
 	end
 
 	N.refreshRows = function()
-		npcRefreshList()
-	end
-	ext.npcAlias = function() -- dipanggil setelah nama custom dimuat dari file
-		N.orderDirty = true
 		npcRefreshList()
 	end
 
@@ -3039,8 +3179,7 @@ do
 				order[#order + 1] = name
 			end
 			table.sort(order, function(a, b)
-				-- urut menurut NAMA TAMPILAN (nama custom bila ada): "1 (sel)" naik ke paling atas
-				local la, lb = string.lower(npcDisplay(a)), string.lower(npcDisplay(b))
+				local la, lb = N.sortKey(N.display(a)), N.sortKey(N.display(b))
 				if la ~= lb then return la < lb end
 				return a < b
 			end)
@@ -3053,7 +3192,7 @@ do
 			end
 		end
 
-		local q = parseTerms(searchBox.Text)
+		local q = string.lower(searchBox.Text)
 		local shown, total, objs = 0, 0, 0
 		local built, pending = 0, false
 		for i, name in ipairs(order) do
@@ -3076,7 +3215,7 @@ do
 					r.btn.Visible = true
 					r.btn.LayoutOrder = i
 					r.cnt.Text = "×" .. #g.list
-					if r.nameLbl then r.nameLbl.Text = npcDisplay(name) end
+					r.lbl.Text = N.display(name)
 					r.apply()
 				end
 			elseif r then
@@ -3190,7 +3329,7 @@ do
 	end)
 
 	selAllBtn.MouseButton1Click:Connect(function()
-		local q = parseTerms(searchBox.Text)
+		local q = string.lower(searchBox.Text)
 		local picked = 0
 		for _, name in ipairs(N.order) do
 			local g = N.groups[name]
@@ -3199,13 +3338,24 @@ do
 				N.sel[name] = true
 			end
 		end
+		N.saveSel()
 		npcRefreshList()
 	end)
 
 	clrBtn.MouseButton1Click:Connect(function()
 		table.clear(N.sel)
+		N.saveSel()
 		npcRefreshList()
 	end)
+
+	-- Ada centang NPC tersimpan: nyalakan Auto scan + scan otomatis supaya langsung tertandai di server ini
+	if next(N.sel) ~= nil then
+		task.delay(2.5, function()
+			if not unloaded and not N.scanning and not N.live then
+				npcScan()
+			end
+		end)
+	end
 
 	-- ---------- loop ----------
 	track(RunService.Heartbeat:Connect(function(dt: number)
@@ -3445,7 +3595,7 @@ sectionLabel(teleportPage, 4, "Loot & Item ESP")
 do
 
 -- ---------- UI ----------
-local scannerCard = makeCard(teleportPage, 296, 5)
+local scannerCard = makeCard(teleportPage, 340, 5)
 
 local scanBtn = new("TextButton", {
 	Position = UDim2.fromOffset(14, 12),
@@ -3631,7 +3781,9 @@ local GENERIC: { [string]: boolean } = {
 }
 
 -- ---------- data ----------
-local groups: { [string]: any } = {}     -- nama -> { name, lower, cats, list }
+local groups: { [string]: any } = {}     -- nama -> { name, lower, cats, list }  (hanya yang SEDANG ada di map)
+local catalog: { [string]: any } = {}    -- KATALOG: semua nama yang pernah terlihat/diketahui (tidak dihapus saat item hilang)
+local persistDirty = false               -- katalog/centangan berubah -> perlu disimpan ke file
 local order: { string } = {}             -- nama unik (urut abjad)
 local itemSel: { [string]: boolean? } = {}
 local rows: { [string]: any } = {}
@@ -3656,6 +3808,7 @@ local scanning = false
 local autoScan = false                   -- = pelacakan live aktif
 local dotsOn = true
 local filterMode = "Semua"
+local onlyPresent = false                -- true = sembunyikan item yang stoknya 0 (belum ada di map)
 local markFolder: Folder? = nil
 local liveAdd: RBXScriptConnection? = nil
 local liveRem: RBXScriptConnection? = nil
@@ -3664,9 +3817,9 @@ local warnedReg = false
 
 -- ---------- penanda (titik & label) ----------
 local function ensureFolder(): Folder
-	if not (markFolder and markFolder:IsDescendantOf(workspace)) then
+	if not (markFolder and markFolder:IsDescendantOf(playerGui)) then
 		if markFolder then markFolder:Destroy() end
-		markFolder = new("Folder", { Name = "UU_ITEMS" }, workspace.CurrentCamera or workspace)
+		markFolder = new("Folder", { Name = "UU_ITEMS" }, playerGui)
 	end
 	return markFolder :: Folder
 end
@@ -3721,19 +3874,38 @@ local function makeLabel(e: any)
 		Name = "Label",
 		Adornee = e.part,
 		AlwaysOnTop = true,
+		Active = true,
 		Size = UDim2.fromOffset(132, 36),
 		StudsOffset = Vector3.new(0, 2, 0),
 		MaxDistance = LABEL_MAX_DIST,
 		LightInfluence = 0,
 	}, ensureFolder())
-	local bg = new("Frame", {
+	local bg = new("TextButton", {
 		Size = UDim2.fromScale(1, 1),
 		BackgroundColor3 = T.bg,
 		BackgroundTransparency = 0.2,
 		BorderSizePixel = 0,
+		Text = "",
+		AutoButtonColor = false,
 	}, bb)
 	round(bg, 8)
 	stroke(bg, COL_SEL, 1, 0.35)
+	-- KLIK LABEL = TELEPORT ke item ini
+	bg.MouseButton1Click:Connect(function()
+		if unloaded or not settings.clickTp or e.dead then return end
+		if settings.clickNeedsShift and not UIS:IsKeyDown(Enum.KeyCode.LeftShift) then return end
+		local part = e.part
+		local char, hrp = player.Character, getRoot()
+		if not (part and part.Parent and char and hrp) then
+			toast("Item sudah tidak ada")
+			return
+		end
+		char:PivotTo(part.CFrame + Vector3.new(0, 3, 0))
+		hrp.AssemblyLinearVelocity = Vector3.zero
+		hrp.AssemblyAngularVelocity = Vector3.zero
+		floatY = nil
+		toast("Teleport ke " .. e.name)
+	end)
 	text(bg, {
 		Text = e.name,
 		Font = Enum.Font.GothamBold,
@@ -3815,6 +3987,17 @@ local function removeEntry(e: any)
 end
 
 local function addEntry(inst: Instance, cat: string, part: BasePart, name: string)
+	local cg = catalog[name]
+	if not cg then
+		cg = { name = name, lower = string.lower(name), cats = {} }
+		catalog[name] = cg
+		orderDirty = true
+		persistDirty = true
+	end
+	if not cg.cats[cat] then
+		cg.cats[cat] = true
+		persistDirty = true
+	end
 	local g = groups[name]
 	if not g then
 		g = { name = name, lower = string.lower(name), cats = {}, list = {} }
@@ -4001,7 +4184,7 @@ end
 local function countSelected(): number
 	local n = 0
 	for name in pairs(itemSel) do
-		if groups[name] then n += 1 end
+		if catalog[name] then n += 1 end
 	end
 	return n
 end
@@ -4013,7 +4196,9 @@ local function refreshStatus()
 	elseif #order == 0 and totalObjs == 0 then
 		s = autoScan and "Live aktif · belum ada item terdeteksi" or "Belum scan"
 	else
-		s = string.format("%d jenis · %d objek · %d dipilih", #order, totalObjs, countSelected())
+		local liveKinds = 0
+		for _ in pairs(groups) do liveKinds += 1 end
+		s = string.format("%d jenis (%d ada di map) · %d objek · %d dipilih", #order, liveKinds, totalObjs, countSelected())
 		if matchTotal > matchShown then
 			s ..= string.format(" · tampil %d/%d (cari untuk menyaring)", matchShown, matchTotal)
 		end
@@ -4026,36 +4211,34 @@ local function refreshStatus()
 	end
 end
 
-local function parseTerms(text: string): { string }
-	-- Pencarian fleksibel: beberapa kata dipisah spasi ATAU koma/titik-koma -> cocok bila SALAH SATU
-	-- kata ada di nama (potongan huruf cukup). Ada koma/titik-koma -> pemisahnya hanya itu,
-	-- jadi frasa berspasi tetap utuh ("giant pale, fox").
-	local out: { string } = {}
-	local low = string.lower(text)
-	local pat = (string.find(low, "[,;]") ~= nil) and "[^,;]+" or "%S+"
-	for w in string.gmatch(low, pat) do
-		local x = string.gsub(w, "^%s+", "")
-		x = string.gsub(x, "%s+$", "")
-		if x ~= "" then out[#out + 1] = x end
+-- Pencarian multi-kata: dipisah spasi / koma / titik koma. Item cocok kalau namanya memuat SALAH SATU kata.
+local termCacheQ: string? = nil
+local termCache: { string } = {}
+local function termsOf(q: string): { string }
+	if q ~= termCacheQ then
+		termCacheQ = q
+		termCache = {}
+		for w in string.gmatch(q, "[^%s,;]+") do
+			termCache[#termCache + 1] = w
+		end
 	end
-	return out
+	return termCache
 end
 
-local function groupMatches(g: any, q: { string }): boolean
-	local nq = #q
-	if nq > 0 then
+local function groupMatches(g: any, q: string): boolean
+	if onlyPresent and not groups[g.name] then return false end
+	local terms = termsOf(q)
+	local hasQuery = #terms > 0
+	if hasQuery then
 		local hit = false
-		for i = 1, nq do
-			if string.find(g.lower, q[i], 1, true) then
-				hit = true
-				break
-			end
+		for i = 1, #terms do
+			if string.find(g.lower, terms[i], 1, true) then hit = true; break end
 		end
 		if not hit then return false end
 	end
 	local fm = filterMode
 	if fm == "Semua" then
-		if nq > 0 then return true end -- pencarian menembus semua kategori
+		if hasQuery then return true end -- pencarian menembus semua kategori
 		for cat in pairs(g.cats) do
 			if cat ~= "Sentuh" then return true end -- "Sentuh" hanya di chip-nya sendiri (terlalu ramai)
 		end
@@ -4067,12 +4250,12 @@ local function groupMatches(g: any, q: { string }): boolean
 end
 
 local function applyFilter(): number
-	local q = parseTerms(lootSearchBox.Text)
+	local q = string.lower(lootSearchBox.Text)
 	local shown, total = 0, 0
 	table.clear(pendingRows)
 	for i = 1, #order do
 		local name = order[i]
-		local g = groups[name]
+		local g = catalog[name]
 		local r = rows[name]
 		local ok = g ~= nil and groupMatches(g, q)
 		if ok then
@@ -4110,6 +4293,7 @@ end
 
 local function setSelected(name: string, on: boolean)
 	itemSel[name] = on or nil
+	persistDirty = true
 	local r = rows[name]
 	if r then r.apply() end
 	markDue = true -- titik/label diperbarui di frame berikutnya
@@ -4223,7 +4407,7 @@ local function buildRow(g: any)
 		Size = UDim2.new(1, -30 - 78, 1, 0),
 	})
 	local cnt = text(btn, {
-		Text = "×" .. #g.list,
+		Text = "×" .. (groups[name] and #groups[name].list or 0),
 		TextSize = 10,
 		TextColor3 = T.sub,
 		TextXAlignment = Enum.TextXAlignment.Right,
@@ -4263,7 +4447,19 @@ local function buildRow(g: any)
 	btn.MouseLeave:Connect(function()
 		tween(btn, { BackgroundColor3 = baseColor() }, 0.1)
 	end)
-	btn.MouseButton1Click:Connect(function()
+	-- Centang HANYA berubah kalau area kotak centang (kiri, sampai sebelum nama item) yang diklik.
+	-- Klik di nama / area kosong / sekitar tombol TP tidak mengubah centang.
+	local hit = new("TextButton", {
+		Name = "CheckHit",
+		Position = UDim2.fromOffset(0, 0),
+		Size = UDim2.fromOffset(28, 28),
+		BackgroundTransparency = 1,
+		Text = "",
+		AutoButtonColor = false,
+		BorderSizePixel = 0,
+		ZIndex = 5,
+	}, btn)
+	hit.MouseButton1Click:Connect(function()
 		setSelected(name, not itemSel[name])
 		refreshStatus()
 		if filterMode == "Terpilih" then applyFilter() end
@@ -4273,7 +4469,7 @@ local function buildRow(g: any)
 		if cur then
 			teleportToNearest(cur)
 		else
-			toast("Item sudah tidak ada")
+			toast("Belum ada di map (belum respawn) - kalau sudah dicentang, otomatis tertandai saat muncul")
 		end
 	end)
 
@@ -4286,7 +4482,7 @@ local function buildPending(maxN: number)
 	while built < maxN do
 		local name = table.remove(pendingRows, 1)
 		if not name then break end
-		local g = groups[name]
+		local g = catalog[name]
 		if g and not rows[name] then
 			buildRow(g)
 			built += 1
@@ -4306,11 +4502,11 @@ end
 
 local function rebuildOrder()
 	table.clear(order)
-	for name in pairs(groups) do
+	for name in pairs(catalog) do
 		order[#order + 1] = name
 	end
 	table.sort(order, function(a, b)
-		local la, lb = groups[a].lower, groups[b].lower
+		local la, lb = catalog[a].lower, catalog[b].lower
 		if la ~= lb then return la < lb end
 		return a < b
 	end)
@@ -4330,8 +4526,7 @@ local function flushUI()
 			if g then
 				r.cnt.Text = "×" .. #g.list
 			else
-				r.btn:Destroy()
-				rows[name] = nil
+				r.cnt.Text = "×0" -- item belum respawn / hilang: baris & centangan tetap ada
 			end
 		end
 	end
@@ -4347,11 +4542,9 @@ local function wipe()
 		markFolder = nil
 	end
 	for _, r in pairs(rows) do
-		r.btn:Destroy()
+		r.cnt.Text = "×0"
 	end
-	rows = {}
 	groups = {}
-	order = {}
 	all = {}
 	byTrig = {}
 	byPart = {}
@@ -4361,8 +4554,8 @@ local function wipe()
 	retryList = {}
 	qInst, qTries = {}, {}
 	qHead, qTail = 1, 0
-	orderDirty = false
-	layoutDirty = false
+	rebuildOrder() -- urutan dibangun dari KATALOG, bukan dari hasil scan
+	layoutDirty = true
 	totalObjs, labelCount, dotCount = 0, 0, 0
 	sliceIdx = 1
 	matchShown, matchTotal = 0, 0
@@ -4383,6 +4576,53 @@ clearMarkings = function()
 	autoScan = false
 	setAutoUI()
 	wipe()
+end
+
+-- ---------- seed katalog dari ReplicatedStorage ----------
+-- Template item yang disimpan di ReplicatedStorage (lalu dikloning game saat respawn) bisa dibaca client,
+-- jadi namanya langsung masuk daftar walau barangnya belum ada di map. ServerStorage tidak bisa dibaca client.
+-- Matikan dengan settings.seedReplicated = false.
+local function seedFromStorage()
+	local okD, desc = pcall(function() return ReplicatedStorage:GetDescendants() end)
+	if not okD then return end
+	local t0 = os.clock()
+	for i = 1, #desc do
+		local inst = desc[i]
+		local cat = CLASS_CAT[inst.ClassName]
+		if cat and cat ~= "Sentuh" then
+			local name: string? = nil
+			if cat == "Tool" then
+				name = inst.Name
+			else
+				local _, anchor = resolve(inst, cat)
+				if anchor then
+					if cat == "Prompt" and (inst :: ProximityPrompt).ObjectText ~= "" then
+						name = (inst :: ProximityPrompt).ObjectText
+					else
+						name = baseName(anchor)
+					end
+				end
+			end
+			if name and name ~= "" then
+				local cg = catalog[name]
+				if not cg then
+					cg = { name = name, lower = string.lower(name), cats = {} }
+					catalog[name] = cg
+					orderDirty = true
+					persistDirty = true
+				end
+				if not cg.cats[cat] then
+					cg.cats[cat] = true
+					persistDirty = true
+				end
+			end
+		end
+		if i % 400 == 0 and os.clock() - t0 > SCAN_BUDGET then
+			RunService.Heartbeat:Wait()
+			if unloaded then return end
+			t0 = os.clock()
+		end
+	end
 end
 
 -- ---------- scan penuh ----------
@@ -4419,6 +4659,10 @@ local function scanItems()
 			RunService.Heartbeat:Wait()
 			if os.clock() - guard > 60 then break end
 		end
+
+		if settings.seedReplicated ~= false then
+			seedFromStorage()
+		end
 	end)
 
 	scanning = false
@@ -4430,10 +4674,7 @@ local function scanItems()
 		warn("[ItemScan] " .. tostring(err))
 		toast("Scan error — lihat Output (F9)")
 	else
-		-- pilihan lama yang sudah tidak ada di hasil scan ikut dibuang
-		for name in pairs(itemSel) do
-			if not groups[name] then itemSel[name] = nil end
-		end
+		-- pilihan (centang) TIDAK dibuang walau itemnya belum ada di map: begitu respawn langsung tertandai
 		if totalObjs == 0 then
 			if workspace.StreamingEnabled then
 				toast("Belum ada item (StreamingEnabled aktif) — Live tetap memantau saat kamu bergerak")
@@ -4482,6 +4723,21 @@ do
 end
 
 scanBtn.MouseButton1Click:Connect(scanItems)
+
+-- Tombol filter "Ada": tampilkan hanya item yang stoknya > 0 di map (bisa digabung dengan chip kategori & pencarian)
+lootSearchBox.Size = UDim2.new(1, -28 - 84, 0, 28)
+local presentBtn = smallButton(scannerCard, "Ada: OFF", UDim2.fromOffset(78, 28), 0)
+presentBtn.AnchorPoint = Vector2.new(1, 0)
+presentBtn.Position = UDim2.new(1, -14, 0, 66)
+presentBtn.MouseButton1Click:Connect(function()
+	onlyPresent = not onlyPresent
+	presentBtn.Text = onlyPresent and "Ada: ON" or "Ada: OFF"
+	tween(presentBtn, {
+		BackgroundColor3 = onlyPresent and T.accent or T.bg,
+		TextColor3 = onlyPresent and WHITE or T.sub,
+	}, 0.12)
+	onFilterChanged()
+end)
 lootSearchBox:GetPropertyChangedSignal("Text"):Connect(onFilterChanged)
 
 autoBtn.MouseButton1Click:Connect(function()
@@ -4502,11 +4758,11 @@ end)
 
 selectAllBtn.MouseButton1Click:Connect(function()
 	-- pilih semua item yang sedang tampil (sesuai pencarian & kategori)
-	local q = parseTerms(lootSearchBox.Text)
+	local q = string.lower(lootSearchBox.Text)
 	local picked = 0
 	for i = 1, #order do
 		local name = order[i]
-		local g = groups[name]
+		local g = catalog[name]
 		if g and not itemSel[name] and groupMatches(g, q) then
 			if picked >= ROW_LIMIT then break end
 			picked += 1
@@ -4620,12 +4876,12 @@ local function updateMarkers()
 		local eligible = sel or e.cat ~= "Sentuh"
 
 		-- pulihkan bila penanda hilang (mis. kamera diganti oleh game)
-		if e.dot and not e.dot:IsDescendantOf(workspace) then
+		if e.dot and not e.dot:IsDescendantOf(playerGui) then
 			e.dot = nil
 			e.dotFrame = nil
 			dotCount = math.max(0, dotCount - 1)
 		end
-		if e.label and not e.label:IsDescendantOf(workspace) then
+		if e.label and not e.label:IsDescendantOf(playerGui) then
 			e.label = nil
 			e.distLbl = nil
 			labeled[e] = nil
@@ -4715,8 +4971,229 @@ track(RunService.Heartbeat:Connect(function(dt: number)
 	end
 end))
 
+-- ---------- KATALOG PERMANEN (per game) ----------
+-- Nama item yang pernah terlihat + centangan disimpan ke file, jadi daftar langsung lengkap
+-- begitu script dijalankan lagi (tanpa menunggu item respawn atau menekan SCAN).
+local HttpService = game:GetService("HttpService")
+local catPath = tostring(settings.saveFolder) .. "/items_" .. tostring(game.GameId) .. ".json"
+
+local function saveCatalog()
+	if not writefile then return end
+	local names = {}
+	for _, cg in pairs(catalog) do
+		local cats = {}
+		for c in pairs(cg.cats) do cats[#cats + 1] = c end
+		names[#names + 1] = { n = cg.name, c = cats }
+	end
+	local sel = {}
+	for nm, v in pairs(itemSel) do
+		if v then sel[#sel + 1] = nm end
+	end
+	local okJ, json = pcall(function() return HttpService:JSONEncode({ names = names, sel = sel }) end)
+	if not okJ then return end
+	if makefolder and isfolder and not isfolder(settings.saveFolder) then
+		pcall(makefolder, settings.saveFolder)
+	end
+	pcall(writefile, catPath, json)
+	persistDirty = false
+end
+
+local loadedCatalog = false
+if readfile and isfile and isfile(catPath) then
+	local okL, data = pcall(function() return HttpService:JSONDecode(readfile(catPath)) end)
+	if okL and type(data) == "table" then
+		if type(data.names) == "table" then
+			for _, it in ipairs(data.names) do
+				if type(it) == "table" and type(it.n) == "string" and it.n ~= "" then
+					local cats = {}
+					if type(it.c) == "table" then
+						for _, c in ipairs(it.c) do
+							if type(c) == "string" and PRI[c] then cats[c] = true end
+						end
+					end
+					catalog[it.n] = { name = it.n, lower = string.lower(it.n), cats = cats }
+				end
+			end
+		end
+		if type(data.sel) == "table" then
+			for _, nm in ipairs(data.sel) do
+				if type(nm) == "string" and catalog[nm] then itemSel[nm] = true end
+			end
+		end
+		orderDirty = true
+		loadedCatalog = next(catalog) ~= nil
+	end
+end
+
+-- ---------- SERVER HOP ----------
+-- Pindah ke server publik lain (daftar diambil dari API Roblox). Script otomatis jalan lagi di server baru
+-- lewat R4MEN_auto.lua, dan katalog + centangan item langsung dimuat.
+do
+	local TeleportService = game:GetService("TeleportService")
+	local hopFile = tostring(settings.saveFolder) .. "/hop_visited.json"
+	local HOP_SKIP_SECONDS = 1800 -- server yang baru dikunjungi tidak dipilih lagi selama 30 menit
+	local hopMode = "Sepi"
+	local hopping = false
+
+	local hopBtn = new("TextButton", {
+		Position = UDim2.fromOffset(14, 296),
+		Size = UDim2.new(1, -28 - 98, 0, 32),
+		BackgroundColor3 = T.accent,
+		Text = "🌐 HOP SERVER",
+		TextColor3 = WHITE,
+		Font = Enum.Font.GothamBold,
+		TextSize = 12,
+		AutoButtonColor = false,
+		BorderSizePixel = 0,
+	}, scannerCard)
+	round(hopBtn, 8)
+	hover(hopBtn, T.accent)
+
+	local modeBtn = smallButton(scannerCard, "Mode: Sepi", UDim2.fromOffset(90, 32), 0)
+	modeBtn.AnchorPoint = Vector2.new(1, 0)
+	modeBtn.Position = UDim2.new(1, -14, 0, 296)
+	hover(modeBtn, T.bg)
+	modeBtn.MouseButton1Click:Connect(function()
+		hopMode = (hopMode == "Sepi") and "Acak" or "Sepi"
+		modeBtn.Text = "Mode: " .. hopMode
+	end)
+
+	local function resetHop()
+		hopping = false
+		hopBtn.Text = "🌐 HOP SERVER"
+	end
+
+	local function httpGet(url: string): string?
+		local req = (syn and syn.request) or http_request or request or (fluxus and fluxus.request)
+		if req then
+			local okR, res = pcall(req, { Url = url, Method = "GET" })
+			if okR and type(res) == "table" and res.Body and (res.StatusCode == nil or res.StatusCode == 200) then
+				return res.Body
+			end
+		end
+		local okG, body = pcall(function() return game:HttpGet(url) end)
+		if okG and type(body) == "string" then return body end
+		return nil
+	end
+
+	local function loadVisited(): { [string]: number }
+		local t = {}
+		if readfile and isfile and isfile(hopFile) then
+			local okV, d = pcall(function() return HttpService:JSONDecode(readfile(hopFile)) end)
+			if okV and type(d) == "table" then
+				for id, ts in pairs(d) do
+					if type(id) == "string" and type(ts) == "number" and os.time() - ts < HOP_SKIP_SECONDS then
+						t[id] = ts
+					end
+				end
+			end
+		end
+		return t
+	end
+
+	local function fetchServers(): { any }
+		local list, cursor = {}, nil
+		for _ = 1, 3 do
+			local url = string.format(
+				"https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100%s",
+				game.PlaceId,
+				cursor and ("&cursor=" .. cursor) or ""
+			)
+			local body = httpGet(url)
+			if not body then break end
+			local okJ, d = pcall(function() return HttpService:JSONDecode(body) end)
+			if not okJ or type(d) ~= "table" or type(d.data) ~= "table" then break end
+			for _, sv in ipairs(d.data) do list[#list + 1] = sv end
+			cursor = d.nextPageCursor
+			if type(cursor) ~= "string" then break end
+		end
+		return list
+	end
+
+	local function doHop()
+		if hopping then return end
+		hopping = true
+		hopBtn.Text = "Mencari server..."
+		task.spawn(function()
+			local visited = loadVisited()
+			visited[game.JobId] = os.time()
+
+			local cands = {}
+			for _, sv in ipairs(fetchServers()) do
+				if type(sv) == "table" and type(sv.id) == "string" and sv.id ~= game.JobId and not visited[sv.id]
+					and type(sv.playing) == "number" and type(sv.maxPlayers) == "number"
+					and sv.playing < sv.maxPlayers - 1 then
+					cands[#cands + 1] = sv
+				end
+			end
+
+			if #cands == 0 then
+				toast("Tidak ada server yang cocok (atau gagal mengambil daftar server)")
+				resetHop()
+				return
+			end
+
+			local pick
+			if hopMode == "Sepi" then
+				table.sort(cands, function(a, b) return a.playing < b.playing end)
+				pick = cands[math.random(1, math.min(#cands, 5))]
+			else
+				pick = cands[math.random(1, #cands)]
+			end
+
+			visited[pick.id] = os.time()
+			if writefile then
+				if makefolder and isfolder and not isfolder(settings.saveFolder) then
+					pcall(makefolder, settings.saveFolder)
+				end
+				pcall(writefile, hopFile, HttpService:JSONEncode(visited))
+			end
+			if persistDirty then pcall(saveCatalog) end
+
+			toast(string.format("Pindah ke server (%d/%d pemain)...", pick.playing, pick.maxPlayers))
+			local okT, errT = pcall(function()
+				TeleportService:TeleportToPlaceInstance(game.PlaceId, pick.id, Players.LocalPlayer)
+			end)
+			if not okT then
+				toast("Gagal teleport: " .. tostring(errT))
+				resetHop()
+				return
+			end
+			task.delay(20, function()
+				if hopping and not unloaded then resetHop() end
+			end)
+		end)
+	end
+
+	hopBtn.MouseButton1Click:Connect(doHop)
+	track(TeleportService.TeleportInitFailed:Connect(function(_, _, msg)
+		toast("Teleport gagal: " .. tostring(msg))
+		resetHop()
+	end))
+end
+
+local saveAcc = 0
+track(RunService.Heartbeat:Connect(function(dt: number)
+	if unloaded then return end
+	saveAcc += dt
+	if saveAcc >= 3 then
+		saveAcc = 0
+		if persistDirty then pcall(saveCatalog) end
+	end
+end))
+
 applyFilter()
 refreshStatus()
+
+if loadedCatalog then
+	flushUI()
+	-- Ada katalog tersimpan: nyalakan Live + scan otomatis supaya item yang sudah dicentang langsung tertandai
+	task.delay(2, function()
+		if not unloaded and not scanning and not autoScan then
+			scanItems()
+		end
+	end)
+end
 
 end -- runScanner
 
@@ -5458,7 +5935,7 @@ task.spawn(function()
 	end
 
 	local function wpData(): any
-		return { wps = snapshot(true).wps, alias = settings.npcAlias }
+		return { wps = snapshot(true).wps }
 	end
 
 	-- ---------- muat ----------
@@ -5472,14 +5949,6 @@ task.spawn(function()
 
 	local w = readJson(wpFile)
 	if w and type(w.wps) == "table" then pcall(applySnapshot, { wps = w.wps }) end
-	if w and type(w.alias) == "table" then
-		for k, v in pairs(w.alias) do
-			if type(k) == "string" and type(v) == "string" then
-				settings.npcAlias[k] = v
-			end
-		end
-		if not unloaded and ext.npcAlias then pcall(ext.npcAlias, true) end
-	end
 
 	if not remote then
 		local sl = readJson("slots.json")
