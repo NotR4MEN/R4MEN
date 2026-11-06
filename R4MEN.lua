@@ -2810,11 +2810,32 @@ do
 		Size = UDim2.new(1, -28, 0, 130),
 	})
 
-	local function matches(g: any, q: string): boolean
+	local function parseTerms(text: string): { string }
+		-- Pencarian fleksibel: beberapa kata dipisah spasi ATAU koma/titik-koma -> cocok bila SALAH SATU
+		-- kata ada di nama (potongan huruf cukup). Ada koma/titik-koma -> pemisahnya hanya itu,
+		-- jadi frasa berspasi tetap utuh ("giant pale, fox").
+		local out: { string } = {}
+		local low = string.lower(text)
+		local pat = (string.find(low, "[,;]") ~= nil) and "[^,;]+" or "%S+"
+		for w in string.gmatch(low, pat) do
+			local x = string.gsub(w, "^%s+", "")
+			x = string.gsub(x, "%s+$", "")
+			if x ~= "" then out[#out + 1] = x end
+		end
+		return out
+	end
+
+	local function matches(g: any, q: { string }): boolean
 		if N.cat ~= "Semua" and g.cat ~= N.cat then return false end
-		if q == "" or string.find(g.lower, q, 1, true) ~= nil then return true end
+		local nq = #q
+		if nq == 0 then return true end
 		local a = settings.npcAlias[g.name]
-		return type(a) == "string" and string.find(string.lower(a), q, 1, true) ~= nil
+		local al = type(a) == "string" and string.lower(a) or nil
+		for i = 1, nq do
+			if string.find(g.lower, q[i], 1, true) then return true end
+			if al and string.find(al, q[i], 1, true) then return true end
+		end
+		return false
 	end
 
 	local function npcTeleport(g: any)
@@ -2979,6 +3000,8 @@ do
 			if t == "" or t == name then a[name] = nil else a[name] = t end
 			editBox.Visible = false
 			nameLbl.Text = npcDisplay(name)
+			N.orderDirty = true -- urutan daftar dihitung ulang sesuai nama baru
+			npcRefreshList()
 			N.acc = 1 -- gambar ulang label ESP segera
 			toast(a[name] and ("Label: " .. a[name]) or ("Label direset: " .. name))
 		end)
@@ -2999,6 +3022,7 @@ do
 		npcRefreshList()
 	end
 	ext.npcAlias = function() -- dipanggil setelah nama custom dimuat dari file
+		N.orderDirty = true
 		npcRefreshList()
 	end
 
@@ -3015,7 +3039,8 @@ do
 				order[#order + 1] = name
 			end
 			table.sort(order, function(a, b)
-				local la, lb = N.groups[a].lower, N.groups[b].lower
+				-- urut menurut NAMA TAMPILAN (nama custom bila ada): "1 (sel)" naik ke paling atas
+				local la, lb = string.lower(npcDisplay(a)), string.lower(npcDisplay(b))
 				if la ~= lb then return la < lb end
 				return a < b
 			end)
@@ -3028,7 +3053,7 @@ do
 			end
 		end
 
-		local q = string.lower(searchBox.Text)
+		local q = parseTerms(searchBox.Text)
 		local shown, total, objs = 0, 0, 0
 		local built, pending = 0, false
 		for i, name in ipairs(order) do
@@ -3165,7 +3190,7 @@ do
 	end)
 
 	selAllBtn.MouseButton1Click:Connect(function()
-		local q = string.lower(searchBox.Text)
+		local q = parseTerms(searchBox.Text)
 		local picked = 0
 		for _, name in ipairs(N.order) do
 			local g = N.groups[name]
@@ -4001,11 +4026,36 @@ local function refreshStatus()
 	end
 end
 
-local function groupMatches(g: any, q: string): boolean
-	if q ~= "" and not string.find(g.lower, q, 1, true) then return false end
+local function parseTerms(text: string): { string }
+	-- Pencarian fleksibel: beberapa kata dipisah spasi ATAU koma/titik-koma -> cocok bila SALAH SATU
+	-- kata ada di nama (potongan huruf cukup). Ada koma/titik-koma -> pemisahnya hanya itu,
+	-- jadi frasa berspasi tetap utuh ("giant pale, fox").
+	local out: { string } = {}
+	local low = string.lower(text)
+	local pat = (string.find(low, "[,;]") ~= nil) and "[^,;]+" or "%S+"
+	for w in string.gmatch(low, pat) do
+		local x = string.gsub(w, "^%s+", "")
+		x = string.gsub(x, "%s+$", "")
+		if x ~= "" then out[#out + 1] = x end
+	end
+	return out
+end
+
+local function groupMatches(g: any, q: { string }): boolean
+	local nq = #q
+	if nq > 0 then
+		local hit = false
+		for i = 1, nq do
+			if string.find(g.lower, q[i], 1, true) then
+				hit = true
+				break
+			end
+		end
+		if not hit then return false end
+	end
 	local fm = filterMode
 	if fm == "Semua" then
-		if q ~= "" then return true end -- pencarian menembus semua kategori
+		if nq > 0 then return true end -- pencarian menembus semua kategori
 		for cat in pairs(g.cats) do
 			if cat ~= "Sentuh" then return true end -- "Sentuh" hanya di chip-nya sendiri (terlalu ramai)
 		end
@@ -4017,7 +4067,7 @@ local function groupMatches(g: any, q: string): boolean
 end
 
 local function applyFilter(): number
-	local q = string.lower(lootSearchBox.Text)
+	local q = parseTerms(lootSearchBox.Text)
 	local shown, total = 0, 0
 	table.clear(pendingRows)
 	for i = 1, #order do
@@ -4452,7 +4502,7 @@ end)
 
 selectAllBtn.MouseButton1Click:Connect(function()
 	-- pilih semua item yang sedang tampil (sesuai pencarian & kategori)
-	local q = string.lower(lootSearchBox.Text)
+	local q = parseTerms(lootSearchBox.Text)
 	local picked = 0
 	for i = 1, #order do
 		local name = order[i]
