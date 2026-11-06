@@ -904,10 +904,16 @@ local function updateEsp(dt: number)
 	local hasTeams = #teamsObj:GetChildren() > 0
 	local myRoot = getRoot()
 
+	local missing = 0
 	for _, p in ipairs(Players:GetPlayers()) do
 		if p ~= player then
 			local char = p.Character
 			local o = espObjs[p]
+
+			if workspace.StreamingEnabled
+				and not (char and char:FindFirstChild("HumanoidRootPart")) then
+				missing += 1
+			end
 
 			if o and (o.char ~= char or not o.char.Parent) then
 				removeEsp(p)
@@ -919,6 +925,16 @@ local function updateEsp(dt: number)
 			end
 
 			if o and char then
+				-- StreamingEnabled: saat pemain keluar-masuk jangkauan, Head/HRP dibuat ulang oleh
+				-- Roblox sehingga Adornee lama jadi nil. Pasang ulang setiap update.
+				local headNow = char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
+				if headNow and o.bb.Adornee ~= headNow then
+					o.bb.Adornee = headNow
+				end
+				if o.hl.Adornee ~= char then
+					o.hl.Adornee = char
+				end
+
 				local col = ESP_SOFT_WHITE
 				if hasTeams and p.Team then
 					col = p.TeamColor.Color
@@ -946,6 +962,23 @@ local function updateEsp(dt: number)
 				end
 
 				o.info.Text = string.format('<font color="#%s">%s HP</font>  %sst', hpHex, hpStr, distStr)
+			end
+		end
+	end
+
+	-- Beri tahu (maks. tiap 6 detik, hanya bila jumlahnya berubah) ada pemain yang tidak
+	-- bisa digambar karena di luar jangkauan streaming server (batas dari Roblox, bukan script).
+	if missing > 0 and not (espFolder and espFolder.Parent) then
+		espFolder = new("Folder", { Name = "UU_ESP" }, workspace.CurrentCamera or workspace)
+	end
+	if espFolder then
+		local prev = espFolder:GetAttribute("missing") or 0
+		local lastT = espFolder:GetAttribute("missingT") or 0
+		if missing ~= prev and os.clock() - lastT > 6 then
+			espFolder:SetAttribute("missing", missing)
+			espFolder:SetAttribute("missingT", os.clock())
+			if missing > 0 then
+				toast(missing .. " pemain di luar jangkauan streaming (tidak bisa dideteksi)")
 			end
 		end
 	end
@@ -2135,6 +2168,16 @@ do
 		setStatus = function() end, -- diisi di bagian UI
 	}
 
+	-- ---------- NAMA CUSTOM NPC ----------
+	-- settings.npcAlias[namaAsliModel] = "label buatanmu" (mis. Jono -> "Jono (jual)").
+	-- Tersimpan otomatis per game (file wp_<GameId>.json), jadi tetap ada saat rejoin.
+	settings.npcAlias = settings.npcAlias or {}
+	local function npcDisplay(name: string): string
+		local a = settings.npcAlias[name]
+		if type(a) == "string" and a ~= "" then return a end
+		return name
+	end
+
 	local function npcRootOf(m: Model): BasePart?
 		local r = m:FindFirstChild("HumanoidRootPart")
 		if r and r:IsA("BasePart") then return r end
@@ -2336,12 +2379,12 @@ do
 		local bb = new("BillboardGui", {
 			Adornee = adornee,
 			AlwaysOnTop = true,
-			Size = UDim2.fromOffset(160, 30),
+			Size = UDim2.fromOffset(220, 30),
 			StudsOffsetWorldSpace = Vector3.new(0, 2.4, 0),
 			MaxDistance = math.huge,
 		}, N.folder)
 		local nameL = text(bb, {
-			Text = e.name,
+			Text = npcDisplay(e.name),
 			Size = UDim2.new(1, 0, 0.5, 0),
 			Font = Enum.Font.GothamBold,
 			TextSize = 12,
@@ -2403,6 +2446,8 @@ do
 				hpTxt = '<font color="#' .. hex .. '">' .. tostring(math.max(0, math.floor(h + 0.5))) .. " HP</font>  "
 			end
 		end
+		local dn = npcDisplay(e.name)
+		if v.name.Text ~= dn then v.name.Text = dn end
 		v.info.Text = hpTxt .. tostring(math.floor(d + 0.5)) .. "st"
 	end
 
@@ -2767,7 +2812,9 @@ do
 
 	local function matches(g: any, q: string): boolean
 		if N.cat ~= "Semua" and g.cat ~= N.cat then return false end
-		return q == "" or string.find(g.lower, q, 1, true) ~= nil
+		if q == "" or string.find(g.lower, q, 1, true) ~= nil then return true end
+		local a = settings.npcAlias[g.name]
+		return type(a) == "string" and string.find(string.lower(a), q, 1, true) ~= nil
 	end
 
 	local function npcTeleport(g: any)
@@ -2827,14 +2874,49 @@ do
 			Visible = false,
 		})
 
-		text(btn, {
-			Text = name,
+		local nameLbl = text(btn, {
+			Text = npcDisplay(name),
 			Font = Enum.Font.GothamMedium,
 			TextSize = 11,
 			TextTruncate = Enum.TextTruncate.AtEnd,
 			Position = UDim2.fromOffset(30, 0),
-			Size = UDim2.new(1, -30 - 78, 1, 0),
+			Size = UDim2.new(1, -30 - 120, 1, 0),
 		})
+
+		-- Tombol "Ubah": beri nama/label custom (mis. "Jono (jual)", "Albert (beli)", "Sari (masak)")
+		local editBtn = new("TextButton", {
+			AnchorPoint = Vector2.new(1, 0.5),
+			Position = UDim2.new(1, -78, 0.5, 0),
+			Size = UDim2.fromOffset(36, 20),
+			BackgroundColor3 = T.off,
+			Text = "Ubah",
+			TextColor3 = WHITE,
+			Font = Enum.Font.GothamBold,
+			TextSize = 9,
+			AutoButtonColor = false,
+			BorderSizePixel = 0,
+		}, btn)
+		round(editBtn, 5)
+		hover(editBtn, T.off)
+
+		local editBox = new("TextBox", {
+			Position = UDim2.fromOffset(28, 3),
+			Size = UDim2.new(1, -28 - 80, 1, -6),
+			BackgroundColor3 = T.bg,
+			TextColor3 = WHITE,
+			PlaceholderText = "Nama custom, mis. Jono (jual)",
+			PlaceholderColor3 = T.sub,
+			Text = "",
+			ClearTextOnFocus = false,
+			Font = Enum.Font.GothamMedium,
+			TextSize = 11,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			Visible = false,
+			ZIndex = 5,
+			BorderSizePixel = 0,
+		}, btn)
+		round(editBox, 5)
+		stroke(editBox, T.accent, 1, 0.2)
 		local cnt = text(btn, {
 			Text = "×" .. #g.list,
 			TextSize = 10,
@@ -2881,6 +2963,25 @@ do
 			apply()
 			npcRefreshList()
 		end)
+		editBtn.MouseButton1Click:Connect(function()
+			editBox.Text = npcDisplay(name)
+			editBox.Visible = true
+			editBox:CaptureFocus()
+		end)
+		editBox.FocusLost:Connect(function()
+			local t = editBox.Text
+			t = string.gsub(t, "^%s+", "")
+			t = string.gsub(t, "%s+$", "")
+			-- tulis hanya "(jual)" -> otomatis jadi "NamaAsli (jual)"
+			if string.sub(t, 1, 1) == "(" then t = name .. " " .. t end
+			t = string.sub(t, 1, 40)
+			local a = settings.npcAlias
+			if t == "" or t == name then a[name] = nil else a[name] = t end
+			editBox.Visible = false
+			nameLbl.Text = npcDisplay(name)
+			N.acc = 1 -- gambar ulang label ESP segera
+			toast(a[name] and ("Label: " .. a[name]) or ("Label direset: " .. name))
+		end)
 		tp.MouseButton1Click:Connect(function()
 			local cur = N.groups[name]
 			if cur then
@@ -2890,11 +2991,14 @@ do
 			end
 		end)
 
-		N.rows[name] = { btn = btn, apply = apply, cnt = cnt }
+		N.rows[name] = { btn = btn, apply = apply, cnt = cnt, nameLbl = nameLbl }
 		apply()
 	end
 
 	N.refreshRows = function()
+		npcRefreshList()
+	end
+	ext.npcAlias = function() -- dipanggil setelah nama custom dimuat dari file
 		npcRefreshList()
 	end
 
@@ -2947,6 +3051,7 @@ do
 					r.btn.Visible = true
 					r.btn.LayoutOrder = i
 					r.cnt.Text = "×" .. #g.list
+					if r.nameLbl then r.nameLbl.Text = npcDisplay(name) end
 					r.apply()
 				end
 			elseif r then
@@ -5303,7 +5408,7 @@ task.spawn(function()
 	end
 
 	local function wpData(): any
-		return { wps = snapshot(true).wps }
+		return { wps = snapshot(true).wps, alias = settings.npcAlias }
 	end
 
 	-- ---------- muat ----------
@@ -5317,6 +5422,14 @@ task.spawn(function()
 
 	local w = readJson(wpFile)
 	if w and type(w.wps) == "table" then pcall(applySnapshot, { wps = w.wps }) end
+	if w and type(w.alias) == "table" then
+		for k, v in pairs(w.alias) do
+			if type(k) == "string" and type(v) == "string" then
+				settings.npcAlias[k] = v
+			end
+		end
+		if not unloaded and ext.npcAlias then pcall(ext.npcAlias, true) end
+	end
 
 	if not remote then
 		local sl = readJson("slots.json")
