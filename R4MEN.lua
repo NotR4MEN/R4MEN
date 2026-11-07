@@ -3,9 +3,13 @@ local SRC = [==[
 do
 	local q = queue_on_teleport or queueonteleport
 		or (syn and syn.queue_on_teleport) or (fluxus and fluxus.queue_on_teleport)
-	if q and readfile and isfile and isfile("R4MEN_auto.lua") then
+	local env0 = (getgenv and getgenv()) or _G
+	-- [FIX] antrean didaftarkan SEKALI per game (penanda dibersihkan oleh kode antrean saat teleport terjadi)
+	if q and env0.__R4MEN_QUEUED ~= tostring(game.GameId) and readfile and isfile and isfile("R4MEN_auto.lua") then
 		local gid = tostring(game.GameId)
-		pcall(q, "local GID = " .. gid .. "\n" .. [[
+		local okQ = pcall(q, "local GID = " .. gid .. "\n" .. [[
+			local E = (getgenv and getgenv()) or _G
+			E.__R4MEN_QUEUED = nil
 			if not game:IsLoaded() then game.Loaded:Wait() end
 			if game.GameId ~= GID then return end
 			task.wait(2)
@@ -15,6 +19,7 @@ do
 			local ok, e = pcall(function() loadstring(readfile("R4MEN_auto.lua"))() end)
 			if not ok then warn("R4MEN auto-run gagal: " .. tostring(e)) end
 		]])
+		if okQ then env0.__R4MEN_QUEUED = gid end
 	end
 end
 -- ================================================
@@ -63,6 +68,78 @@ local settings: { [string]: any } = {
 	floatUpKey = Enum.KeyCode.PageUp,
 	floatDownKey = Enum.KeyCode.PageDown,
 }
+
+-- =====================================================
+-- PENYIMPANAN TERPUSAT (path seragam, cadangan .bak, flush paksa)
+--  settings.path(nama)        -> path lengkap (folder R4MEN/, atau prefix R4MEN_ kalau tak ada folder)
+--  settings.save(nama, teks)  -> tulis; file lama dicadangkan ke .bak; tidak menulis bila isi sama
+--  settings.load(nama)        -> baca JSON; kalau file utama rusak, pakai .bak
+--  settings.flushers / flush  -> tiap modul mendaftarkan fungsi simpan; flush() menjalankan semuanya
+-- =====================================================
+do
+	local folder = tostring(settings.saveFolder)
+	local mode: boolean? = nil
+	local HttpSvc = game:GetService("HttpService")
+
+	local function decide()
+		if mode ~= nil then return end
+		mode = false
+		if isfolder then
+			pcall(function()
+				if not isfolder(folder) and makefolder then makefolder(folder) end
+				mode = isfolder(folder) == true
+			end)
+		end
+	end
+
+	settings.path = function(name: string): string
+		decide()
+		if mode then return folder .. "/" .. name end
+		return folder .. "_" .. name
+	end
+
+	settings.save = function(name: string, content: string): boolean
+		if not writefile or type(content) ~= "string" then return false end
+		local p = settings.path(name)
+		if readfile and isfile then
+			local okE, ex = pcall(isfile, p)
+			if okE and ex then
+				local okR, old = pcall(readfile, p)
+				if okR and type(old) == "string" then
+					if old == content then return true end -- tidak ada perubahan, lewati
+					local a, b = string.sub(old, 1, 1), string.sub(old, -1)
+					if (a == "{" and b == "}") or (a == "[" and b == "]") then
+						pcall(writefile, p .. ".bak", old) -- cadangan hanya dari file yang utuh
+					end
+				end
+			end
+		end
+		return (pcall(writefile, p, content))
+	end
+
+	settings.load = function(name: string): any
+		if not (readfile and isfile) then return nil end
+		local p = settings.path(name)
+		for _, cand in ipairs({ p, p .. ".bak" }) do
+			local okE, ex = pcall(isfile, cand)
+			if okE and ex then
+				local okR, raw = pcall(readfile, cand)
+				if okR and type(raw) == "string" then
+					local okD, d = pcall(function() return HttpSvc:JSONDecode(raw) end)
+					if okD and type(d) == "table" then return d end
+				end
+			end
+		end
+		return nil
+	end
+
+	settings.flushers = {}
+	settings.flush = function()
+		for _, fn in pairs(settings.flushers) do
+			pcall(fn)
+		end
+	end
+end
 
 local state: { [string]: boolean } = {
 	speed = false,
@@ -2236,10 +2313,10 @@ do
 	N.alias = {}
 	do
 		local HttpSvc = game:GetService("HttpService")
-		local aliasPath = tostring(settings.saveFolder) .. "/npc_alias_" .. tostring(game.GameId) .. ".json"
-		if readfile and isfile and isfile(aliasPath) then
-			local okA, d = pcall(function() return HttpSvc:JSONDecode(readfile(aliasPath)) end)
-			if okA and type(d) == "table" then
+		local aliasPath = "npc_alias_" .. tostring(game.GameId) .. ".json"
+		do
+			local d = settings.load(aliasPath)
+			if type(d) == "table" then
 				for k, v in pairs(d) do
 					if type(k) == "string" and type(v) == "string" and v ~= "" then N.alias[k] = v end
 				end
@@ -2247,17 +2324,14 @@ do
 		end
 		N.saveAlias = function()
 			if not writefile then return end
-			if makefolder and isfolder and not isfolder(settings.saveFolder) then
-				pcall(makefolder, settings.saveFolder)
-			end
-			pcall(function() writefile(aliasPath, HttpSvc:JSONEncode(N.alias)) end)
+			pcall(function() settings.save(aliasPath, HttpSvc:JSONEncode(N.alias)) end)
 		end
 
 		-- Centang NPC (per game): dimuat lagi saat script jalan; ESP NPC langsung menandai yang sudah dicentang.
-		local selPath = tostring(settings.saveFolder) .. "/npc_sel_" .. tostring(game.GameId) .. ".json"
-		if readfile and isfile and isfile(selPath) then
-			local okS, d = pcall(function() return HttpSvc:JSONDecode(readfile(selPath)) end)
-			if okS and type(d) == "table" and type(d.sel) == "table" then
+		local selPath = "npc_sel_" .. tostring(game.GameId) .. ".json"
+		do
+			local d = settings.load(selPath)
+			if type(d) == "table" and type(d.sel) == "table" then
 				for _, nm in ipairs(d.sel) do
 					if type(nm) == "string" and nm ~= "" then N.sel[nm] = true end
 				end
@@ -2269,10 +2343,7 @@ do
 			for nm, v in pairs(N.sel) do
 				if v then names[#names + 1] = nm end
 			end
-			if makefolder and isfolder and not isfolder(settings.saveFolder) then
-				pcall(makefolder, settings.saveFolder)
-			end
-			pcall(function() writefile(selPath, HttpSvc:JSONEncode({ sel = names })) end)
+			pcall(function() settings.save(selPath, HttpSvc:JSONEncode({ sel = names })) end)
 		end
 	end
 	N.display = function(name: string): string
@@ -3686,7 +3757,7 @@ xpcall(function()
 	local function rebuildMeta()
 		local seen, list = {}, {}
 		for _, rn in pairs(rarMap) do
-			if not seen[rn] and not string.match(rn, "^Tier %d+$") then
+			if not seen[rn] and not string.match(rn, "^[Tt]ier%s*%d+$") then
 				seen[rn] = true
 				list[#list + 1] = rn
 			end
@@ -3884,7 +3955,7 @@ xpcall(function()
 				local w = wordIn(f.rar)
 				rn = w and cap(w) or tostring(f.rar)
 			end
-			if rn then
+			if rn and not string.match(rn, "^[Tt]ier%s*%d+$") then
 				rarMap[k] = rn
 				count = count + 1
 				if #k >= 5 then table.insert(keysByLen, k) end
@@ -3915,7 +3986,7 @@ xpcall(function()
 	local PROFILE_MAX_AGE = 7 * 24 * 3600
 
 	local function profilePath()
-		return tostring(settings.saveFolder) .. "/rarity_" .. tostring(game.GameId) .. ".json"
+		return settings.path("rarity_" .. tostring(game.GameId) .. ".json")
 	end
 
 	local function notifyListeners()
@@ -3927,7 +3998,7 @@ xpcall(function()
 		rarMap, keysByLen = {}, {}
 		local n = 0
 		for k, rn in pairs(map) do
-			if type(k) == "string" and type(rn) == "string" and k ~= "" then
+			if type(k) == "string" and type(rn) == "string" and k ~= "" and not string.match(rn, "^[Tt]ier%s*%d+$") then
 				rarMap[k] = rn
 				n = n + 1
 				if #k >= 5 then table.insert(keysByLen, k) end
@@ -3970,7 +4041,7 @@ xpcall(function()
 			end
 			local map = {}
 			for k, rn in pairs(rarMap) do map[k] = rn end
-			writefile(profilePath(), HttpSvc:JSONEncode({ v = 2, t = os.time(), gid = game.GameId, count = api.count, tg = api.tierGuess == true, map = map }))
+			settings.save("rarity_" .. tostring(game.GameId) .. ".json", HttpSvc:JSONEncode({ v = 2, t = os.time(), gid = game.GameId, count = api.count, tg = api.tierGuess == true, map = map }))
 		end)
 	end
 
@@ -6068,7 +6139,7 @@ do
 	end))
 end
 
-local catPath = tostring(settings.saveFolder) .. "/items_" .. tostring(game.GameId) .. ".json"
+local catName = "items_" .. tostring(game.GameId) .. ".json"
 
 local function saveCatalog()
 	if unloaded or not writefile then return end
@@ -6084,17 +6155,14 @@ local function saveCatalog()
 	end
 	local okJ, json = pcall(function() return HttpService:JSONEncode({ names = names, sel = sel, pins = pin.list, pinW = pin.w, pinH = pin.h, pinS = pin.sc }) end)
 	if not okJ then return end
-	if makefolder and isfolder and not isfolder(settings.saveFolder) then
-		pcall(makefolder, settings.saveFolder)
-	end
-	pcall(writefile, catPath, json)
+	pcall(settings.save, catName, json)
 	persistDirty = false
 end
 
 local loadedCatalog = false
-if readfile and isfile and isfile(catPath) then
-	local okL, data = pcall(function() return HttpService:JSONDecode(readfile(catPath)) end)
-	if okL and type(data) == "table" then
+do
+	local data = settings.load(catName)
+	if type(data) == "table" then
 		if type(data.names) == "table" then
 			for _, it in ipairs(data.names) do
 				if type(it) == "table" and type(it.n) == "string" and it.n ~= "" then
@@ -6139,7 +6207,7 @@ end
 -- lewat R4MEN_auto.lua, dan katalog + centangan item langsung dimuat.
 do
 	local TeleportService = game:GetService("TeleportService")
-	local hopFile = tostring(settings.saveFolder) .. "/hop_visited.json"
+	local hopFile = "hop_visited.json"
 	local HOP_SKIP_SECONDS = 1800 -- server yang baru dikunjungi tidak dipilih lagi selama 30 menit
 	local hopMode = "Sepi"
 	local hopping = false
@@ -6187,9 +6255,9 @@ do
 
 	local function loadVisited(): { [string]: number }
 		local t = {}
-		if readfile and isfile and isfile(hopFile) then
-			local okV, d = pcall(function() return HttpService:JSONDecode(readfile(hopFile)) end)
-			if okV and type(d) == "table" then
+		do
+			local d = settings.load(hopFile)
+			if type(d) == "table" then
 				for id, ts in pairs(d) do
 					if type(id) == "string" and type(ts) == "number" and os.time() - ts < HOP_SKIP_SECONDS then
 						t[id] = ts
@@ -6251,13 +6319,8 @@ do
 			end
 
 			visited[pick.id] = os.time()
-			if writefile then
-				if makefolder and isfolder and not isfolder(settings.saveFolder) then
-					pcall(makefolder, settings.saveFolder)
-				end
-				pcall(writefile, hopFile, HttpService:JSONEncode(visited))
-			end
-			if persistDirty then pcall(saveCatalog) end
+			pcall(settings.save, hopFile, HttpService:JSONEncode(visited))
+			pcall(settings.flush) -- [FIX] simpan SEMUA file (item, waypoint, settings, NPC) sebelum pindah server
 
 			toast(string.format("Pindah ke server (%d/%d pemain)...", pick.playing, pick.maxPlayers))
 			local okT, errT = pcall(function()
@@ -6281,11 +6344,14 @@ do
 	end))
 end
 
+settings.flushers.items = function()
+	if persistDirty then saveCatalog() end
+end
 local saveAcc = 0
 track(RunService.Heartbeat:Connect(function(dt: number)
 	if unloaded then return end
 	saveAcc += dt
-	if saveAcc >= 3 then
+	if saveAcc >= 1 then -- [FIX] cek tiap 1 detik (sebelumnya 3)
 		saveAcc = 0
 		if persistDirty then pcall(saveCatalog) end
 	end
@@ -7003,28 +7069,8 @@ task.spawn(function()
 	if not (writefile and readfile and isfile) then return end
 	local HttpService = game:GetService("HttpService")
 
-	local folder = tostring(settings.saveFolder or "R4MEN")
-	local useFolder = false
-	if makefolder and isfolder then
-		pcall(function()
-			if not isfolder(folder) then makefolder(folder) end
-			useFolder = isfolder(folder) == true
-		end)
-	end
-
-	local function path(name: string): string
-		if useFolder then return folder .. "/" .. name end
-		return folder .. "_" .. name
-	end
-
 	local function readJson(name: string): any
-		local ok, res = pcall(function()
-			local p = path(name)
-			if not isfile(p) then return nil end
-			return HttpService:JSONDecode(readfile(p))
-		end)
-		if ok and type(res) == "table" then return res end
-		return nil
+		return settings.load(name) -- pembaca terpusat (otomatis pakai .bak kalau file utama rusak)
 	end
 
 	local function encode(t: any): string?
@@ -7078,29 +7124,33 @@ task.spawn(function()
 	local lastW = encode(wpData())
 	local lastS = encode(slots)
 
-	while not unloaded do
-		task.wait(3)
-		if unloaded then break end
-
+	local function saveAll()
 		local eg = encode(globalData())
 		if eg and eg ~= lastG then
 			lastG = eg
-			pcall(writefile, path("settings.json"), eg)
+			pcall(settings.save, "settings.json", eg)
 		end
 
 		local ew = encode(wpData())
 		if ew and ew ~= lastW then
 			lastW = ew
-			pcall(writefile, path(wpFile), ew)
+			pcall(settings.save, wpFile, ew)
 		end
 
 		if not remote then
 			local es = encode(slots)
 			if es and es ~= lastS then
 				lastS = es
-				pcall(writefile, path("slots.json"), es)
+				pcall(settings.save, "slots.json", es)
 			end
 		end
+	end
+	settings.flushers.config = saveAll -- dipanggil settings.flush() saat hop / unload / teleport
+
+	while not unloaded do
+		task.wait(1) -- [FIX] sebelumnya 3 detik
+		if unloaded then break end
+		pcall(saveAll)
 	end
 end)
 
@@ -7326,6 +7376,7 @@ xpcall(function()
 		end
 
 		add("== TES DETEKSI RARITY ==")
+		add("Build: v1.2 | rarity-filter-2 | storage-1")
 		add("GameId: " .. tostring(game.GameId))
 
 		-- ---------- 0) STREAMING: batas jarak muat objek dari game ----------
@@ -7607,7 +7658,7 @@ xpcall(function()
 				if makefolder and isfolder and not isfolder(settings.saveFolder) then
 					makefolder(settings.saveFolder)
 				end
-				writefile(tostring(settings.saveFolder) .. "/rarity_scan_" .. tostring(game.GameId) .. ".txt", lastReport)
+				writefile(settings.path("rarity_scan_" .. tostring(game.GameId) .. ".txt"), lastReport)
 			end)
 		end
 
@@ -7645,6 +7696,7 @@ end, warn)
 -- =====================================================
 local function unload()
 	if unloaded then return end
+	pcall(settings.flush) -- [FIX] simpan semua dulu sebelum apa pun dimatikan
 	unloaded = true
 
 	disableAllFeatures()
@@ -7672,6 +7724,20 @@ local function unload()
 end
 
 unloadFn = unload
+-- Simpan paksa saat game memulai teleport sendiri, atau saat pemain keluar / game ditutup
+pcall(function()
+	track(player.OnTeleport:Connect(function()
+		pcall(settings.flush)
+	end))
+end)
+track(Players.PlayerRemoving:Connect(function(p)
+	if p == player then pcall(settings.flush) end
+end))
+pcall(function()
+	game:BindToClose(function()
+		pcall(settings.flush)
+	end)
+end)
 do
 	local env = (getgenv and getgenv()) or _G
 	env.__R4MEN_UNLOAD = unload
