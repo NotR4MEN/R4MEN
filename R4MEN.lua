@@ -31,7 +31,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-for _, n in ipairs({ "UniversalUrbee", "ControlPanel", "UU_ITEMS", "UU_NPC" }) do
+for _, n in ipairs({ "UniversalUrbee", "ControlPanel", "UU_ITEMS", "UU_NPC", "UU_RARITY" }) do
 	local old = playerGui:FindFirstChild(n)
 	if old then old:Destroy() end
 end
@@ -966,13 +966,10 @@ local function updateEsp(dt: number)
 			end
 
 			if o and char then
-				local col = ESP_SOFT_WHITE
-				if hasTeams and p.Team then
-					col = p.TeamColor.Color
-				end
+				local col = Color3.fromRGB(80, 200, 255) -- BIRU MUDA = PEMAIN
 				o.hl.FillColor = col
 				o.hl.OutlineColor = col
-				o.name.Text = p.Name
+				o.name.Text = "[P] " .. p.Name
 				o.name.TextColor3 = col
 
 				local hum = char:FindFirstChildOfClass("Humanoid")
@@ -1650,10 +1647,11 @@ end
 local movementPage = newPage("Movement")
 local physicsPage = newPage("Physics")
 local teleportPage = newPage("Teleport")
+newPage("ESP") -- halaman ESP sendiri (ESP NPC/Hewan + Loot & Item ESP); diakses lewat pages.ESP
 local configPage = newPage("Config")
 local settingsPage = newPage("Settings")
 
-for i, name in ipairs({ "Movement", "Physics", "Visual", "Teleport", "Config", "Settings" }) do
+for i, name in ipairs({ "Movement", "Physics", "Visual", "ESP", "Teleport", "Config", "Settings" }) do
 	local b = new("TextButton", {
 		LayoutOrder = i,
 		Size = UDim2.new(1, 0, 0, 38),
@@ -2056,7 +2054,7 @@ do
 	sectionLabel(visualPage, 5, "Kamera")
 	addSliderCard(visualPage, 6, "FOV", "Bawaan Roblox: 70", "fov", 30, 120, 120)
 
-	-- ESP NPC / Hewan ada di tab Teleport (satu tempat dengan scan barang) -- lihat blok 2
+	-- ESP NPC / Hewan ada di tab ESP (satu tempat dengan scan barang) -- lihat blok 2
 
 	sectionLabel(visualPage, 10, "Utilitas")
 	addToggleCard(visualPage, 11, "Anti-AFK", "Mencegah kick karena diam 20 menit. Aktif sejak awal.", "antiAfk")
@@ -2459,7 +2457,7 @@ do
 			MaxDistance = math.huge,
 		}, N.folder)
 		local nameL = text(bb, {
-			Text = N.display(e.name),
+			Text = "[NPC] " .. N.display(e.name),
 			Size = UDim2.new(1, 0, 0.5, 0),
 			Font = Enum.Font.GothamBold,
 			TextSize = 12,
@@ -2623,9 +2621,9 @@ do
 	-- ---------- UI ----------
 	local npcRefreshList: () -> () = function() end
 
-	-- Diletakkan di tab Teleport, tepat di atas "Loot & Item ESP" (scan NPC di atas, scan barang di bawah).
-	sectionLabel(pages.Teleport, 1, "ESP NPC / Hewan")
-	local card = makeCard(pages.Teleport, 364, 2)
+	-- Diletakkan di tab ESP, tepat di atas "Loot & Item ESP" (scan NPC di atas, scan barang di bawah).
+	sectionLabel(pages.ESP, 1, "ESP NPC / Hewan")
+	local card = makeCard(pages.ESP, 364, 2)
 	text(card, {
 		Text = "ESP NPC / Hewan",
 		Font = Enum.Font.GothamBold,
@@ -2980,7 +2978,7 @@ do
 			N.saveAlias()
 			N.orderDirty = true
 			for e, vis in pairs(N.vis) do -- label ESP yang sudah tergambar ikut berganti
-				if e.name == nm and vis.name then vis.name.Text = N.display(nm) end
+				if e.name == nm and vis.name then vis.name.Text = "[NPC] " .. N.display(nm) end
 			end
 			close()
 			npcRefreshList()
@@ -3590,12 +3588,280 @@ end
 -- =====================================================
 -- ITEM ESP SELEKTIF (scan ringan + daftar pilihan + detail hanya untuk yang dipilih)
 -- =====================================================
-sectionLabel(teleportPage, 4, "Loot & Item ESP")
+-- =====================================================
+-- DATA RARITY (tanpa kartu/label sendiri) -- dipakai oleh Item ESP di bawah
+--  * Rarity dibaca otomatis dari ModuleScript data game (ReplicatedStorage), tanpa memetik item.
+--  * Nomor tier (1,2,3...) diterjemahkan ke nama rarity.
+--  * Item ESP memakainya untuk: dropdown "Rarity" (filter daftar) + warna label/titik per rarity.
+--  * Data dimuat otomatis saat pertama kali dibutuhkan (dropdown dibuka / label item muncul).
+-- Dibungkus xpcall + function supaya tidak menambah jumlah local di level atas.
+-- =====================================================
+xpcall(function()
+	local RAR_WORDS = { "legendary", "mythical", "mythic", "epic", "uncommon", "common", "rare", "exotic", "divine", "godly", "secret", "unique" }
+	local MOD_WORDS = { "item", "mushroom", "shroom", "fung", "rarit", "data", "config", "loot", "drop", "forag", "catalog", "info", "stat", "list", "const", "shop", "crop", "plant" }
+	local NAMES = { "Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic" }
+	local RCOL = {
+		Common = Color3.fromRGB(200, 200, 205),
+		Uncommon = Color3.fromRGB(110, 220, 120),
+		Rare = Color3.fromRGB(90, 165, 255),
+		Epic = Color3.fromRGB(192, 110, 255),
+		Legendary = Color3.fromRGB(255, 196, 60),
+		Mythic = Color3.fromRGB(255, 90, 120),
+	}
+	local DEF_NUM = { [1] = "Common", [2] = "Uncommon", [3] = "Rare", [4] = "Epic", [5] = "Legendary", [6] = "Mythic" }
+
+	local api = {
+		names = NAMES,
+		colors = RCOL,
+		ready = false,
+		loading = false,
+		failed = false,
+		version = 0,
+		count = 0,
+		listeners = {},
+	}
+	local rarMap, keysByLen = {}, {}   -- namaTernormalisasi -> nama rarity
+	local numName = DEF_NUM
+	local cache = {}
+
+	-- ---------- helper teks ----------
+	local function wordIn(s)
+		local l = string.lower(tostring(s))
+		for _, w in ipairs(RAR_WORDS) do
+			if string.find(l, "%f[%a]" .. w .. "%f[%A]") then return w end
+		end
+		return nil
+	end
+
+	local function exactWord(s)
+		local l = string.lower(tostring(s))
+		l = string.gsub(l, "[%s_%-]", "")
+		for _, w in ipairs(RAR_WORDS) do
+			if l == w then return w end
+		end
+		return nil
+	end
+
+	-- skor nama field rarity: "Rarity" paling kuat, lalu yang mengandung rarity, lalu Tier/Grade
+	local function keyScore(k)
+		local l = string.lower(tostring(k))
+		if l == "rarity" then return 3 end
+		if string.find(l, "rarity", 1, true) then return 2 end
+		if string.find(l, "tier", 1, true) or string.find(l, "grade", 1, true) then return 1 end
+		return 0
+	end
+
+	local function norm(s)
+		return (string.gsub(string.lower(tostring(s)), "[^%w]", ""))
+	end
+
+	local function cap(s)
+		return string.upper(string.sub(s, 1, 1)) .. string.sub(s, 2)
+	end
+
+	local function scanTable(root, found)
+		local seen, nodes = {}, 0
+		local function walk(t, depth, key)
+			if depth > 5 or seen[t] or nodes > 5000 then return end
+			seen[t] = true
+			nodes = nodes + 1
+
+			local rv, best = nil, 0
+			for k, v in pairs(t) do
+				if type(k) == "string" and (type(v) == "string" or type(v) == "number") then
+					local sc = keyScore(k)
+					if sc > best then
+						best, rv = sc, v
+					end
+				end
+			end
+			if rv ~= nil then
+				local nm = t.Name or t.DisplayName or t.name or t.displayName or t.Title or key
+				if nm ~= nil and type(nm) ~= "table" then
+					table.insert(found, { name = tostring(nm), rar = rv, sc = best })
+				end
+			end
+
+			for k, v in pairs(t) do
+				if type(v) == "table" then
+					if type(k) == "string" and exactWord(k) then
+						for ik, iv in pairs(v) do
+							local nm = nil
+							if type(iv) == "string" then
+								nm = iv
+							elseif type(ik) == "string" then
+								nm = ik
+							elseif type(iv) == "table" then
+								nm = iv.Name or iv.DisplayName or iv.name
+							end
+							if nm ~= nil and type(nm) ~= "table" then
+								table.insert(found, { name = tostring(nm), rar = k, sc = 1 })
+							end
+						end
+					end
+					walk(v, depth + 1, (type(k) == "string") and k or key)
+				end
+			end
+		end
+		pcall(walk, root, 0, nil)
+	end
+
+	local function loadData()
+		if api.loading or unloaded then return end
+		api.loading = true
+		api.ready = false
+		api.failed = false
+
+		local mods = {}
+		for _, d in ipairs(ReplicatedStorage:GetDescendants()) do
+			if d:IsA("ModuleScript") then
+				local l = string.lower(d.Name)
+				for _, w in ipairs(MOD_WORDS) do
+					if string.find(l, w, 1, true) then
+						table.insert(mods, d)
+						break
+					end
+				end
+			end
+		end
+
+		local found = {}
+		for i, m in ipairs(mods) do
+			if i > 80 or unloaded then break end
+			local done, res = false, nil
+			task.spawn(function()
+				local ok, r = pcall(require, m)
+				if ok then res = r end
+				done = true
+			end)
+			local t0 = os.clock()
+			while not done and os.clock() - t0 < 1.5 do task.wait() end
+			if done and type(res) == "table" then
+				scanTable(res, found)
+			end
+		end
+
+		-- satu entri terbaik per nama (field "Rarity" menang atas Tier/Grade)
+		local best = {}
+		for _, f in ipairs(found) do
+			local k = norm(f.name)
+			if k ~= "" then
+				local cur = best[k]
+				if not cur or f.sc > cur.sc then best[k] = f end
+			end
+		end
+
+		-- terjemahan nomor tier -> nama rarity. Dikalibrasi dengan 4 mushroom yang rarity-nya
+		-- sudah diketahui dari tabel game; kalau tidak lengkap, pakai urutan standar 1..5.
+		local nm = {}
+		for n, r in pairs(DEF_NUM) do nm[n] = r end
+		local anchors = { honeyfungus = "Common", amethystdeceiver = "Uncommon", blacktrumpet = "Rare", blacktruffle = "Epic" }
+		local cal, calOk, epicN = {}, true, nil
+		for k, rn in pairs(anchors) do
+			local f = best[k]
+			if f and type(f.rar) == "number" then
+				cal[f.rar] = rn
+				if rn == "Epic" then epicN = f.rar end
+			else
+				calOk = false
+			end
+		end
+		local calCount = 0
+		for _ in pairs(cal) do calCount = calCount + 1 end
+		if calOk and calCount == 4 and epicN then
+			nm = {}
+			for n, rn in pairs(cal) do nm[n] = rn end
+			local higher, arr = {}, {}
+			for _, f in pairs(best) do
+				if type(f.rar) == "number" and f.rar > epicN then higher[f.rar] = true end
+			end
+			for n in pairs(higher) do table.insert(arr, n) end
+			table.sort(arr)
+			if arr[1] then nm[arr[1]] = "Legendary" end
+			if arr[2] then nm[arr[2]] = "Mythic" end
+		end
+		numName = nm
+
+		rarMap, keysByLen = {}, {}
+		local count = 0
+		for k, f in pairs(best) do
+			local rn
+			if type(f.rar) == "number" then
+				rn = numName[f.rar] or ("Tier " .. tostring(f.rar))
+			else
+				local w = wordIn(f.rar)
+				rn = w and cap(w) or tostring(f.rar)
+			end
+			rarMap[k] = rn
+			count = count + 1
+			if #k >= 5 then table.insert(keysByLen, k) end
+		end
+		table.sort(keysByLen, function(a, b) return #a > #b end)
+
+		cache = {}
+		api.loading = false
+		api.count = count
+		if count > 0 then
+			api.ready = true
+		else
+			api.failed = true
+		end
+		api.version = api.version + 1
+		for _, fn in ipairs(api.listeners) do pcall(fn) end
+	end
+
+
+	-- cocokkan teks item dengan data (persis, lalu akhiran: "Huge Slippery Jack" -> "Slippery Jack")
+	local function lookup(c)
+		if c == "" then return nil end
+		local r = rarMap[c]
+		if r then return r end
+		for _, k in ipairs(keysByLen) do
+			if #k <= #c and string.sub(c, -#k) == k then return rarMap[k] end
+		end
+		return nil
+	end
+
+	-- nama item -> rarity (nil = tidak dikenal / data belum siap)
+	function api.get(name)
+		if not api.ready then return nil end
+		local c = norm(name)
+		if c == "" then return nil end
+		local r = cache[c]
+		if r == nil then
+			r = lookup(c) or false
+			cache[c] = r
+		end
+		return r or nil
+	end
+
+	-- cadangan: atribut spesies pada model (mis. Sp = "SlipperyJack")
+	function api.getAttr(inst)
+		if not (api.ready and inst) then return nil end
+		for _, an in ipairs({ "Sp", "Species", "Type" }) do
+			local v = inst:GetAttribute(an)
+			if type(v) == "string" then
+				local r = lookup(norm(v))
+				if r then return r end
+			end
+		end
+		return nil
+	end
+
+	function api.ensure()
+		if api.ready or api.loading or api.failed or unloaded then return end
+		task.spawn(loadData)
+	end
+
+	settings.rarityApi = api
+end, warn)
+
+sectionLabel(pages.ESP, 4, "Loot & Item ESP")
 
 do
 
 -- ---------- UI ----------
-local scannerCard = makeCard(teleportPage, 340, 5)
+local scannerCard = makeCard(pages.ESP, 340, 5)
 
 local scanBtn = new("TextButton", {
 	Position = UDim2.fromOffset(14, 12),
@@ -3697,9 +3963,12 @@ local function smallButton(parent: Instance, txt: string, size: UDim2, layoutOrd
 end
 
 do -- Item ESP dibungkus agar local-nya tidak menghabiskan jatah 200 local
-local selectAllBtn = smallButton(actionRow, "Pilih hasil", UDim2.new(1 / 3, -4, 1, 0), 1)
-local clearSelBtn = smallButton(actionRow, "Kosongkan", UDim2.new(1 / 3, -4, 1, 0), 2)
-local dotsBtn = smallButton(actionRow, "Titik: ON", UDim2.new(1 / 3, -4, 1, 0), 3)
+local selectAllBtn = smallButton(actionRow, "Pilih hasil", UDim2.new(0.25, -5, 1, 0), 1)
+local clearSelBtn = smallButton(actionRow, "Kosongkan", UDim2.new(0.25, -5, 1, 0), 2)
+local dotsBtn = smallButton(actionRow, "Titik: ON", UDim2.new(0.25, -5, 1, 0), 3)
+selectAllBtn.TextSize = 10
+clearSelBtn.TextSize = 10
+dotsBtn.TextSize = 10
 hover(selectAllBtn, T.bg)
 hover(clearSelBtn, T.bg)
 
@@ -3786,6 +4055,7 @@ local catalog: { [string]: any } = {}    -- KATALOG: semua nama yang pernah terl
 local persistDirty = false               -- katalog/centangan berubah -> perlu disimpan ke file
 local order: { string } = {}             -- nama unik (urut abjad)
 local itemSel: { [string]: boolean? } = {}
+local pin: any = { list = {}, set = {}, w = 460, h = 36 }  -- item yang dipasang di pop-up (berurutan)
 local rows: { [string]: any } = {}
 local all: { any } = {}                  -- semua entri (untuk pengukuran jarak bergilir)
 local byTrig: { [Instance]: any } = {}   -- pemicu (prompt/click/tool/touch) -> entri
@@ -3808,12 +4078,63 @@ local scanning = false
 local autoScan = false                   -- = pelacakan live aktif
 local dotsOn = true
 local filterMode = "Semua"
+local rarSel: { [string]: boolean } = {}   -- rarity yang dipilih di dropdown (kosong = Semua)
+local rarSelN = 0
 local onlyPresent = false                -- true = sembunyikan item yang stoknya 0 (belum ada di map)
 local markFolder: Folder? = nil
 local liveAdd: RBXScriptConnection? = nil
 local liveRem: RBXScriptConnection? = nil
 local curOrigin: Vector3? = nil
 local warnedReg = false
+
+-- ---------- rarity (data dari modul di atas: settings.rarityApi) ----------
+local function rarityOf(name: string): string?
+	local api = settings.rarityApi
+	if not api or not api.ready then return nil end
+	local cg = catalog[name]
+	if cg and cg.rarV == api.version then return cg.rar or nil end
+	local r = api.get(name)
+	local final = true
+	if not r then
+		local g = groups[name]
+		local e1 = g and g.list[1]
+		if e1 then
+			local okA, ra = pcall(function()
+				local tr = e1.trig
+				local m = tr:IsA("Tool") and tr or tr:FindFirstAncestorOfClass("Model") or e1.part
+				return api.getAttr(m)
+			end)
+			if okA then r = ra end
+		else
+			final = false -- belum ada instance di map: jangan simpan hasil "tidak ada" dulu
+		end
+	end
+	if cg and final then
+		cg.rar = r or false
+		cg.rarV = api.version
+	end
+	return r
+end
+
+local function rarityColor(name: string): Color3?
+	local api = settings.rarityApi
+	local r = api and rarityOf(name)
+	return r and api.colors[r] or nil
+end
+
+-- Warnai label (nama, garis tepi, jarak) dan titik sesuai rarity. Tanpa rarity = tampilan default.
+local function applyRarityColor(e: any)
+	local api = settings.rarityApi
+	local ver = api and api.version or 0
+	if e.rarV == ver then return end
+	e.rarV = ver
+	local col = rarityColor(e.name)
+	e.rarCol = col
+	if e.nameLbl then e.nameLbl.TextColor3 = col or T.text end
+	if e.lblStroke then e.lblStroke.Color = col or COL_SEL end
+	if e.distLbl then e.distLbl.TextColor3 = col or COL_SEL end
+	if e.dotFrame and e.label then e.dotFrame.BackgroundColor3 = col or COL_SEL end
+end
 
 -- ---------- penanda (titik & label) ----------
 local function ensureFolder(): Folder
@@ -3827,7 +4148,7 @@ end
 local function styleDot(e: any, on: boolean)
 	local f = e.dotFrame
 	if f then
-		f.BackgroundColor3 = on and COL_SEL or COL_DOT
+		f.BackgroundColor3 = on and (e.rarCol or COL_SEL) or COL_DOT
 	end
 	local d = e.dot
 	if d then
@@ -3889,7 +4210,7 @@ local function makeLabel(e: any)
 		AutoButtonColor = false,
 	}, bb)
 	round(bg, 8)
-	stroke(bg, COL_SEL, 1, 0.35)
+	e.lblStroke = stroke(bg, COL_SEL, 1, 0.35)
 	-- KLIK LABEL = TELEPORT ke item ini
 	bg.MouseButton1Click:Connect(function()
 		if unloaded or not settings.clickTp or e.dead then return end
@@ -3906,7 +4227,7 @@ local function makeLabel(e: any)
 		floatY = nil
 		toast("Teleport ke " .. e.name)
 	end)
-	text(bg, {
+	e.nameLbl = text(bg, {
 		Text = e.name,
 		Font = Enum.Font.GothamBold,
 		TextSize = 12,
@@ -3929,6 +4250,10 @@ local function makeLabel(e: any)
 	e.lastDist = -1
 	labeled[e] = true
 	labelCount += 1
+	e.rarV = nil
+	local rapi = settings.rarityApi
+	if rapi then rapi.ensure() end
+	applyRarityColor(e)
 end
 
 local function dropLabel(e: any)
@@ -3936,6 +4261,9 @@ local function dropLabel(e: any)
 		e.label:Destroy()
 		e.label = nil
 		e.distLbl = nil
+		e.nameLbl = nil
+		e.lblStroke = nil
+		e.rarV = nil
 		labeled[e] = nil
 		labelCount = math.max(0, labelCount - 1)
 	end
@@ -4236,6 +4564,14 @@ local function groupMatches(g: any, q: string): boolean
 		end
 		if not hit then return false end
 	end
+	-- Di tab Terpilih, item yang dicentang manual tetap tampil walau rarity-nya di luar filter
+	if rarSelN > 0 and not (filterMode == "Terpilih" and itemSel[g.name] == true) then
+		local rapi = settings.rarityApi
+		if rapi and not rapi.failed then
+			local r = rarityOf(g.name)
+			if not (r and rarSel[r]) then return false end
+		end
+	end
 	local fm = filterMode
 	if fm == "Semua" then
 		if hasQuery then return true end -- pencarian menembus semua kategori
@@ -4398,13 +4734,13 @@ local function buildRow(g: any)
 		Visible = false,
 	})
 
-	text(btn, {
+	local nmL = text(btn, {
 		Text = name,
 		Font = Enum.Font.GothamMedium,
 		TextSize = 11,
 		TextTruncate = Enum.TextTruncate.AtEnd,
 		Position = UDim2.fromOffset(30, 0),
-		Size = UDim2.new(1, -30 - 78, 1, 0),
+		Size = UDim2.new(1, -30 - 112, 1, 0),
 	})
 	local cnt = text(btn, {
 		Text = "×" .. (groups[name] and #groups[name].list or 0),
@@ -4431,6 +4767,24 @@ local function buildRow(g: any)
 	round(tp, 5)
 	hover(tp, T.accent2)
 
+	-- tombol pin: pasang/lepas item ini di pop-up
+	local pinBtn = new("TextButton", {
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -78, 0.5, 0),
+		Size = UDim2.fromOffset(30, 20),
+		BackgroundColor3 = T.off,
+		Text = "PIN",
+		TextColor3 = T.sub,
+		Font = Enum.Font.GothamBold,
+		TextSize = 9,
+		AutoButtonColor = false,
+		BorderSizePixel = 0,
+	}, btn)
+	round(pinBtn, 5)
+	pinBtn.MouseButton1Click:Connect(function()
+		pin.toggle(name)
+	end)
+
 	local function baseColor(): Color3
 		return itemSel[name] and T.cardSel or T.bg
 	end
@@ -4438,6 +4792,8 @@ local function buildRow(g: any)
 		local sel = itemSel[name] == true
 		box.BackgroundColor3 = sel and COL_SEL or T.off
 		check.Visible = sel
+		pinBtn.BackgroundColor3 = pin.set[name] and T.accent or T.off
+		pinBtn.TextColor3 = pin.set[name] and WHITE or T.sub
 		btn.BackgroundColor3 = baseColor()
 	end
 
@@ -4473,8 +4829,9 @@ local function buildRow(g: any)
 		end
 	end)
 
-	rows[name] = { btn = btn, apply = apply, cnt = cnt, order = 0 }
+	rows[name] = { btn = btn, apply = apply, cnt = cnt, order = 0, nmL = nmL }
 	apply()
+	nmL.TextColor3 = rarityColor(name) or T.text
 end
 
 local function buildPending(maxN: number)
@@ -4790,6 +5147,113 @@ dotsBtn.MouseButton1Click:Connect(function()
 	end
 end)
 
+-- ---------- dropdown RARITY: filter daftar; warna label & titik ikut rarity ----------
+do
+	local api = settings.rarityApi
+	if api then
+		local RN = { "Semua" }
+		for _, n in ipairs(api.names) do RN[#RN + 1] = n end
+
+		local rarBtn = smallButton(actionRow, "Rarity ▼", UDim2.new(0.25, -5, 1, 0), 4)
+		rarBtn.TextSize = 10
+
+		local ROW_H, GAP = 22, 2
+		local panel = new("Frame", {
+			AnchorPoint = Vector2.new(1, 0),
+			Position = UDim2.new(1, -14, 0, 158),
+			Size = UDim2.fromOffset(150, 8 + #RN * ROW_H + (#RN - 1) * GAP),
+			BackgroundColor3 = T.card,
+			BorderSizePixel = 0,
+			Active = true, -- cegah klik tembus ke daftar di bawahnya
+			Visible = false,
+			ZIndex = 30,
+		}, scannerCard)
+		round(panel, 8)
+		stroke(panel, T.stroke, 1, 0.2)
+
+		local rbtn = {}
+		for i, _ in ipairs(RN) do
+			local b = new("TextButton", {
+				Position = UDim2.fromOffset(4, 4 + (i - 1) * (ROW_H + GAP)),
+				Size = UDim2.new(1, -8, 0, ROW_H),
+				BackgroundColor3 = T.bg,
+				Text = "",
+				TextColor3 = T.text,
+				Font = Enum.Font.GothamMedium,
+				TextSize = 11,
+				TextXAlignment = Enum.TextXAlignment.Left,
+				RichText = true,
+				AutoButtonColor = false,
+				BorderSizePixel = 0,
+				ZIndex = 31,
+			}, panel)
+			round(b, 6)
+			new("UIPadding", { PaddingLeft = UDim.new(0, 8) }, b)
+			rbtn[i] = b
+		end
+
+		local function refreshRar()
+			for i, n in ipairs(RN) do
+				local chk = (n == "Semua" and rarSelN == 0) or rarSel[n] == true
+				local col = api.colors[n] or WHITE
+				rbtn[i].Text = string.format('<font color="#%s">●</font>  %s%s', col:ToHex(), n, chk and "   ✓" or "")
+				rbtn[i].BackgroundColor3 = chk and T.cardSel or T.bg
+			end
+			local label = "Rarity"
+			if rarSelN == 1 then
+				label = tostring(next(rarSel))
+			elseif rarSelN > 1 then
+				label = rarSelN .. " rarity"
+			end
+			local active = rarSelN > 0
+			rarBtn.Text = label .. (panel.Visible and " ▲" or " ▼")
+			rarBtn.BackgroundColor3 = active and T.accent or T.bg
+			rarBtn.TextColor3 = active and WHITE or T.sub
+		end
+
+		for i, n in ipairs(RN) do
+			rbtn[i].MouseButton1Click:Connect(function()
+				if n == "Semua" then
+					table.clear(rarSel)
+					rarSelN = 0
+					panel.Visible = false
+				else
+					if rarSel[n] then
+						rarSel[n] = nil
+						rarSelN -= 1
+					else
+						rarSel[n] = true
+						rarSelN += 1
+					end
+					api.ensure()
+					if api.loading then toast("Memuat data rarity...") end
+				end
+				refreshRar()
+				onFilterChanged()
+			end)
+		end
+
+		rarBtn.MouseButton1Click:Connect(function()
+			panel.Visible = not panel.Visible
+			if panel.Visible then api.ensure() end
+			refreshRar()
+		end)
+
+		-- data rarity selesai dimuat -> warnai ulang daftar & label, terapkan filter
+		api.listeners[#api.listeners + 1] = function()
+			if unloaded then return end
+			if api.failed then toast("Data rarity tidak ditemukan di game ini") end
+			for name, r in pairs(rows) do
+				if r.nmL then r.nmL.TextColor3 = rarityColor(name) or T.text end
+			end
+			markDue = true
+			onFilterChanged()
+		end
+
+		refreshRar()
+	end
+end
+
 -- ---------- loop per-frame ----------
 local function getOrigin(): Vector3?
 	local cam = workspace.CurrentCamera
@@ -4884,6 +5348,9 @@ local function updateMarkers()
 		if e.label and not e.label:IsDescendantOf(playerGui) then
 			e.label = nil
 			e.distLbl = nil
+			e.nameLbl = nil
+			e.lblStroke = nil
+			e.rarV = nil
 			labeled[e] = nil
 			labelCount = math.max(0, labelCount - 1)
 		end
@@ -4921,6 +5388,7 @@ local function updateLabels(origin: Vector3)
 		local lbl = e.distLbl
 		local part = e.part
 		if lbl and part.Parent then
+			applyRarityColor(e)
 			local d = math.floor((part.Position - origin).Magnitude + 0.5)
 			if d ~= e.lastDist then
 				e.lastDist = d
@@ -4975,6 +5443,338 @@ end))
 -- Nama item yang pernah terlihat + centangan disimpan ke file, jadi daftar langsung lengkap
 -- begitu script dijalankan lagi (tanpa menunggu item respawn atau menekan SCAN).
 local HttpService = game:GetService("HttpService")
+-- ---------- POP-UP ITEM (pin) ----------
+-- Bilah yang selalu tampil (walau menu ditutup). Isinya item yang kamu pin dengan tombol PIN di daftar.
+--  * Klik nama item = TP ke item terdekat (klik lagi = item berikutnya)
+--  * X = hapus item dari pop-up
+--  * Garis tiga di kiri = geser pop-up
+--  * Titik-titik di pojok kanan bawah = ubah ukuran bebas (lebar & tinggi), sama seperti menu utama.
+--    Makin lebar = kotak item makin lebar; makin sempit = item turun ke baris baru; makin tinggi = kotak & huruf makin besar.
+do
+	local PIN_MAX = 6 -- jumlah maksimal item di pop-up
+	-- Ukuran dasar = BATAS MAKSIMAL (skala 1.0). Bilah bisa diperkecil sesuai keinginan (skala MIN_SC..1.0)
+	-- dan diperpanjang ke samping. Bawaan awal: skala 0.75.
+	local K: any = {
+		STRIP = 16, RW = 18, PAD = 4, GAP = 4,
+		MIN_W = 130,
+		BASE_CH = 26, BASE_NS = 12, BASE_IS = 11, BASE_XS = 16,
+		MIN_SC = 0.55, MAX_SC = 1, DEF_SC = 0.75,
+	}
+	K.AREA_L, K.AREA_R = K.STRIP + 2, K.RW + 2
+	local TextService = game:GetService("TextService")
+
+	local function textW(txt: string, font: Enum.Font, size: number): number
+		local okM, sz = pcall(function()
+			return TextService:GetTextSize(txt, size, font, Vector2.new(100000, 100000))
+		end)
+		return okM and sz.X or (#txt * size * 0.6)
+	end
+	-- hitung ukuran kotak & huruf dari skala (info punya lebar tetap supaya kotak tidak "bergoyang")
+	local function applyScale(s: number)
+		s = math.clamp(s, K.MIN_SC, K.MAX_SC)
+		pin.sc = s
+		K.CH = math.floor(K.BASE_CH * s + 0.5)
+		K.NS = math.max(7, math.floor(K.BASE_NS * s + 0.5))
+		K.IS = math.max(7, math.floor(K.BASE_IS * s + 0.5))
+		K.XS = math.max(10, math.floor(K.BASE_XS * s + 0.5))
+		K.IW = math.ceil(textW("×99 · 9999 st", Enum.Font.GothamBold, K.IS)) + 4
+	end
+	applyScale(pin.sc or K.DEF_SC)
+
+	local function clampBar(w: number, h: number): (number, number)
+		local maxW = math.max(K.MIN_W, viewport().X - 20)
+		return math.clamp(w, K.MIN_W, maxW), h
+	end
+	pin.w, pin.h = clampBar(pin.w, pin.h)
+
+	local bar = new("Frame", {
+		Name = "PinBar",
+		AnchorPoint = Vector2.new(0, 0),
+		Position = UDim2.new(0.5, -pin.w / 2, 0, 36),
+		Size = UDim2.fromOffset(pin.w, K.CH + 2 * K.PAD),
+		BackgroundColor3 = T.bgTop,
+		BackgroundTransparency = 0.12,
+		BorderSizePixel = 0,
+		Visible = false,
+	}, gui)
+	round(bar, 10)
+	stroke(bar, T.accent, 1.2, 0.35)
+
+	-- gagang geser (kiri): tiga garis digambar sendiri
+	local mover = new("TextButton", {
+		Size = UDim2.new(0, K.STRIP, 1, 0),
+		BackgroundTransparency = 1,
+		Text = "",
+		AutoButtonColor = false,
+		BorderSizePixel = 0,
+	}, bar)
+	local moverLines = new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromOffset(10, 10),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+	}, mover)
+	new("UIListLayout", { Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder }, moverLines)
+	for i = 1, 3 do
+		local ln = new("Frame", {
+			LayoutOrder = i,
+			Size = UDim2.new(1, 0, 0, 2),
+			BackgroundColor3 = T.sub,
+			BorderSizePixel = 0,
+		}, moverLines)
+		round(ln, 1)
+	end
+	makeDraggable(mover, bar)
+
+	-- area isi: kotak disusun dari kiri, turun ke baris baru kalau bilah dipendekkan
+	local area = new("Frame", {
+		Position = UDim2.fromOffset(K.AREA_L, K.PAD),
+		Size = UDim2.new(1, -(K.AREA_L + K.AREA_R), 1, -2 * K.PAD),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+	}, bar)
+
+	-- gagang perpanjang (kanan bawah): hanya mengubah PANJANG, tinggi terkunci
+	local rgrip = new("TextButton", {
+		AnchorPoint = Vector2.new(1, 1),
+		Position = UDim2.new(1, -1, 1, -1),
+		Size = UDim2.fromOffset(K.RW, K.RW),
+		BackgroundTransparency = 1,
+		Text = "",
+		AutoButtonColor = false,
+		BorderSizePixel = 0,
+		ZIndex = 5,
+	}, bar)
+	for row = 0, 2 do
+		for col = 0, 2 - row do
+			local d = new("Frame", {
+				Position = UDim2.fromOffset(13 - col * 4, 13 - row * 4),
+				Size = UDim2.fromOffset(3, 3),
+				BackgroundColor3 = T.sub,
+				BorderSizePixel = 0,
+				ZIndex = 5,
+			}, rgrip)
+			round(d, 1)
+		end
+	end
+
+	local chips: { [string]: any } = {}
+
+	local function distInfo(name: string): string
+		local g = groups[name]
+		if not g then return "×0" end
+		local hrp = getRoot()
+		if not hrp then return "..." end
+		local n, best = 0, math.huge
+		for _, e in ipairs(g.list) do
+			local part = e.part
+			if part and part.Parent then
+				n += 1
+				local d = (part.Position - hrp.Position).Magnitude
+				if d < best then best = d end
+			end
+		end
+		if n == 0 then return "×0" end
+		return string.format("×%d · %d st", n, math.floor(best + 0.5))
+	end
+
+	-- susun kotak: lebar tiap kotak mengikuti panjang namanya, tinggi tetap
+	local function relayout()
+		local innerW = pin.w - K.AREA_L - K.AREA_R
+		local x, r = 0, 0
+		for _, name in ipairs(pin.list) do
+			local c = chips[name]
+			if c then
+				local want = math.ceil(textW(name, Enum.Font.GothamBold, K.NS)) + K.IW + K.XS + 32
+				local w = math.min(want, innerW)
+				if x > 0 and x + w > innerW then
+					x = 0
+					r += 1
+				end
+				c.chip.Position = UDim2.fromOffset(x, r * (K.CH + K.GAP))
+				c.chip.Size = UDim2.fromOffset(w, K.CH)
+				c.holder.Size = UDim2.new(1, -(K.XS + 8), 1, 0)
+				c.nm.TextSize = K.NS
+				c.nm.Size = UDim2.new(1, -(8 + K.IW + 8), 1, 0)
+				c.info.TextSize = K.IS
+				c.info.Size = UDim2.new(0, K.IW, 1, 0)
+				c.x.Size = UDim2.fromOffset(K.XS, K.XS)
+				c.x.TextSize = math.max(7, K.NS - 3)
+				x += w + K.GAP
+			end
+		end
+		local nRows = (#pin.list > 0) and (r + 1) or 1
+		pin.h = nRows * K.CH + (nRows - 1) * K.GAP + 2 * K.PAD
+		bar.Size = UDim2.fromOffset(pin.w, pin.h)
+	end
+
+	local function buildChip(name: string, idx: number)
+		local chip = new("Frame", {
+			LayoutOrder = idx,
+			Size = UDim2.fromOffset(120, K.CH),
+			BackgroundColor3 = T.bg,
+			BorderSizePixel = 0,
+		}, area)
+		round(chip, 7)
+		local st = stroke(chip, T.stroke, 1, 0.2)
+
+		-- area nama + info: klik = TP
+		local holder = new("TextButton", {
+			Size = UDim2.new(1, -(K.XS + 8), 1, 0),
+			BackgroundTransparency = 1,
+			Text = "",
+			AutoButtonColor = false,
+			ClipsDescendants = true,
+			BorderSizePixel = 0,
+		}, chip)
+		local nm = text(holder, {
+			Text = name,
+			Font = Enum.Font.GothamBold,
+			TextSize = K.NS,
+			TextWrapped = false,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			Position = UDim2.fromOffset(8, 0),
+			Size = UDim2.new(1, -(8 + K.IW + 8), 1, 0),
+		})
+		local info = text(holder, {
+			Text = "",
+			Font = Enum.Font.GothamBold,
+			TextSize = K.IS,
+			TextColor3 = T.sub,
+			TextXAlignment = Enum.TextXAlignment.Right,
+			AnchorPoint = Vector2.new(1, 0),
+			Position = UDim2.new(1, -2, 0, 0),
+			Size = UDim2.new(0, K.IW, 1, 0),
+		})
+
+		holder.MouseButton1Click:Connect(function()
+			local g = groups[name]
+			if g then
+				teleportToNearest(g)
+			else
+				toast("Belum ada di map (belum respawn)")
+			end
+		end)
+		holder.MouseEnter:Connect(function()
+			tween(chip, { BackgroundColor3 = lighten(T.bg) }, 0.1)
+		end)
+		holder.MouseLeave:Connect(function()
+			tween(chip, { BackgroundColor3 = T.bg }, 0.1)
+		end)
+
+		local x = new("TextButton", {
+			AnchorPoint = Vector2.new(1, 0.5),
+			Position = UDim2.new(1, -4, 0.5, 0),
+			Size = UDim2.fromOffset(K.XS, K.XS),
+			BackgroundColor3 = T.off,
+			Text = "X",
+			TextColor3 = WHITE,
+			Font = Enum.Font.GothamBold,
+			TextSize = 9,
+			AutoButtonColor = false,
+			BorderSizePixel = 0,
+		}, chip)
+		new("UICorner", { CornerRadius = UDim.new(0.5, 0) }, x)
+		hover(x, T.off)
+		x.MouseButton1Click:Connect(function()
+			pin.toggle(name)
+		end)
+
+		chips[name] = { chip = chip, holder = holder, nm = nm, info = info, st = st, x = x, infoStr = "" }
+	end
+
+	local function tickBar()
+		for name, c in pairs(chips) do
+			local s = distInfo(name)
+			if s ~= c.infoStr then
+				c.infoStr = s
+				c.info.Text = s
+			end
+			local col = rarityColor(name)
+			c.nm.TextColor3 = col or T.text
+			c.st.Color = col or T.stroke
+		end
+	end
+
+	local function refreshBar()
+		for _, c in pairs(chips) do
+			c.chip:Destroy()
+		end
+		table.clear(chips)
+		for i, name in ipairs(pin.list) do
+			buildChip(name, i)
+		end
+		bar.Visible = #pin.list > 0
+		relayout()
+		tickBar()
+	end
+
+	-- gagang kanan bawah: geser kiri/kanan = panjang bilah; geser atas = perkecil, bawah = perbesar (maks = ukuran dasar)
+	local resizing = false
+	local sMouse, sW, sS = Vector3.zero, 0, 1
+	rgrip.InputBegan:Connect(function(input)
+		if isPointer(input) then
+			resizing = true
+			sMouse = input.Position
+			sW, sS = pin.w, pin.sc
+		end
+	end)
+	track(UIS.InputChanged:Connect(function(input)
+		if resizing and isMove(input) then
+			local d = input.Position - sMouse
+			pin.w = clampBar(sW + d.X, pin.h)
+			applyScale(sS + d.Y / 80)
+			relayout()
+		end
+	end))
+	track(UIS.InputEnded:Connect(function(input)
+		if resizing and isPointer(input) then
+			resizing = false
+			persistDirty = true
+		end
+	end))
+
+	pin.add = function(name: string): boolean
+		if pin.set[name] then return true end
+		if #pin.list >= PIN_MAX then return false end
+		pin.set[name] = true
+		pin.list[#pin.list + 1] = name
+		return true
+	end
+
+	pin.toggle = function(name: string)
+		if pin.set[name] then
+			pin.set[name] = nil
+			local i = table.find(pin.list, name)
+			if i then table.remove(pin.list, i) end
+		elseif not pin.add(name) then
+			toast("Pop-up penuh (maks " .. PIN_MAX .. " item) — hapus satu dulu dengan X")
+			return
+		end
+		persistDirty = true
+		refreshBar()
+		local r = rows[name]
+		if r then r.apply() end
+	end
+
+	-- dipanggil sekali setelah ukuran & pin tersimpan dimuat
+	pin.refresh = function()
+		applyScale(pin.sc or K.DEF_SC)
+		pin.w, pin.h = clampBar(pin.w, pin.h)
+		bar.Position = UDim2.new(0.5, -pin.w / 2, 0, 36)
+		refreshBar()
+	end
+
+	local accT = 0
+	track(RunService.Heartbeat:Connect(function(dt)
+		accT += dt
+		if accT < 0.5 then return end
+		accT = 0
+		if bar.Visible then tickBar() end
+	end))
+end
+
 local catPath = tostring(settings.saveFolder) .. "/items_" .. tostring(game.GameId) .. ".json"
 
 local function saveCatalog()
@@ -4989,7 +5789,7 @@ local function saveCatalog()
 	for nm, v in pairs(itemSel) do
 		if v then sel[#sel + 1] = nm end
 	end
-	local okJ, json = pcall(function() return HttpService:JSONEncode({ names = names, sel = sel }) end)
+	local okJ, json = pcall(function() return HttpService:JSONEncode({ names = names, sel = sel, pins = pin.list, pinW = pin.w, pinH = pin.h, pinS = pin.sc }) end)
 	if not okJ then return end
 	if makefolder and isfolder and not isfolder(settings.saveFolder) then
 		pcall(makefolder, settings.saveFolder)
@@ -5020,6 +5820,16 @@ if readfile and isfile and isfile(catPath) then
 				if type(nm) == "string" and catalog[nm] then itemSel[nm] = true end
 			end
 		end
+		if type(data.pinW) == "number" and type(data.pinH) == "number" then
+			pin.w, pin.h = data.pinW, data.pinH
+		end
+		if type(data.pinS) == "number" then pin.sc = data.pinS end
+		if type(data.pins) == "table" then
+			for _, nm in ipairs(data.pins) do
+				if type(nm) == "string" then pin.add(nm) end
+			end
+		end
+		pin.refresh()
 		orderDirty = true
 		loadedCatalog = next(catalog) ~= nil
 	end
@@ -6055,6 +6865,443 @@ track(UIS.InputBegan:Connect(function(input, processed)
 		cycleWaypoint()
 	end
 end))
+
+-- =====================================================
+-- GUI: TES DETEKSI RARITY (otomatis, tanpa harus memetik item)
+-- Memeriksa: item di dunia (Attribute / Value / nama / teks GUI), ReplicatedStorage
+-- (Attribute, Value, folder bernama rarity) dan ModuleScript data (require, dibatasi waktu).
+-- Kartu kecil di tab Config: tekan SCAN, lalu "Salin hasil" (juga disimpan ke <saveFolder>/rarity_scan.txt).
+-- Dibungkus xpcall + function supaya tidak menambah jumlah local di level atas
+-- dan kalau ada error tidak merusak script lain.
+-- =====================================================
+xpcall(function()
+	local RAR_WORDS = { "legendary", "mythical", "mythic", "epic", "uncommon", "common", "rare", "exotic", "divine", "godly", "secret", "unique" }
+	local KEY_WORDS = { "rarity", "tier", "grade" }
+	local MOD_WORDS = { "item", "mushroom", "shroom", "fung", "rarit", "data", "config", "loot", "drop", "forag", "catalog", "info", "stat", "list", "const", "shop", "crop", "plant" }
+
+	-- kata rarity yang muncul di dalam teks (mis. "Epic Mushroom" -> "epic")
+	local function wordIn(s)
+		local l = string.lower(tostring(s))
+		for _, w in ipairs(RAR_WORDS) do
+			if string.find(l, "%f[%a]" .. w .. "%f[%A]") then return w end
+		end
+		return nil
+	end
+
+	-- teks yang HANYA berisi kata rarity (mis. nama folder "Epic")
+	local function exactWord(s)
+		local l = string.lower(tostring(s))
+		l = string.gsub(l, "[%s_%-]", "")
+		for _, w in ipairs(RAR_WORDS) do
+			if l == w then return w end
+		end
+		return nil
+	end
+
+	-- nama atribut/field yang menandakan rarity (Rarity, ItemRarity, Tier, Grade, ...)
+	local function isKey(k)
+		local l = string.lower(tostring(k))
+		for _, w in ipairs(KEY_WORDS) do
+			if string.find(l, w, 1, true) then return true end
+		end
+		return false
+	end
+
+	-- ---------- UI (kecil, di tab Config) ----------
+	local card = makeCard(configPage, 112, 200)
+	text(card, {
+		Text = "Tes Deteksi Rarity",
+		Font = Enum.Font.GothamBold,
+		TextSize = 13,
+		Position = UDim2.fromOffset(14, 10),
+		Size = UDim2.new(1, -28, 0, 18),
+	})
+
+	local scanB = new("TextButton", {
+		Position = UDim2.fromOffset(14, 34),
+		Size = UDim2.new(0.5, -18, 0, 28),
+		BackgroundColor3 = T.accent,
+		Text = "🔎 SCAN",
+		TextColor3 = WHITE,
+		Font = Enum.Font.GothamBold,
+		TextSize = 12,
+		AutoButtonColor = false,
+	}, card)
+	round(scanB, 8)
+	hover(scanB, T.accent)
+
+	local copyB = new("TextButton", {
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, -14, 0, 34),
+		Size = UDim2.new(0.5, -18, 0, 28),
+		BackgroundColor3 = T.bg,
+		Text = "Salin hasil",
+		TextColor3 = T.sub,
+		Font = Enum.Font.GothamMedium,
+		TextSize = 12,
+		AutoButtonColor = false,
+		BorderSizePixel = 0,
+	}, card)
+	round(copyB, 8)
+	stroke(copyB, T.stroke, 1, 0.3)
+
+	local status = text(card, {
+		Text = "Belum scan. Dekati area mushroom, tekan SCAN, lalu Salin hasil.",
+		TextSize = 11,
+		TextColor3 = T.sub,
+		TextWrapped = true,
+		TextYAlignment = Enum.TextYAlignment.Top,
+		Position = UDim2.fromOffset(14, 68),
+		Size = UDim2.new(1, -28, 0, 38),
+	})
+
+	local busy = false
+	local lastReport = ""
+
+	local function setStatus(s, col)
+		status.Text = s
+		status.TextColor3 = col or T.sub
+	end
+
+	-- Telusuri tabel data hasil require: cari entri yang punya field rarity,
+	-- atau tabel yang dikelompokkan per kata rarity ({ Epic = { "Black Truffle", ... } }).
+	local function scanTable(root, modName, found)
+		local seen = {}
+		local nodes = 0
+		local function walk(t, depth, key)
+			if depth > 5 or seen[t] or nodes > 4000 then return end
+			seen[t] = true
+			nodes = nodes + 1
+
+			local rv = nil
+			for k, v in pairs(t) do
+				if type(k) == "string" and isKey(k) and (type(v) == "string" or type(v) == "number") then
+					rv = v
+					break
+				end
+			end
+			if rv ~= nil then
+				local nm = t.Name or t.DisplayName or t.name or t.displayName or t.Title or key
+				if nm ~= nil then
+					table.insert(found, { name = tostring(nm), rar = tostring(rv), src = modName })
+				end
+			end
+
+			for k, v in pairs(t) do
+				if type(v) == "table" then
+					if type(k) == "string" and exactWord(k) then
+						for ik, iv in pairs(v) do
+							local nm = nil
+							if type(iv) == "string" then
+								nm = iv
+							elseif type(ik) == "string" then
+								nm = ik
+							elseif type(iv) == "table" then
+								nm = iv.Name or iv.DisplayName or iv.name
+							end
+							if nm ~= nil then
+								table.insert(found, { name = tostring(nm), rar = k, src = modName })
+							end
+						end
+					end
+					walk(v, depth + 1, (type(k) == "string") and k or key)
+				end
+			end
+		end
+		pcall(walk, root, 0, nil)
+	end
+
+	local function run()
+		if busy or unloaded then return end
+		busy = true
+		scanB.Text = "Memindai..."
+		setStatus("Memindai item di dunia...", T.sub)
+
+		local lines = {}
+		local function add(s) lines[#lines + 1] = s end
+
+		local yieldN = 0
+		local function maybeYield()
+			yieldN = yieldN + 1
+			if yieldN % 2500 == 0 then task.wait() end
+		end
+
+		add("== TES DETEKSI RARITY ==")
+		add("GameId: " .. tostring(game.GameId))
+
+		-- ---------- 1) ITEM DI DUNIA (lewat ProximityPrompt) ----------
+		local prompts, pickPrompts, groups = {}, {}, {}
+		local function checkGroup(d, src)
+			if d:IsA("Folder") or d:IsA("Configuration") or d:IsA("Model") then
+				local rw = exactWord(d.Name)
+				if rw and #d:GetChildren() > 0 then
+					table.insert(groups, { rar = rw, inst = d, src = src })
+				end
+			end
+		end
+
+		for _, d in ipairs(workspace:GetDescendants()) do
+			maybeYield()
+			if d:IsA("ProximityPrompt") then
+				table.insert(prompts, d)
+				local at = string.lower(d.ActionText)
+				if string.find(at, "pick", 1, true) then
+					table.insert(pickPrompts, d)
+				end
+			else
+				checkGroup(d, "Workspace")
+			end
+		end
+
+		local use = (#pickPrompts > 0) and pickPrompts or prompts
+		local seenM, items = {}, {}
+		for _, pr in ipairs(use) do
+			if #items >= 150 then break end
+			local m = pr:FindFirstAncestorOfClass("Model") or pr.Parent
+			if m and not seenM[m] then
+				seenM[m] = true
+				table.insert(items, { m = m, pr = pr })
+			end
+		end
+
+		local function inspect(inst, ev, tag)
+			for k, v in pairs(inst:GetAttributes()) do
+				if type(v) == "string" or type(v) == "number" then
+					if isKey(k) or (type(v) == "string" and wordIn(v)) then
+						table.insert(ev, { k = "attr", t = "Attribute " .. tostring(k) .. "=" .. tostring(v) .. " [" .. tag .. "]" })
+					end
+				end
+			end
+			if inst:IsA("ValueBase") then
+				local okv, val = pcall(function() return inst.Value end)
+				if okv and (type(val) == "string" or type(val) == "number") then
+					if isKey(inst.Name) or (type(val) == "string" and wordIn(val)) then
+						table.insert(ev, { k = "val", t = "Value " .. inst.Name .. "=" .. tostring(val) })
+					end
+				end
+			end
+			if inst:IsA("TextLabel") or inst:IsA("TextButton") then
+				if wordIn(inst.Text) then
+					table.insert(ev, { k = "gui", t = "Teks GUI '" .. inst.Text .. "'" })
+				end
+			end
+		end
+
+		local withEv = 0
+		local kinds = { attr = 0, val = 0, gui = 0, name = 0 }
+		local samples = {}
+		local noEvShape = {}
+
+		for _, it in ipairs(items) do
+			local ev = {}
+			inspect(it.m, ev, "model")
+			inspect(it.pr, ev, "prompt")
+			local n = 0
+			for _, d in ipairs(it.m:GetDescendants()) do
+				n = n + 1
+				if n > 250 then break end
+				inspect(d, ev, d.ClassName)
+			end
+			local label = (it.pr.ObjectText ~= "" and it.pr.ObjectText) or it.m.Name
+			if wordIn(it.m.Name) then
+				table.insert(ev, { k = "name", t = "Nama model '" .. it.m.Name .. "'" })
+			end
+			if it.pr.ObjectText ~= "" and wordIn(it.pr.ObjectText) then
+				table.insert(ev, { k = "name", t = "Nama prompt '" .. it.pr.ObjectText .. "'" })
+			end
+
+			if #ev > 0 then
+				withEv = withEv + 1
+				local got = {}
+				for _, e in ipairs(ev) do
+					if not got[e.k] then
+						got[e.k] = true
+						kinds[e.k] = kinds[e.k] + 1
+					end
+				end
+				if #samples < 8 then
+					table.insert(samples, "  • " .. label .. " -> " .. ev[1].t)
+				end
+			elseif #noEvShape < 2 then
+				-- bentuk isi model yang tidak punya info rarity (untuk dibaca manual)
+				local attrs = {}
+				for k, v in pairs(it.m:GetAttributes()) do
+					if #attrs < 12 then table.insert(attrs, tostring(k) .. "=" .. tostring(v)) end
+				end
+				local kids = {}
+				local c = 0
+				for _, d in ipairs(it.m:GetDescendants()) do
+					c = c + 1
+					if c > 18 then break end
+					table.insert(kids, d.Name .. "(" .. d.ClassName .. ")")
+				end
+				table.insert(noEvShape, "  - " .. label .. " | Attribute: " .. (#attrs > 0 and table.concat(attrs, ", ") or "(kosong)")
+					.. " | Isi: " .. table.concat(kids, ", "))
+			end
+		end
+
+		add("")
+		add("[1] ITEM DI DUNIA (ProximityPrompt): " .. #items .. " item dicek, " .. withEv .. " membawa info rarity")
+		if #items == 0 then
+			add("  Tidak ada item ber-prompt yang termuat. Dekati area mushroom (game bisa memuat item hanya di sekitarmu) lalu scan lagi.")
+		else
+			add("  Sumber: Attribute " .. kinds.attr .. " | Value " .. kinds.val .. " | Nama " .. kinds.name .. " | Teks GUI " .. kinds.gui)
+			for _, s in ipairs(samples) do add(s) end
+			if withEv == 0 then
+				add("  Contoh isi item (tanpa info rarity):")
+				for _, s in ipairs(noEvShape) do add(s) end
+			end
+		end
+
+		-- ---------- 2) REPLICATEDSTORAGE ----------
+		setStatus("Memindai ReplicatedStorage...", T.sub)
+		local rsHits = {}
+		local mods = {}
+		for _, d in ipairs(ReplicatedStorage:GetDescendants()) do
+			maybeYield()
+			for k, v in pairs(d:GetAttributes()) do
+				if (type(v) == "string" or type(v) == "number") and (isKey(k) or (type(v) == "string" and wordIn(v))) then
+					if #rsHits < 40 then
+						table.insert(rsHits, d:GetFullName() .. " [Attribute " .. tostring(k) .. "=" .. tostring(v) .. "]")
+					end
+				end
+			end
+			if d:IsA("ValueBase") then
+				local okv, val = pcall(function() return d.Value end)
+				if okv and (type(val) == "string" or type(val) == "number") and (isKey(d.Name) or (type(val) == "string" and wordIn(val))) then
+					if #rsHits < 40 then
+						table.insert(rsHits, d:GetFullName() .. " [Value " .. tostring(val) .. "]")
+					end
+				end
+			end
+			if d:IsA("ModuleScript") then
+				local l = string.lower(d.Name)
+				for _, w in ipairs(MOD_WORDS) do
+					if string.find(l, w, 1, true) then
+						table.insert(mods, d)
+						break
+					end
+				end
+			end
+			checkGroup(d, "ReplicatedStorage")
+		end
+
+		add("")
+		add("[2] REPLICATEDSTORAGE: " .. #rsHits .. " atribut/value berinfo rarity, " .. #mods .. " modul data kandidat")
+		for i = 1, math.min(#rsHits, 6) do add("  • " .. rsHits[i]) end
+
+		-- ---------- 3) MODUL DATA (require, dibatasi waktu) ----------
+		setStatus("Membaca modul data (" .. #mods .. ")...", T.sub)
+		local found = {}
+		local modOk, modFail = 0, 0
+		for i, m in ipairs(mods) do
+			if i > 80 or unloaded then break end
+			local done, res = false, nil
+			task.spawn(function()
+				local ok, r = pcall(require, m)
+				if ok then res = r end
+				done = true
+			end)
+			local t0 = os.clock()
+			while not done and os.clock() - t0 < 1.5 do task.wait() end
+			if done and type(res) == "table" then
+				modOk = modOk + 1
+				scanTable(res, m.Name, found)
+			else
+				modFail = modFail + 1
+			end
+		end
+
+		-- buang duplikat (nama sama)
+		local uniq, seenN = {}, {}
+		for _, f in ipairs(found) do
+			local key = string.lower(f.name)
+			if not seenN[key] then
+				seenN[key] = true
+				table.insert(uniq, f)
+			end
+		end
+
+		add("")
+		add("[3] MODUL DATA: " .. modOk .. " terbaca, " .. modFail .. " gagal/terlalu lama, " .. #uniq .. " entri berinfo rarity")
+		for i = 1, math.min(#uniq, 12) do
+			add("  • " .. uniq[i].name .. " -> " .. uniq[i].rar .. "  (" .. uniq[i].src .. ")")
+		end
+
+		-- ---------- FOLDER BERNAMA RARITY ----------
+		add("")
+		add("[4] FOLDER BERNAMA RARITY (Common/Epic/...): " .. #groups .. " ditemukan")
+		for i = 1, math.min(#groups, 8) do
+			local g = groups[i]
+			local names = {}
+			for j, ch in ipairs(g.inst:GetChildren()) do
+				if j > 5 then break end
+				table.insert(names, ch.Name)
+			end
+			add("  • " .. g.src .. "." .. g.inst.Name .. " (" .. #g.inst:GetChildren() .. " isi): " .. table.concat(names, ", "))
+		end
+
+		-- ---------- KESIMPULAN ----------
+		local strong = withEv > 0 or #uniq > 0 or #groups > 0
+		local weak = #rsHits > 0
+		local verdict, col
+		if strong then
+			local src = {}
+			if withEv > 0 then table.insert(src, "item di dunia") end
+			if #uniq > 0 then table.insert(src, "modul data") end
+			if #groups > 0 then table.insert(src, "folder rarity") end
+			verdict = "TERDETEKSI: rarity bisa dibaca otomatis (" .. table.concat(src, ", ") .. "), tanpa memetik item."
+			col = T.good
+		elseif weak then
+			verdict = "SEBAGIAN: ada atribut/value berinfo rarity di ReplicatedStorage, tapi belum terhubung ke item. Salin hasilnya untuk dicek."
+			col = Color3.fromRGB(255, 176, 72)
+		else
+			verdict = "TIDAK TERDETEKSI: game tampaknya menyembunyikan rarity sampai item dipetik. Pakai tabel/rekam saat memetik."
+			col = T.danger
+		end
+		add("")
+		add("KESIMPULAN: " .. verdict)
+
+		lastReport = table.concat(lines, "\n")
+		setStatus(verdict, col)
+		print(lastReport)
+		if writefile then
+			pcall(function()
+				if makefolder and isfolder and not isfolder(settings.saveFolder) then
+					makefolder(settings.saveFolder)
+				end
+				writefile(tostring(settings.saveFolder) .. "/rarity_scan.txt", lastReport)
+			end)
+		end
+
+		scanB.Text = "🔎 SCAN RARITY"
+		busy = false
+	end
+
+	scanB.MouseButton1Click:Connect(function()
+		task.spawn(function()
+			local ok, err = pcall(run)
+			if not ok then
+				busy = false
+				scanB.Text = "🔎 SCAN RARITY"
+				setStatus("Scan error: " .. tostring(err), T.danger)
+				warn("[RarityScan] " .. tostring(err))
+			end
+		end)
+	end)
+
+	copyB.MouseButton1Click:Connect(function()
+		local clip = setclipboard or toclipboard
+		if lastReport == "" then
+			toast("Belum ada hasil scan")
+		elseif clip then
+			pcall(clip, lastReport)
+			toast("Hasil disalin")
+		else
+			toast("Executor tidak bisa menyalin; lihat file rarity_scan.txt")
+		end
+	end)
+end, warn)
 
 -- =====================================================
 -- UNLOAD
