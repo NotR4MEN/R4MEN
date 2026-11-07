@@ -31,6 +31,16 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
+-- [FIX] Matikan instance lama (loop, koneksi, autosave) sebelum instance baru jalan.
+-- Tanpa ini, menjalankan script dua kali (atau auto-rerun + paste manual) meninggalkan
+-- instance lama yang masih hidup: ESP lama tetap muncul & autosave-nya menimpa file simpanan.
+do
+	local env = (getgenv and getgenv()) or _G
+	local prev = env.__R4MEN_UNLOAD
+	if type(prev) == "function" then pcall(prev) end
+	env.__R4MEN_UNLOAD = nil
+end
+
 for _, n in ipairs({ "UniversalUrbee", "ControlPanel", "UU_ITEMS", "UU_NPC", "UU_RARITY" }) do
 	local old = playerGui:FindFirstChild(n)
 	if old then old:Destroy() end
@@ -42,6 +52,7 @@ end
 local settings: { [string]: any } = {
 	saveFolder = "R4MEN", -- nama folder penyimpanan di dalam folder workspace executor (boleh diganti)
 	clickTp = true, -- klik/tap label ESP (item & NPC) = teleport ke sana. Ubah ke false untuk mematikan
+	dotsSelectedOnly = true, -- true = titik biru HANYA untuk item yang dicentang (lampu/pintu dll tidak ditandai). false = titik untuk semua yang terdeteksi
 	clickNeedsShift = false, -- true = harus menahan Shift kiri saat klik label (menghindari klik tembus ke game)
 	toggleKey = Enum.KeyCode.K,
 	saveKey = Enum.KeyCode.LeftBracket,
@@ -73,7 +84,7 @@ local values: { [string]: number } = {
 	bright = 2,
 	clock = 14,
 	fov = 70,
-	npcDist = 2000,
+	npcDist = 50000,
 }
 
 local targetUsername = ""
@@ -1196,8 +1207,36 @@ local main = new("Frame", {
 }, gui)
 round(main, 16)
 grad(main, T.bgTop, T.bg, 90)
-local mainStroke = stroke(main, WHITE, 1.5, 0.35)
-grad(mainStroke, T.accent, T.accent2, 45)
+local mainStroke = stroke(main, WHITE, 2, 0.15)
+
+-- Outline panel beranimasi: gradient ungu-biru berputar pelan (ringan: dijalankan engine lewat
+-- TweenService, bukan loop per-frame). Otomatis berhenti sementara saat panel disembunyikan/minimize
+-- dan lanjut lagi saat panel dibuka. Dibungkus do...end supaya tidak menambah local di level atas.
+do
+	local g = grad(mainStroke, T.accent, T.accent2, 45)
+	-- warna awal = warna akhir supaya putarannya mulus tanpa "loncat"
+	g.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, T.accent),
+		ColorSequenceKeypoint.new(0.5, T.accent2),
+		ColorSequenceKeypoint.new(1, T.accent),
+	})
+	local spin = TweenService:Create(
+		g,
+		TweenInfo.new(5, Enum.EasingStyle.Linear, Enum.EasingDirection.In, -1, false, 0),
+		{ Rotation = 405 }
+	)
+	spin:Play()
+	track(main:GetPropertyChangedSignal("Visible"):Connect(function()
+		if main.Visible then
+			spin:Play()
+		else
+			spin:Pause()
+		end
+	end))
+	g.Destroying:Connect(function()
+		spin:Cancel()
+	end)
+end
 
 -- Header
 local header = new("Frame", {
@@ -2671,7 +2710,7 @@ do
 
 	-- Slider jarak ringkas, tepat di bawah tombol SCAN (menggantikan kartu slider terpisah)
 	do
-		local DMIN, DMAX, DHARD = 50, 5000, 20000
+		local DMIN, DMAX, DHARD = 50, 5000, 100000
 		local row = new("Frame", {
 			Position = UDim2.fromOffset(14, 80),
 			Size = UDim2.new(1, -28, 0, 28),
@@ -4016,7 +4055,7 @@ local DOT_HARD = 700             -- batas keras jumlah titik
 local LABEL_LIMIT = 150          -- target label nama+jarak terdekat (item terpilih)
 local LABEL_HARD = 200           -- batas keras jumlah label
 local DOT_MAX_DIST = 600         -- titik hanya tampil dalam jarak ini (studs)
-local LABEL_MAX_DIST = 3000      -- label tampil sampai jarak ini (studs)
+local LABEL_MAX_DIST = 100000    -- label tampil sampai jarak ini (studs); praktis tanpa batas, yang membatasi hanya streaming game
 local ROW_LIMIT = 250            -- baris daftar yang dibuat (sisanya lewat kotak cari)
 local MAX_ENTRIES = 30000        -- batas total objek yang dilacak
 local MAKE_PER_TICK = 60         -- maks. titik/label baru dibuat per langkah
@@ -4028,7 +4067,7 @@ local LABEL_INTERVAL = 0.2       -- detik antar update teks jarak
 local ROWS_PER_FLUSH = 30        -- baris daftar baru per langkah UI
 local RETRY_DELAY = 0.6          -- jeda sebelum mencoba ulang objek yang belum lengkap
 local RETRY_MAX = 6
-local DB, LB = 120, 100          -- jumlah bucket histogram jarak (titik / label)
+local DB, LB = 120, 1000         -- jumlah bucket histogram jarak (titik / label)
 
 local COL_DOT = T.accent2
 local COL_SEL = T.good
@@ -5039,7 +5078,12 @@ local function scanItems()
 				toast("Tidak ada Prompt/Klik/Tool/Sentuh terdeteksi di game ini")
 			end
 		else
-			toast(string.format("Scan selesai: %d jenis, %d objek", #order, totalObjs))
+			local stInfo = "Streaming: MATI"
+			if workspace.StreamingEnabled then
+				local okR, rad = pcall(function() return workspace.StreamingTargetRadius end)
+				stInfo = "Streaming: AKTIF" .. (okR and (" (radius " .. tostring(rad) .. ")") or "")
+			end
+			toast(string.format("Scan selesai: %d jenis, %d objek · %s", #order, totalObjs, stInfo))
 		end
 		refreshStatus()
 	end
@@ -5303,7 +5347,7 @@ local function updateMarkers()
 		local e = all[i]
 		local d = e.dist
 		local sel = itemSel[e.name] == true
-		if d <= DOT_MAX_DIST and (sel or e.cat ~= "Sentuh") then
+		if d <= DOT_MAX_DIST and (sel or (not settings.dotsSelectedOnly and e.cat ~= "Sentuh")) then
 			local b = math.min(DB, math.floor(d / dStep) + 1)
 			dHist[b] += 1
 		end
@@ -5337,7 +5381,7 @@ local function updateMarkers()
 		local e = all[i]
 		local d = e.dist
 		local sel = itemSel[e.name] == true
-		local eligible = sel or e.cat ~= "Sentuh"
+		local eligible = sel or (not settings.dotsSelectedOnly and e.cat ~= "Sentuh")
 
 		-- pulihkan bila penanda hilang (mis. kamera diganti oleh game)
 		if e.dot and not e.dot:IsDescendantOf(playerGui) then
@@ -5778,7 +5822,7 @@ end
 local catPath = tostring(settings.saveFolder) .. "/items_" .. tostring(game.GameId) .. ".json"
 
 local function saveCatalog()
-	if not writefile then return end
+	if unloaded or not writefile then return end
 	local names = {}
 	for _, cg in pairs(catalog) do
 		local cats = {}
@@ -6303,7 +6347,55 @@ addKeyRow(5, "Float: Naik", "Tahan untuk naik saat Float aktif. Backspace untuk 
 addKeyRow(6, "Float: Turun", "Tahan untuk turun saat Float aktif. Backspace untuk mengosongkan.", "floatDownKey", true)
 refreshKeyUI()
 
-local sizeCard = makeCard(settingsPage, 78, 7)
+-- Tombol "Reset Keybind ke Bawaan": harus diklik DUA KALI (klik pertama = minta konfirmasi,
+-- klik kedua dalam 3 detik = reset). Kalau tidak diklik lagi, otomatis batal.
+-- Dibungkus do...end supaya tidak menambah jumlah local di level atas.
+do
+	local DEFAULT_KEYS = {
+		toggleKey = Enum.KeyCode.K,
+		saveKey = Enum.KeyCode.LeftBracket,
+		tpKey = Enum.KeyCode.RightBracket,
+		cycleKey = Enum.KeyCode.Quote,
+		floatUpKey = Enum.KeyCode.PageUp,
+		floatDownKey = Enum.KeyCode.PageDown,
+	}
+	local IDLE_TEXT = "Reset Keybind ke Bawaan"
+	local resetBtn = makeButton(settingsPage, 7, IDLE_TEXT, T.accent, 36)
+	local armed = false
+	local token = 0
+
+	local function disarm()
+		armed = false
+		token += 1
+		resetBtn.Text = IDLE_TEXT
+		resetBtn.BackgroundColor3 = T.accent
+	end
+
+	resetBtn.MouseButton1Click:Connect(function()
+		if not armed then
+			armed = true
+			token += 1
+			local t = token
+			resetBtn.Text = "Klik sekali lagi untuk konfirmasi"
+			resetBtn.BackgroundColor3 = T.danger
+			task.delay(3, function()
+				if token == t and armed and not unloaded then
+					disarm()
+				end
+			end)
+			return
+		end
+		disarm()
+		listening = nil
+		for name, kc in pairs(DEFAULT_KEYS) do
+			settings[name] = kc
+		end
+		refreshKeyUI()
+		toast("Keybind dikembalikan ke bawaan")
+	end)
+end
+
+local sizeCard = makeCard(settingsPage, 78, 8)
 text(sizeCard, {
 	Text = "Ukuran Panel",
 	Font = Enum.Font.GothamBold,
@@ -6350,15 +6442,15 @@ for i, preset in ipairs({
 	end)
 end
 
-local offAllBtn = makeButton(settingsPage, 8, "Matikan Semua Fitur", T.accent, 40)
+local offAllBtn = makeButton(settingsPage, 9, "Matikan Semua Fitur", T.accent, 40)
 hover(offAllBtn, T.accent)
 offAllBtn.MouseButton1Click:Connect(function()
 	disableAllFeatures()
 end)
 
-local unloadBtn = makeButton(settingsPage, 9, "Unload & Bersihkan Semua", T.off, 40)
+local unloadBtn = makeButton(settingsPage, 10, "Unload & Bersihkan Semua", T.off, 40)
 text(settingsPage, {
-	LayoutOrder = 10,
+	LayoutOrder = 11,
 	Text = "Menghapus panel, mematikan semua fitur, mengembalikan speed/jump ke semula, menghapus lantai float dan ESP, dan memutus semua koneksi script. Waypoint juga ikut hilang.",
 	TextSize = 11,
 	TextColor3 = T.sub,
@@ -6839,7 +6931,41 @@ track(UIS.InputBegan:Connect(function(input, processed)
 			elseif input.KeyCode == Enum.KeyCode.Backspace and info.allowClear then
 				settings[info.name] = nil
 			else
-				settings[info.name] = input.KeyCode
+				local newKc = input.KeyCode
+				local LABELS = {
+					toggleKey = "Hide / Show",
+					saveKey = "Simpan Waypoint",
+					tpKey = "Teleport",
+					cycleKey = "Ganti Waypoint",
+					floatUpKey = "Float: Naik",
+					floatDownKey = "Float: Turun",
+				}
+				local CLEARABLE = { saveKey = true, tpKey = true, cycleKey = true, floatUpKey = true, floatDownKey = true }
+				local oldKc = settings[info.name]
+				local conflict = nil
+				for n in pairs(LABELS) do
+					if n ~= info.name and settings[n] == newKc then
+						conflict = n
+						break
+					end
+				end
+				if not conflict then
+					settings[info.name] = newKc
+				elseif oldKc == nil and not CLEARABLE[conflict] then
+					-- fungsi lain tidak boleh kosong dan kita tidak punya tombol cadangan untuk ditukar
+					toast("[" .. newKc.Name .. "] dipakai " .. LABELS[conflict] .. " dan tidak boleh kosong")
+				else
+					-- tukar: fungsi lain mendapat tombol lama milik fungsi ini (bisa kosong)
+					settings[conflict] = oldKc
+					settings[info.name] = newKc
+					if oldKc then
+						toast("[" .. newKc.Name .. "] sebelumnya dipakai " .. LABELS[conflict]
+							.. " - sekarang ditukar ke [" .. oldKc.Name .. "]")
+					else
+						toast("[" .. newKc.Name .. "] sebelumnya dipakai " .. LABELS[conflict]
+							.. " - fungsi itu sekarang dikosongkan")
+					end
+				end
 			end
 			refreshKeyUI()
 		end
@@ -6908,9 +7034,9 @@ xpcall(function()
 	end
 
 	-- ---------- UI (kecil, di tab Config) ----------
-	local card = makeCard(configPage, 112, 200)
+	local card = makeCard(configPage, 150, 200)
 	text(card, {
-		Text = "Tes Deteksi Rarity",
+		Text = "Tes Deteksi Rarity & Streaming",
 		Font = Enum.Font.GothamBold,
 		TextSize = 13,
 		Position = UDim2.fromOffset(14, 10),
@@ -6946,13 +7072,13 @@ xpcall(function()
 	stroke(copyB, T.stroke, 1, 0.3)
 
 	local status = text(card, {
-		Text = "Belum scan. Dekati area mushroom, tekan SCAN, lalu Salin hasil.",
+		Text = "Belum scan. Tekan SCAN: tes rarity + cek batas jarak muat game (streaming). Lalu Salin hasil.",
 		TextSize = 11,
 		TextColor3 = T.sub,
 		TextWrapped = true,
 		TextYAlignment = Enum.TextYAlignment.Top,
 		Position = UDim2.fromOffset(14, 68),
-		Size = UDim2.new(1, -28, 0, 38),
+		Size = UDim2.new(1, -28, 0, 76),
 	})
 
 	local busy = false
@@ -7028,6 +7154,53 @@ xpcall(function()
 
 		add("== TES DETEKSI RARITY ==")
 		add("GameId: " .. tostring(game.GameId))
+
+		-- ---------- 0) STREAMING: batas jarak muat objek dari game ----------
+		local stLine = "Streaming MATI (semua objek termuat)"
+		do
+			local en = workspace.StreamingEnabled
+			local okR, rad = pcall(function() return workspace.StreamingTargetRadius end)
+			local okM, minR = pcall(function() return workspace.StreamingMinRadius end)
+			local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+			local far, cnt = 0, 0
+			if root then
+				for _, d in ipairs(workspace:GetDescendants()) do
+					maybeYield()
+					if d:IsA("ProximityPrompt") or d:IsA("ClickDetector") then
+						local part = nil
+						local pa = d.Parent
+						while pa and pa ~= workspace do
+							if pa:IsA("BasePart") then
+								part = pa
+								break
+							end
+							if pa:IsA("Model") then
+								part = pa.PrimaryPart or pa:FindFirstChildWhichIsA("BasePart", true)
+								break
+							end
+							pa = pa.Parent
+						end
+						if part then
+							cnt = cnt + 1
+							local dist = (part.Position - root.Position).Magnitude
+							if dist > far then far = dist end
+						end
+					end
+				end
+			end
+			add("")
+			add("[0] STREAMING (batas jarak muat objek dari game)")
+			add("  StreamingEnabled: " .. tostring(en))
+			add("  StreamingTargetRadius: " .. (okR and tostring(rad) or "(tidak terbaca)"))
+			add("  StreamingMinRadius: " .. (okM and tostring(minR) or "(tidak terbaca)"))
+			add("  Objek interaktif termuat: " .. cnt .. " | terjauh dari kamu: " .. math.floor(far) .. " studs")
+			if en then
+				add("  Artinya: objek di luar jangkauan ini belum dikirim game, jadi ESP tidak bisa menandainya sampai kamu mendekat.")
+				stLine = "Streaming AKTIF" .. (okR and (" · radius " .. tostring(rad)) or "") .. " · item terjauh termuat " .. math.floor(far) .. " st"
+			else
+				add("  Artinya: streaming mati, batas jarak bukan dari game.")
+			end
+		end
 
 		-- ---------- 1) ITEM DI DUNIA (lewat ProximityPrompt) ----------
 		local prompts, pickPrompts, groups = {}, {}, {}
@@ -7263,7 +7436,7 @@ xpcall(function()
 		add("KESIMPULAN: " .. verdict)
 
 		lastReport = table.concat(lines, "\n")
-		setStatus(verdict, col)
+		setStatus(verdict .. "\n" .. stLine, col)
 		print(lastReport)
 		if writefile then
 			pcall(function()
@@ -7326,10 +7499,19 @@ local function unload()
 	end
 	table.clear(conns)
 
+	for _, n in ipairs({ "UU_ITEMS", "UU_NPC", "UU_RARITY" }) do
+		local f = playerGui:FindFirstChild(n)
+		if f then f:Destroy() end
+	end
+
 	gui:Destroy()
 end
 
 unloadFn = unload
+do
+	local env = (getgenv and getgenv()) or _G
+	env.__R4MEN_UNLOAD = unload
+end
 
 local armed = false
 unloadBtn.MouseButton1Click:Connect(function()
