@@ -20,7 +20,7 @@ end
 -- ================================================
 
 -- LocalScript: taruh di StarterPlayer > StarterPlayerScripts
--- Universal R4MEN v1 (+ tab Visual: ESP NPC/Hewan, Fullbright, FOV, Anti-AFK aktif otomatis; daftar pemain klik-untuk-TP)
+-- Universal R4MEN v1.2 (+ tab Visual: ESP NPC/Hewan, Fullbright, FOV, Anti-AFK aktif otomatis; daftar pemain klik-untuk-TP)
 
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
@@ -51,6 +51,7 @@ end
 -- =====================================================
 local settings: { [string]: any } = {
 	saveFolder = "R4MEN", -- nama folder penyimpanan di dalam folder workspace executor (boleh diganti)
+	seedReplicated = false, -- [FIX] jangan seed nama dari ReplicatedStorage (banyak sampah)
 	clickTp = true, -- klik/tap label ESP (item & NPC) = teleport ke sana. Ubah ke false untuk mematikan
 	dotsSelectedOnly = true, -- true = titik biru HANYA untuk item yang dicentang (lampu/pintu dll tidak ditandai). false = titik untuk semua yang terdeteksi
 	autoRarity = true, -- true = data rarity dibaca otomatis saat script jalan (profil disimpan per game). false = hanya saat dropdown Rarity dibuka / tombol SCAN
@@ -1208,8 +1209,16 @@ local main = new("Frame", {
 }, gui)
 round(main, 16)
 grad(main, T.bgTop, T.bg, 90)
-local mainStroke = stroke(main, WHITE, 1.5, 0.35)
-grad(mainStroke, T.accent, T.accent2, 45)
+local mainStroke = stroke(main, WHITE, 2, 0.2) -- sedikit lebih tebal (sebelumnya 1.5)
+-- 3 titik warna (accent -> accent2 -> accent) supaya putaran gradien mulus tanpa patahan
+new("UIGradient", {
+	Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, T.accent),
+		ColorSequenceKeypoint.new(0.5, T.accent2),
+		ColorSequenceKeypoint.new(1, T.accent),
+	}),
+	Rotation = 45,
+}, mainStroke)
 
 -- Header
 local header = new("Frame", {
@@ -1247,10 +1256,10 @@ grad(title, WHITE, Color3.fromRGB(196, 176, 255), 0)
 -- Lencana versi di samping judul
 -- Naikkan VERSION HANYA untuk update besar; update kecil tidak mengubah versi.
 do
-	local VERSION = "v1"
+	local VERSION = "v1.2"
 	local verBadge = new("Frame", {
 		Position = UDim2.fromOffset(54 + 124, 11),
-		Size = UDim2.fromOffset(34, 16),
+		Size = UDim2.fromOffset(40, 16),
 		BackgroundColor3 = T.card,
 		BorderSizePixel = 0,
 	}, header)
@@ -1365,6 +1374,18 @@ local bubble = new("TextButton", {
 round(bubble, BUBBLE / 2)
 local bubbleStroke = stroke(bubble, WHITE, 2, 0.1)
 grad(bubbleStroke, T.accent, T.accent2, 45)
+
+-- ANIMASI OUTLINE: gradien warna berputar pelan di tepi panel & bubble (hanya saat terlihat)
+do
+	local mg = mainStroke:FindFirstChildOfClass("UIGradient")
+	local bg2 = bubbleStroke:FindFirstChildOfClass("UIGradient")
+	track(RunService.RenderStepped:Connect(function()
+		if unloaded then return end
+		local rot = (os.clock() * 50) % 360 -- 50 derajat/detik: satu putaran ~7 detik
+		if main.Visible and mg then mg.Rotation = rot end
+		if bubble.Visible and bg2 then bg2.Rotation = rot end
+	end))
+end
 
 local bubbleBg = new("Frame", {
 	Size = UDim2.fromScale(1, 1),
@@ -3665,7 +3686,7 @@ xpcall(function()
 	local function rebuildMeta()
 		local seen, list = {}, {}
 		for _, rn in pairs(rarMap) do
-			if not seen[rn] then
+			if not seen[rn] and not string.match(rn, "^Tier %d+$") then
 				seen[rn] = true
 				list[#list + 1] = rn
 			end
@@ -3858,14 +3879,16 @@ xpcall(function()
 			local rn
 			if type(f.rar) == "number" then
 				numericN = numericN + 1
-				rn = numName[f.rar] or ("Tier " .. tostring(f.rar))
+				rn = numName[f.rar] -- [FIX] tanpa fallback "Tier N": angka tak dikenal diabaikan
 			else
 				local w = wordIn(f.rar)
 				rn = w and cap(w) or tostring(f.rar)
 			end
-			rarMap[k] = rn
-			count = count + 1
-			if #k >= 5 then table.insert(keysByLen, k) end
+			if rn then
+				rarMap[k] = rn
+				count = count + 1
+				if #k >= 5 then table.insert(keysByLen, k) end
+			end
 		end
 		table.sort(keysByLen, function(a, b) return #a > #b end)
 		rebuildMeta()
@@ -3923,6 +3946,7 @@ xpcall(function()
 		if not okR then return false end
 		local okD, d = pcall(function() return HttpSvc:JSONDecode(raw) end)
 		if not (okD and type(d) == "table" and type(d.map) == "table" and type(d.t) == "number") then return false end
+		if d.v ~= 2 then return false end -- [FIX] profil versi lama dibuang
 		if os.time() - d.t > PROFILE_MAX_AGE then return false end
 		local n = applyMap(d.map)
 		if n == 0 then return false end
@@ -3946,7 +3970,7 @@ xpcall(function()
 			end
 			local map = {}
 			for k, rn in pairs(rarMap) do map[k] = rn end
-			writefile(profilePath(), HttpSvc:JSONEncode({ v = 1, t = os.time(), gid = game.GameId, count = api.count, tg = api.tierGuess == true, map = map }))
+			writefile(profilePath(), HttpSvc:JSONEncode({ v = 2, t = os.time(), gid = game.GameId, count = api.count, tg = api.tierGuess == true, map = map }))
 		end)
 	end
 
@@ -4246,7 +4270,6 @@ local CLASS_CAT: { [string]: string } = {
 	ProximityPrompt = "Prompt",
 	ClickDetector = "Klik",
 	Tool = "Tool",
-	TouchTransmitter = "Sentuh",
 }
 local PRI: { [string]: number } = { Prompt = 4, Klik = 3, Tool = 2, Sentuh = 1 }
 
@@ -4632,6 +4655,13 @@ local function tryRegister(inst: Instance, tries: number)
 		if part.CanTouch == false then return end
 		local par = part.Parent
 		if par and par:FindFirstChildOfClass("Humanoid") then return end -- bagian tubuh NPC
+	end
+
+	if cat == "Prompt" then
+		local at = string.lower((inst :: ProximityPrompt).ActionText)
+		for _, w in ipairs({ "open", "close", "sit", "talk", "enter", "exit", "buy", "sell", "shop", "toggle", "switch", "lever", "door", "pintu", "buka", "tutup", "duduk", "bicara", "beli", "jual", "masuk", "keluar" }) do
+			if string.find(at, w, 1, true) then return end
+		end
 	end
 
 	local old = byPart[part]
@@ -5380,10 +5410,17 @@ do
 		rarBtn.TextSize = 10
 
 		local ROW_H, GAP = 22, 2
-		local panel = new("Frame", {
+		-- [FIX] panel = ScrollingFrame yang selalu dimulai DI BAWAH tombol Rarity (tidak pernah menutupinya),
+		-- tinggi dibatasi (PANEL_MAX_H) dan bisa di-scroll kalau rarity-nya banyak.
+		local PANEL_TOP, PANEL_MAX_H = 158, 178
+		local panel = new("ScrollingFrame", {
 			AnchorPoint = Vector2.new(1, 0),
-			Position = UDim2.new(1, -14, 0, 158),
-			Size = UDim2.fromOffset(150, 8 + #RN * ROW_H + (#RN - 1) * GAP),
+			Position = UDim2.new(1, -14, 0, PANEL_TOP),
+			Size = UDim2.fromOffset(150, math.min(PANEL_MAX_H, 8 + #RN * ROW_H + (#RN - 1) * GAP)),
+			CanvasSize = UDim2.fromOffset(0, 8 + #RN * ROW_H + (#RN - 1) * GAP),
+			ScrollBarThickness = 3,
+			ScrollBarImageColor3 = T.stroke,
+			ScrollingDirection = Enum.ScrollingDirection.Y,
 			BackgroundColor3 = T.card,
 			BorderSizePixel = 0,
 			Active = true, -- cegah klik tembus ke daftar di bawahnya
@@ -5418,8 +5455,9 @@ do
 		local function layoutPanel()
 			local cnt = #RN
 			local h = 8 + cnt * ROW_H + (cnt - 1) * GAP
-			panel.Size = UDim2.fromOffset(150, h)
-			panel.Position = UDim2.new(1, -14, 0, math.max(4, math.min(158, 336 - h)))
+			panel.Size = UDim2.fromOffset(150, math.min(h, PANEL_MAX_H))
+			panel.CanvasSize = UDim2.fromOffset(0, h)
+			panel.Position = UDim2.new(1, -14, 0, PANEL_TOP)
 			for i = 1, MAXR + 1 do
 				rbtn[i].Visible = RN[i] ~= nil
 			end
@@ -6066,7 +6104,13 @@ if readfile and isfile and isfile(catPath) then
 							if type(c) == "string" and PRI[c] then cats[c] = true end
 						end
 					end
-					catalog[it.n] = { name = it.n, lower = string.lower(it.n), cats = cats }
+					local hasOther = false
+					for c in pairs(cats) do
+						if c ~= "Sentuh" then hasOther = true end
+					end
+					if next(cats) == nil or hasOther then
+						catalog[it.n] = { name = it.n, lower = string.lower(it.n), cats = cats }
+					end
 				end
 			end
 		end
