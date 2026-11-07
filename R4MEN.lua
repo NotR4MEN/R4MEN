@@ -5942,15 +5942,16 @@ do
 		local ROW_H, GAP = 22, 2
 		-- [FIX] panel = ScrollingFrame yang selalu dimulai DI BAWAH tombol Rarity (tidak pernah menutupinya),
 		-- tinggi dibatasi (PANEL_MAX_H) dan bisa di-scroll kalau rarity-nya banyak.
-		local PANEL_TOP, PANEL_MAX_H = 158, 178
+		local PANEL_TOP, PANEL_MAX_H = 158, 8 + 5 * ROW_H + 4 * GAP -- maksimal 5 baris terlihat, sisanya di-scroll di dalam panel
 		local panel = new("ScrollingFrame", {
 			AnchorPoint = Vector2.new(1, 0),
 			Position = UDim2.new(1, -14, 0, PANEL_TOP),
 			Size = UDim2.fromOffset(150, math.min(PANEL_MAX_H, 8 + #RN * ROW_H + (#RN - 1) * GAP)),
 			CanvasSize = UDim2.fromOffset(0, 8 + #RN * ROW_H + (#RN - 1) * GAP),
-			ScrollBarThickness = 3,
-			ScrollBarImageColor3 = T.stroke,
+			ScrollBarThickness = 4,
+			ScrollBarImageColor3 = T.accent,
 			ScrollingDirection = Enum.ScrollingDirection.Y,
+			ElasticBehavior = Enum.ElasticBehavior.Never,
 			BackgroundColor3 = T.card,
 			BorderSizePixel = 0,
 			Active = true, -- cegah klik tembus ke daftar di bawahnya
@@ -6052,6 +6053,28 @@ do
 				onFilterChanged()
 			end)
 		end
+
+		-- [FIX] roda mouse di atas panel Rarity hanya menggulir panel itu sendiri; daftar item di belakangnya
+		-- dan halaman ESP dikunci sementara supaya tidak ikut ter-scroll.
+		local overPanel = false
+		local function lockBehind(lock: boolean)
+			lootScroll.ScrollingEnabled = not lock
+			pages.ESP.ScrollingEnabled = not lock
+		end
+		panel.MouseEnter:Connect(function()
+			overPanel = true
+			lockBehind(true)
+		end)
+		panel.MouseLeave:Connect(function()
+			overPanel = false
+			lockBehind(false)
+		end)
+		panel:GetPropertyChangedSignal("Visible"):Connect(function()
+			if not panel.Visible then
+				overPanel = false
+				lockBehind(false)
+			end
+		end)
 
 		rarBtn.MouseButton1Click:Connect(function()
 			panel.Visible = not panel.Visible
