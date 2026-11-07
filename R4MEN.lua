@@ -53,6 +53,7 @@ local settings: { [string]: any } = {
 	saveFolder = "R4MEN", -- nama folder penyimpanan di dalam folder workspace executor (boleh diganti)
 	clickTp = true, -- klik/tap label ESP (item & NPC) = teleport ke sana. Ubah ke false untuk mematikan
 	dotsSelectedOnly = true, -- true = titik biru HANYA untuk item yang dicentang (lampu/pintu dll tidak ditandai). false = titik untuk semua yang terdeteksi
+	autoRarity = true, -- true = data rarity dibaca otomatis saat script jalan (profil disimpan per game). false = hanya saat dropdown Rarity dibuka / tombol SCAN
 	clickNeedsShift = false, -- true = harus menahan Shift kiri saat klik label (menghindari klik tembus ke game)
 	toggleKey = Enum.KeyCode.K,
 	saveKey = Enum.KeyCode.LeftBracket,
@@ -1207,36 +1208,8 @@ local main = new("Frame", {
 }, gui)
 round(main, 16)
 grad(main, T.bgTop, T.bg, 90)
-local mainStroke = stroke(main, WHITE, 2, 0.15)
-
--- Outline panel beranimasi: gradient ungu-biru berputar pelan (ringan: dijalankan engine lewat
--- TweenService, bukan loop per-frame). Otomatis berhenti sementara saat panel disembunyikan/minimize
--- dan lanjut lagi saat panel dibuka. Dibungkus do...end supaya tidak menambah local di level atas.
-do
-	local g = grad(mainStroke, T.accent, T.accent2, 45)
-	-- warna awal = warna akhir supaya putarannya mulus tanpa "loncat"
-	g.Color = ColorSequence.new({
-		ColorSequenceKeypoint.new(0, T.accent),
-		ColorSequenceKeypoint.new(0.5, T.accent2),
-		ColorSequenceKeypoint.new(1, T.accent),
-	})
-	local spin = TweenService:Create(
-		g,
-		TweenInfo.new(5, Enum.EasingStyle.Linear, Enum.EasingDirection.In, -1, false, 0),
-		{ Rotation = 405 }
-	)
-	spin:Play()
-	track(main:GetPropertyChangedSignal("Visible"):Connect(function()
-		if main.Visible then
-			spin:Play()
-		else
-			spin:Pause()
-		end
-	end))
-	g.Destroying:Connect(function()
-		spin:Cancel()
-	end)
-end
+local mainStroke = stroke(main, WHITE, 1.5, 0.35)
+grad(mainStroke, T.accent, T.accent2, 45)
 
 -- Header
 local header = new("Frame", {
@@ -3636,7 +3609,7 @@ end
 -- Dibungkus xpcall + function supaya tidak menambah jumlah local di level atas.
 -- =====================================================
 xpcall(function()
-	local RAR_WORDS = { "legendary", "mythical", "mythic", "epic", "uncommon", "common", "rare", "exotic", "divine", "godly", "secret", "unique" }
+	local RAR_WORDS = { "legendary", "legendaris", "legenda", "mythical", "mythic", "mitos", "mitis", "epic", "epik", "uncommon", "common", "rare", "langka", "jarang", "biasa", "exotic", "divine", "godly", "secret", "unique" }
 	local MOD_WORDS = { "item", "mushroom", "shroom", "fung", "rarit", "data", "config", "loot", "drop", "forag", "catalog", "info", "stat", "list", "const", "shop", "crop", "plant" }
 	local NAMES = { "Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic" }
 	local RCOL = {
@@ -3648,6 +3621,8 @@ xpcall(function()
 		Mythic = Color3.fromRGB(255, 90, 120),
 	}
 	local DEF_NUM = { [1] = "Common", [2] = "Uncommon", [3] = "Rare", [4] = "Epic", [5] = "Legendary", [6] = "Mythic" }
+	local BASECOL = {} -- salinan warna dasar; RCOL sendiri dipakai sebagai api.colors dan diisi ulang sesuai data game
+	for k, v in pairs(RCOL) do BASECOL[k] = v end
 
 	local api = {
 		names = NAMES,
@@ -3662,6 +3637,61 @@ xpcall(function()
 	local rarMap, keysByLen = {}, {}   -- namaTernormalisasi -> nama rarity
 	local numName = DEF_NUM
 	local cache = {}
+
+	-- ---------- NAMA & WARNA RARITY MENGIKUTI DATA GAME ----------
+	-- Nama rarity yang ada di data game (Inggris/Indonesia/lainnya) diurutkan menurut tingkatnya.
+	-- Nama dikenal (Common/Biasa, Rare/Jarang, Legendary/Legenda, Mythic/Mitos, dst.) memakai warna standar;
+	-- nama lain mendapat warna otomatis. Hasilnya mengisi api.names (isi dropdown) dan api.colors.
+	local MAX_NAMES = 12
+	local RANK = {
+		common = 1, biasa = 1,
+		uncommon = 2, tidakumum = 2,
+		rare = 3, jarang = 3, langka = 3,
+		epic = 4, epik = 4,
+		legendary = 5, legenda = 5, legendaris = 5,
+		mythic = 6, mythical = 6, mitos = 6, mitis = 6,
+		exotic = 7, divine = 8, godly = 9, secret = 10, unique = 11,
+	}
+
+	local function rankOf(nameStr)
+		local low = string.lower(tostring(nameStr))
+		local k = (string.gsub(low, "[^%w]", ""))
+		if RANK[k] then return RANK[k] end
+		local tn = string.match(low, "^tier%s*(%d+)$")
+		if tn then return 100 + tonumber(tn) end
+		return 1000
+	end
+
+	local function rebuildMeta()
+		local seen, list = {}, {}
+		for _, rn in pairs(rarMap) do
+			if not seen[rn] then
+				seen[rn] = true
+				list[#list + 1] = rn
+			end
+		end
+		if #list == 0 then return end
+		table.sort(list, function(a, b)
+			local ra, rb = rankOf(a), rankOf(b)
+			if ra ~= rb then return ra < rb end
+			return a < b
+		end)
+		local names = {}
+		for i = 1, math.min(#list, MAX_NAMES) do names[i] = list[i] end
+		api.names = names
+		for k in pairs(api.colors) do api.colors[k] = nil end
+		local autoN = 0
+		for _, rn in ipairs(list) do
+			local rk = rankOf(rn)
+			local c = nil
+			if rk >= 1 and rk <= 6 then c = BASECOL[NAMES[rk]] end
+			if not c then
+				autoN = autoN + 1
+				c = Color3.fromHSV((autoN * 0.381966) % 1, 0.55, 1)
+			end
+			api.colors[rn] = c
+		end
+	end
 
 	-- ---------- helper teks ----------
 	local function wordIn(s)
@@ -3745,7 +3775,7 @@ xpcall(function()
 		pcall(walk, root, 0, nil)
 	end
 
-	local function loadData()
+	local function loadCore()
 		if api.loading or unloaded then return end
 		api.loading = true
 		api.ready = false
@@ -3823,9 +3853,11 @@ xpcall(function()
 
 		rarMap, keysByLen = {}, {}
 		local count = 0
+		local numericN = 0
 		for k, f in pairs(best) do
 			local rn
 			if type(f.rar) == "number" then
+				numericN = numericN + 1
 				rn = numName[f.rar] or ("Tier " .. tostring(f.rar))
 			else
 				local w = wordIn(f.rar)
@@ -3836,6 +3868,9 @@ xpcall(function()
 			if #k >= 5 then table.insert(keysByLen, k) end
 		end
 		table.sort(keysByLen, function(a, b) return #a > #b end)
+		rebuildMeta()
+		local calApplied = (calOk and calCount == 4 and epicN) and true or false
+		api.tierGuess = numericN > 0 and not calApplied -- nomor tier diterjemahkan pakai urutan standar (tebakan)
 
 		cache = {}
 		api.loading = false
@@ -3847,6 +3882,92 @@ xpcall(function()
 		end
 		api.version = api.version + 1
 		for _, fn in ipairs(api.listeners) do pcall(fn) end
+	end
+
+
+	-- ---------- PROFIL PER GAME: hasil deteksi disimpan di <saveFolder>/rarity_<GameId>.json ----------
+	-- Kunjungan berikutnya di game yang sama langsung memakai profil (tanpa require modul game).
+	-- Profil dianggap basi setelah PROFILE_MAX_AGE detik; tombol SCAN selalu membaca ulang dari game.
+	local HttpSvc = game:GetService("HttpService")
+	local PROFILE_MAX_AGE = 7 * 24 * 3600
+
+	local function profilePath()
+		return tostring(settings.saveFolder) .. "/rarity_" .. tostring(game.GameId) .. ".json"
+	end
+
+	local function notifyListeners()
+		api.version = api.version + 1
+		for _, fn in ipairs(api.listeners) do pcall(fn) end
+	end
+
+	local function applyMap(map)
+		rarMap, keysByLen = {}, {}
+		local n = 0
+		for k, rn in pairs(map) do
+			if type(k) == "string" and type(rn) == "string" and k ~= "" then
+				rarMap[k] = rn
+				n = n + 1
+				if #k >= 5 then table.insert(keysByLen, k) end
+			end
+		end
+		table.sort(keysByLen, function(a, b) return #a > #b end)
+		return n
+	end
+
+	local function loadProfile()
+		if not (readfile and isfile) then return false end
+		local p = profilePath()
+		local okE, exists = pcall(isfile, p)
+		if not (okE and exists) then return false end
+		local okR, raw = pcall(readfile, p)
+		if not okR then return false end
+		local okD, d = pcall(function() return HttpSvc:JSONDecode(raw) end)
+		if not (okD and type(d) == "table" and type(d.map) == "table" and type(d.t) == "number") then return false end
+		if os.time() - d.t > PROFILE_MAX_AGE then return false end
+		local n = applyMap(d.map)
+		if n == 0 then return false end
+		rebuildMeta()
+		api.tierGuess = d.tg == true
+		cache = {}
+		api.count = n
+		api.loading = false
+		api.failed = false
+		api.ready = true
+		api.source = "profil tersimpan"
+		notifyListeners()
+		return true
+	end
+
+	local function saveProfile()
+		if not (writefile and api.ready) then return end
+		pcall(function()
+			if makefolder and isfolder and not isfolder(settings.saveFolder) then
+				pcall(makefolder, settings.saveFolder)
+			end
+			local map = {}
+			for k, rn in pairs(rarMap) do map[k] = rn end
+			writefile(profilePath(), HttpSvc:JSONEncode({ v = 1, t = os.time(), gid = game.GameId, count = api.count, tg = api.tierGuess == true, map = map }))
+		end)
+	end
+
+	-- Pembungkus tunggal: profil dulu (kecuali force), lalu baca dari modul game. Error ditangkap ke api.error.
+	local function loadData(force)
+		if api.loading or unloaded then return end
+		api.error = nil
+		if not force and loadProfile() then return end
+		local ok, err = pcall(loadCore)
+		if not ok then
+			api.loading = false
+			api.ready = false
+			api.failed = true
+			api.error = tostring(err)
+			notifyListeners()
+			return
+		end
+		if api.ready then
+			api.source = "modul game"
+			saveProfile()
+		end
 	end
 
 
@@ -3892,7 +4013,56 @@ xpcall(function()
 		task.spawn(loadData)
 	end
 
+	-- Baca ulang paksa dari modul game (dipakai tombol SCAN, supaya hasilnya = mesin yang dipakai dropdown).
+	function api.reload()
+		local t0 = os.clock()
+		while api.loading and not unloaded and os.clock() - t0 < 90 do task.wait(0.1) end
+		if unloaded then return end
+		loadData(true)
+	end
+
+	function api.summary()
+		local c = {}
+		for _, rn in pairs(rarMap) do c[rn] = (c[rn] or 0) + 1 end
+		return c
+	end
+
+	function api.sample(n)
+		local ks = {}
+		for k in pairs(rarMap) do ks[#ks + 1] = k end
+		table.sort(ks)
+		local out = {}
+		for i = 1, math.min(n, #ks) do out[i] = ks[i] .. " -> " .. rarMap[ks[i]] end
+		return out
+	end
+
 	settings.rarityApi = api
+
+	-- AUTO: baca data rarity sendiri begitu script jalan (profil dulu, kalau tidak ada baru baca modul game).
+	-- Kalau gagal, coba sekali lagi 20 detik kemudian (sebagian game mengisi ReplicatedStorage belakangan).
+	-- Selama auto, toast "Data rarity tidak ditemukan" ditahan; hasilnya bisa dicek lewat tombol SCAN.
+	if settings.autoRarity ~= false then
+		task.spawn(function()
+			if not game:IsLoaded() then game.Loaded:Wait() end
+			task.wait(4)
+			if unloaded then return end
+			api.silentFail = true
+			local function waitDone()
+				api.ensure()
+				local t0 = os.clock()
+				while api.loading and not unloaded and os.clock() - t0 < 120 do task.wait(0.25) end
+			end
+			waitDone()
+			if api.failed and not unloaded then
+				task.wait(20)
+				if not unloaded then
+					api.failed = false
+					waitDone()
+				end
+			end
+			api.silentFail = false
+		end)
+	end
 end, warn)
 
 sectionLabel(pages.ESP, 4, "Loot & Item ESP")
@@ -5195,8 +5365,16 @@ end)
 do
 	local api = settings.rarityApi
 	if api then
+		-- Isi dropdown mengikuti data game (api.names). Sebelum data dimuat: 6 nama bawaan.
+		local MAXR = 12
 		local RN = { "Semua" }
-		for _, n in ipairs(api.names) do RN[#RN + 1] = n end
+		local function loadRN()
+			RN = { "Semua" }
+			for _, n in ipairs(api.names) do
+				if #RN < MAXR + 1 then RN[#RN + 1] = n end
+			end
+		end
+		loadRN()
 
 		local rarBtn = smallButton(actionRow, "Rarity ▼", UDim2.new(0.25, -5, 1, 0), 4)
 		rarBtn.TextSize = 10
@@ -5216,7 +5394,7 @@ do
 		stroke(panel, T.stroke, 1, 0.2)
 
 		local rbtn = {}
-		for i, _ in ipairs(RN) do
+		for i = 1, MAXR + 1 do
 			local b = new("TextButton", {
 				Position = UDim2.fromOffset(4, 4 + (i - 1) * (ROW_H + GAP)),
 				Size = UDim2.new(1, -8, 0, ROW_H),
@@ -5236,12 +5414,40 @@ do
 			rbtn[i] = b
 		end
 
+		-- susun ulang panel sesuai jumlah rarity; baris berlebih disembunyikan
+		local function layoutPanel()
+			local cnt = #RN
+			local h = 8 + cnt * ROW_H + (cnt - 1) * GAP
+			panel.Size = UDim2.fromOffset(150, h)
+			panel.Position = UDim2.new(1, -14, 0, math.max(4, math.min(158, 336 - h)))
+			for i = 1, MAXR + 1 do
+				rbtn[i].Visible = RN[i] ~= nil
+			end
+		end
+
+		-- ambil daftar terbaru dari loader, buang pilihan yang sudah tidak ada
+		local function syncRar()
+			loadRN()
+			local valid = {}
+			for i = 2, #RN do valid[RN[i]] = true end
+			for k in pairs(rarSel) do
+				if not valid[k] then
+					rarSel[k] = nil
+					rarSelN = rarSelN - 1
+				end
+			end
+			layoutPanel()
+		end
+
 		local function refreshRar()
-			for i, n in ipairs(RN) do
-				local chk = (n == "Semua" and rarSelN == 0) or rarSel[n] == true
-				local col = api.colors[n] or WHITE
-				rbtn[i].Text = string.format('<font color="#%s">●</font>  %s%s', col:ToHex(), n, chk and "   ✓" or "")
-				rbtn[i].BackgroundColor3 = chk and T.cardSel or T.bg
+			for i = 1, MAXR + 1 do
+				local n = RN[i]
+				if n then
+					local chk = (n == "Semua" and rarSelN == 0) or rarSel[n] == true
+					local col = api.colors[n] or WHITE
+					rbtn[i].Text = string.format('<font color="#%s">●</font>  %s%s', col:ToHex(), n, chk and "   ✓" or "")
+					rbtn[i].BackgroundColor3 = chk and T.cardSel or T.bg
+				end
 			end
 			local label = "Rarity"
 			if rarSelN == 1 then
@@ -5255,8 +5461,10 @@ do
 			rarBtn.TextColor3 = active and WHITE or T.sub
 		end
 
-		for i, n in ipairs(RN) do
+		for i = 1, MAXR + 1 do
 			rbtn[i].MouseButton1Click:Connect(function()
+				local n = RN[i]
+				if not n then return end
 				if n == "Semua" then
 					table.clear(rarSel)
 					rarSelN = 0
@@ -5286,7 +5494,9 @@ do
 		-- data rarity selesai dimuat -> warnai ulang daftar & label, terapkan filter
 		api.listeners[#api.listeners + 1] = function()
 			if unloaded then return end
-			if api.failed then toast("Data rarity tidak ditemukan di game ini") end
+			if api.failed and not api.silentFail then toast("Data rarity tidak ditemukan di game ini") end
+			syncRar()
+			refreshRar()
 			for name, r in pairs(rows) do
 				if r.nmL then r.nmL.TextColor3 = rarityColor(name) or T.text end
 			end
@@ -5294,6 +5504,7 @@ do
 			onFilterChanged()
 		end
 
+		syncRar()
 		refreshRar()
 	end
 end
@@ -6347,55 +6558,7 @@ addKeyRow(5, "Float: Naik", "Tahan untuk naik saat Float aktif. Backspace untuk 
 addKeyRow(6, "Float: Turun", "Tahan untuk turun saat Float aktif. Backspace untuk mengosongkan.", "floatDownKey", true)
 refreshKeyUI()
 
--- Tombol "Reset Keybind ke Bawaan": harus diklik DUA KALI (klik pertama = minta konfirmasi,
--- klik kedua dalam 3 detik = reset). Kalau tidak diklik lagi, otomatis batal.
--- Dibungkus do...end supaya tidak menambah jumlah local di level atas.
-do
-	local DEFAULT_KEYS = {
-		toggleKey = Enum.KeyCode.K,
-		saveKey = Enum.KeyCode.LeftBracket,
-		tpKey = Enum.KeyCode.RightBracket,
-		cycleKey = Enum.KeyCode.Quote,
-		floatUpKey = Enum.KeyCode.PageUp,
-		floatDownKey = Enum.KeyCode.PageDown,
-	}
-	local IDLE_TEXT = "Reset Keybind ke Bawaan"
-	local resetBtn = makeButton(settingsPage, 7, IDLE_TEXT, T.accent, 36)
-	local armed = false
-	local token = 0
-
-	local function disarm()
-		armed = false
-		token += 1
-		resetBtn.Text = IDLE_TEXT
-		resetBtn.BackgroundColor3 = T.accent
-	end
-
-	resetBtn.MouseButton1Click:Connect(function()
-		if not armed then
-			armed = true
-			token += 1
-			local t = token
-			resetBtn.Text = "Klik sekali lagi untuk konfirmasi"
-			resetBtn.BackgroundColor3 = T.danger
-			task.delay(3, function()
-				if token == t and armed and not unloaded then
-					disarm()
-				end
-			end)
-			return
-		end
-		disarm()
-		listening = nil
-		for name, kc in pairs(DEFAULT_KEYS) do
-			settings[name] = kc
-		end
-		refreshKeyUI()
-		toast("Keybind dikembalikan ke bawaan")
-	end)
-end
-
-local sizeCard = makeCard(settingsPage, 78, 8)
+local sizeCard = makeCard(settingsPage, 78, 7)
 text(sizeCard, {
 	Text = "Ukuran Panel",
 	Font = Enum.Font.GothamBold,
@@ -6442,15 +6605,15 @@ for i, preset in ipairs({
 	end)
 end
 
-local offAllBtn = makeButton(settingsPage, 9, "Matikan Semua Fitur", T.accent, 40)
+local offAllBtn = makeButton(settingsPage, 8, "Matikan Semua Fitur", T.accent, 40)
 hover(offAllBtn, T.accent)
 offAllBtn.MouseButton1Click:Connect(function()
 	disableAllFeatures()
 end)
 
-local unloadBtn = makeButton(settingsPage, 10, "Unload & Bersihkan Semua", T.off, 40)
+local unloadBtn = makeButton(settingsPage, 9, "Unload & Bersihkan Semua", T.off, 40)
 text(settingsPage, {
-	LayoutOrder = 11,
+	LayoutOrder = 10,
 	Text = "Menghapus panel, mematikan semua fitur, mengembalikan speed/jump ke semula, menghapus lantai float dan ESP, dan memutus semua koneksi script. Waypoint juga ikut hilang.",
 	TextSize = 11,
 	TextColor3 = T.sub,
@@ -6931,41 +7094,7 @@ track(UIS.InputBegan:Connect(function(input, processed)
 			elseif input.KeyCode == Enum.KeyCode.Backspace and info.allowClear then
 				settings[info.name] = nil
 			else
-				local newKc = input.KeyCode
-				local LABELS = {
-					toggleKey = "Hide / Show",
-					saveKey = "Simpan Waypoint",
-					tpKey = "Teleport",
-					cycleKey = "Ganti Waypoint",
-					floatUpKey = "Float: Naik",
-					floatDownKey = "Float: Turun",
-				}
-				local CLEARABLE = { saveKey = true, tpKey = true, cycleKey = true, floatUpKey = true, floatDownKey = true }
-				local oldKc = settings[info.name]
-				local conflict = nil
-				for n in pairs(LABELS) do
-					if n ~= info.name and settings[n] == newKc then
-						conflict = n
-						break
-					end
-				end
-				if not conflict then
-					settings[info.name] = newKc
-				elseif oldKc == nil and not CLEARABLE[conflict] then
-					-- fungsi lain tidak boleh kosong dan kita tidak punya tombol cadangan untuk ditukar
-					toast("[" .. newKc.Name .. "] dipakai " .. LABELS[conflict] .. " dan tidak boleh kosong")
-				else
-					-- tukar: fungsi lain mendapat tombol lama milik fungsi ini (bisa kosong)
-					settings[conflict] = oldKc
-					settings[info.name] = newKc
-					if oldKc then
-						toast("[" .. newKc.Name .. "] sebelumnya dipakai " .. LABELS[conflict]
-							.. " - sekarang ditukar ke [" .. oldKc.Name .. "]")
-					else
-						toast("[" .. newKc.Name .. "] sebelumnya dipakai " .. LABELS[conflict]
-							.. " - fungsi itu sekarang dikosongkan")
-					end
-				end
+				settings[info.name] = input.KeyCode
 			end
 			refreshKeyUI()
 		end
@@ -6996,12 +7125,12 @@ end))
 -- GUI: TES DETEKSI RARITY (otomatis, tanpa harus memetik item)
 -- Memeriksa: item di dunia (Attribute / Value / nama / teks GUI), ReplicatedStorage
 -- (Attribute, Value, folder bernama rarity) dan ModuleScript data (require, dibatasi waktu).
--- Kartu kecil di tab Config: tekan SCAN, lalu "Salin hasil" (juga disimpan ke <saveFolder>/rarity_scan.txt).
+-- Kartu kecil di tab Config: tekan SCAN, lalu "Salin hasil" (juga disimpan ke <saveFolder>/rarity_scan_<GameId>.txt).
 -- Dibungkus xpcall + function supaya tidak menambah jumlah local di level atas
 -- dan kalau ada error tidak merusak script lain.
 -- =====================================================
 xpcall(function()
-	local RAR_WORDS = { "legendary", "mythical", "mythic", "epic", "uncommon", "common", "rare", "exotic", "divine", "godly", "secret", "unique" }
+	local RAR_WORDS = { "legendary", "legendaris", "legenda", "mythical", "mythic", "mitos", "mitis", "epic", "epik", "uncommon", "common", "rare", "langka", "jarang", "biasa", "exotic", "divine", "godly", "secret", "unique" }
 	local KEY_WORDS = { "rarity", "tier", "grade" }
 	local MOD_WORDS = { "item", "mushroom", "shroom", "fung", "rarit", "data", "config", "loot", "drop", "forag", "catalog", "info", "stat", "list", "const", "shop", "crop", "plant" }
 
@@ -7363,42 +7492,35 @@ xpcall(function()
 		add("[2] REPLICATEDSTORAGE: " .. #rsHits .. " atribut/value berinfo rarity, " .. #mods .. " modul data kandidat")
 		for i = 1, math.min(#rsHits, 6) do add("  • " .. rsHits[i]) end
 
-		-- ---------- 3) MODUL DATA (require, dibatasi waktu) ----------
-		setStatus("Membaca modul data (" .. #mods .. ")...", T.sub)
-		local found = {}
-		local modOk, modFail = 0, 0
-		for i, m in ipairs(mods) do
-			if i > 80 or unloaded then break end
-			local done, res = false, nil
-			task.spawn(function()
-				local ok, r = pcall(require, m)
-				if ok then res = r end
-				done = true
-			end)
-			local t0 = os.clock()
-			while not done and os.clock() - t0 < 1.5 do task.wait() end
-			if done and type(res) == "table" then
-				modOk = modOk + 1
-				scanTable(res, m.Name, found)
-			else
-				modFail = modFail + 1
-			end
-		end
-
-		-- buang duplikat (nama sama)
-		local uniq, seenN = {}, {}
-		for _, f in ipairs(found) do
-			local key = string.lower(f.name)
-			if not seenN[key] then
-				seenN[key] = true
-				table.insert(uniq, f)
-			end
-		end
-
+		-- ---------- 3) DATA RARITY (mesin yang SAMA dengan dropdown Rarity) ----------
+		setStatus("Memuat data rarity (mesin yang sama dengan dropdown)...", T.sub)
+		local api = settings.rarityApi
+		local apiErr = nil
 		add("")
-		add("[3] MODUL DATA: " .. modOk .. " terbaca, " .. modFail .. " gagal/terlalu lama, " .. #uniq .. " entri berinfo rarity")
-		for i = 1, math.min(#uniq, 12) do
-			add("  • " .. uniq[i].name .. " -> " .. uniq[i].rar .. "  (" .. uniq[i].src .. ")")
+		if not api then
+			apiErr = "modul rarity tidak aktif"
+			add("[3] DATA RARITY: modul loader tidak aktif (error saat startup, lihat konsol).")
+		else
+			local okR, eR = pcall(api.reload)
+			if not okR then
+				apiErr = tostring(eR)
+			elseif api.error then
+				apiErr = tostring(api.error)
+			end
+			add("[3] DATA RARITY (mesin yang sama dengan dropdown Rarity): " .. (api.ready and "SIAP" or "TIDAK SIAP")
+				.. ", " .. tostring(api.count or 0) .. " entri, sumber: " .. tostring(api.source or "-"))
+			if apiErr then add("  ERROR: " .. apiErr) end
+			if api.ready then
+				local parts = {}
+				for rn, n in pairs(api.summary()) do parts[#parts + 1] = rn .. " " .. n end
+				table.sort(parts)
+				add("  Per rarity: " .. table.concat(parts, ", "))
+				add("  Isi dropdown Rarity: " .. table.concat(api.names, ", "))
+				if api.tierGuess then
+					add("  PERHATIAN: rarity di game ini berupa NOMOR tier. Nama (Common..Mythic) hanya TEBAKAN urutan standar 1-6, cocokkan dengan item yang kamu tahu rarity-nya.")
+				end
+				for _, s in ipairs(api.sample(10)) do add("  • " .. s) end
+			end
 		end
 
 		-- ---------- FOLDER BERNAMA RARITY ----------
@@ -7415,21 +7537,19 @@ xpcall(function()
 		end
 
 		-- ---------- KESIMPULAN ----------
-		local strong = withEv > 0 or #uniq > 0 or #groups > 0
-		local weak = #rsHits > 0
+		local hint = withEv > 0 or #groups > 0 or #rsHits > 0
 		local verdict, col
-		if strong then
-			local src = {}
-			if withEv > 0 then table.insert(src, "item di dunia") end
-			if #uniq > 0 then table.insert(src, "modul data") end
-			if #groups > 0 then table.insert(src, "folder rarity") end
-			verdict = "TERDETEKSI: rarity bisa dibaca otomatis (" .. table.concat(src, ", ") .. "), tanpa memetik item."
+		if apiErr then
+			verdict = "ERROR SCRIPT: loader rarity gagal (" .. apiErr .. "). Ini bug script, bukan keterbatasan game. Salin hasilnya."
+			col = T.danger
+		elseif api and api.ready then
+			verdict = "TERDETEKSI: " .. tostring(api.count) .. " entri rarity terbaca dari data game. Dropdown Rarity & warna label memakai data yang sama." .. (api.tierGuess and " Catatan: nomor tier diterjemahkan dengan urutan standar (tebakan), cek hasilnya." or "")
 			col = T.good
-		elseif weak then
-			verdict = "SEBAGIAN: ada atribut/value berinfo rarity di ReplicatedStorage, tapi belum terhubung ke item. Salin hasilnya untuk dicek."
+		elseif hint then
+			verdict = "SEBAGIAN: ada info rarity di item/folder/ReplicatedStorage, tapi loader belum bisa membacanya, jadi dropdown Rarity belum bekerja di game ini. Salin hasilnya untuk dicek."
 			col = Color3.fromRGB(255, 176, 72)
 		else
-			verdict = "TIDAK TERDETEKSI: game tampaknya menyembunyikan rarity sampai item dipetik. Pakai tabel/rekam saat memetik."
+			verdict = "TIDAK TERDETEKSI: game tampaknya menyembunyikan rarity sampai item dipetik. Ini keterbatasan game, bukan bug."
 			col = T.danger
 		end
 		add("")
@@ -7443,7 +7563,7 @@ xpcall(function()
 				if makefolder and isfolder and not isfolder(settings.saveFolder) then
 					makefolder(settings.saveFolder)
 				end
-				writefile(tostring(settings.saveFolder) .. "/rarity_scan.txt", lastReport)
+				writefile(tostring(settings.saveFolder) .. "/rarity_scan_" .. tostring(game.GameId) .. ".txt", lastReport)
 			end)
 		end
 
@@ -7471,7 +7591,7 @@ xpcall(function()
 			pcall(clip, lastReport)
 			toast("Hasil disalin")
 		else
-			toast("Executor tidak bisa menyalin; lihat file rarity_scan.txt")
+			toast("Executor tidak bisa menyalin; lihat file rarity_scan_" .. tostring(game.GameId) .. ".txt")
 		end
 	end)
 end, warn)
