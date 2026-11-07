@@ -158,6 +158,7 @@ local state: { [string]: boolean } = {
 	noFog = false,
 	fov = false,
 	follow = false,
+	autoCut = false, -- Mini Game: Auto Cut jamur (mati saat script dijalankan)
 }
 
 local values: { [string]: number } = {
@@ -169,6 +170,7 @@ local values: { [string]: number } = {
 	clock = 14,
 	fov = 70,
 	npcDist = 50000,
+	cutLead = 5, -- Mini Game: LEAD dalam milidetik (5 = 0.005 dtk)
 }
 
 local targetUsername = ""
@@ -658,6 +660,7 @@ local effects: { [string]: (boolean) -> () } = {
 	esp = function(on) setEsp(on) end,
 	freecam = function(on) setFreecam(on) end,
 	antiAfk = function() end,
+	autoCut = function() end, -- diisi blok GUI Mini Game
 	fullbright = function(on) ext.light(on) end,
 	noFog = function(on) ext.fog(on) end,
 	fov = function(on) ext.fov(on) end,
@@ -1766,11 +1769,12 @@ end
 local movementPage = newPage("Movement")
 local physicsPage = newPage("Physics")
 local teleportPage = newPage("Teleport")
+newPage("Mini Game") -- halaman Mini Game (Auto Cut); diisi blok GUI Mini Game
 newPage("ESP") -- halaman ESP sendiri (ESP NPC/Hewan + Loot & Item ESP); diakses lewat pages.ESP
 local configPage = newPage("Config")
 local settingsPage = newPage("Settings")
 
-for i, name in ipairs({ "Movement", "Physics", "Visual", "ESP", "Teleport", "Config", "Settings" }) do
+for i, name in ipairs({ "Movement", "Physics", "Visual", "ESP", "Teleport", "Mini Game", "Config", "Settings" }) do
 	local b = new("TextButton", {
 		LayoutOrder = i,
 		Size = UDim2.new(1, 0, 0, 38),
@@ -4073,6 +4077,29 @@ tpTargetCard.Size = UDim2.new(1, 0, 0, 232)
 		return btn
 	end
 
+	-- Saring daftar menurut teks di kotak pencarian (nama tampilan ATAU @username, tidak peka huruf besar-kecil)
+	local function applyFilter()
+		local q = string.lower(string.match(tpTargetInput.Text, "^%s*(.-)%s*$") or "")
+		local total, shown = 0, 0
+		for p, row in pairs(plrRows) do
+			total += 1
+			local ok = q == ""
+			if not ok then
+				ok = string.find(string.lower(p.Name), q, 1, true) ~= nil
+					or string.find(string.lower(p.DisplayName), q, 1, true) ~= nil
+			end
+			row.Visible = ok
+			if ok then shown += 1 end
+		end
+		if q == "" then
+			plrCount.Text = "Pemain online: " .. tostring(total)
+		else
+			plrCount.Text = "Ditemukan " .. tostring(shown) .. " dari " .. tostring(total)
+		end
+		plrEmpty.Text = total == 0 and "Tidak ada pemain lain di server" or "Tidak ada pemain yang cocok"
+		plrEmpty.Visible = shown == 0
+	end
+
 	local function refreshPlayerList()
 		if unloaded then return end
 		local others: { Player } = {}
@@ -4104,8 +4131,7 @@ tpTargetCard.Size = UDim2.new(1, 0, 0, 232)
 			end
 		end
 
-		plrCount.Text = "Pemain online: " .. tostring(#others)
-		plrEmpty.Visible = #others == 0
+		applyFilter()
 	end
 
 	track(Players.PlayerAdded:Connect(refreshPlayerList))
@@ -4113,6 +4139,10 @@ tpTargetCard.Size = UDim2.new(1, 0, 0, 232)
 		-- PlayerRemoving terpanggil sebelum pemain benar-benar hilang dari GetPlayers
 		task.defer(refreshPlayerList)
 	end))
+	tpTargetInput:GetPropertyChangedSignal("Text"):Connect(function()
+		plrScroll.CanvasPosition = Vector2.new(0, 0)
+		applyFilter()
+	end)
 	refreshPlayerList()
 end)()
 
@@ -7487,6 +7517,627 @@ local function updateMode()
 end
 
 rebuildSlots()
+
+-- =====================================================
+-- GUI: HALAMAN MINI GAME (Auto Cut jamur)
+-- Dibungkus fungsi sendiri supaya local-nya TIDAK menghabiskan jatah 200 local script utama.
+-- Membaca MainUI.Harvest.Bar (Marker + Zone.Perfect), lalu meniru tombol Space saat marker
+-- diperkirakan tepat di tengah zona Perfect. Tidak memanggil remote, tidak mengubah data game.
+-- Nilai LEAD (ms) = state values.cutLead -> ikut tersimpan di settings.json & slot Config.
+-- =====================================================
+do
+	local function buildMiniGame()
+		local VIM: any = nil
+		pcall(function() VIM = game:GetService("VirtualInputManager") end)
+
+		-- singkirkan Auto Cut versi mandiri lama (kalau masih jalan) supaya tidak menekan dobel
+		do
+			local e = (getgenv and getgenv()) or _G
+			if type(e.__R4MEN_CUT_UNLOAD) == "function" then pcall(e.__R4MEN_CUT_UNLOAD) end
+			e.__R4MEN_CUT_UNLOAD = nil
+			local oldGui = playerGui:FindFirstChild("R4MEN_AutoCut")
+			if oldGui then oldGui:Destroy() end
+		end
+
+		local LEAD_MAX = 25 -- ms. Batas atas penyesuaian (0.025 dtk). Ubah angka ini kalau mau lebih besar.
+		local C: any = {
+			MARGIN = 0.15,      -- marker harus di dalam zona Perfect (dikurangi 15% tiap sisi)
+			HIST_WINDOW = 0.12, -- detik riwayat untuk hitung kecepatan
+			DEBOUNCE = 0.9,     -- jeda minimal antar tekanan pada zona yang SAMA
+			MIN_GAP = 0.15,     -- jeda minimal bila zona sudah pindah (potongan berikutnya)
+			STABLE_FOR = 0.2,   -- bar harus stabil segini lama sebelum menekan
+			HOLD = 0.03,        -- lama Space ditahan
+			presses = 0, lastErr = nil, lastPress = 0,
+			lastBarW = 0, barChangedAt = 0, lastUi = 0,
+			lastCx = nil, zoneX = -1e9, zoneChangedAt = 0, pressZoneX = -1e9,
+			hist = {}, cache = {}, msg = "Menunggu minigame...",
+		}
+
+		local function shown(inst: Instance): boolean
+			local cur: Instance? = inst
+			while cur and cur ~= playerGui do
+				if cur:IsA("GuiObject") and not cur.Visible then return false end
+				if cur:IsA("ScreenGui") and not cur.Enabled then return false end
+				cur = cur.Parent
+			end
+			return cur == playerGui
+		end
+
+		local function findPath(path: string): any
+			local c = C.cache[path]
+			if c and c.Parent then return c end
+			local cur: any = playerGui
+			for part in string.gmatch(path, "[^%.]+") do
+				cur = cur and cur:FindFirstChild(part)
+			end
+			C.cache[path] = cur
+			return cur
+		end
+
+		local function pressSpace()
+			local ok = false
+			if VIM then
+				ok = pcall(function()
+					VIM:SendKeyEvent(true, Enum.KeyCode.Space, false, game)
+					task.wait(C.HOLD)
+					VIM:SendKeyEvent(false, Enum.KeyCode.Space, false, game)
+				end)
+			end
+			if not ok and keypress and keyrelease then
+				pcall(keypress, 0x20)
+				task.wait(C.HOLD)
+				pcall(keyrelease, 0x20)
+			end
+		end
+
+		-- ---------- halaman (satu kartu ringkas: toggle + LEAD + status) ----------
+		local page = pages["Mini Game"]
+		sectionLabel(page, 0, "Auto Mini Game")
+
+		local card = makeCard(page, 112, 1)
+		text(card, {
+			Text = "Auto Cut (Jamur)",
+			Font = Enum.Font.GothamBold,
+			TextSize = 14,
+			Position = UDim2.fromOffset(14, 10),
+			Size = UDim2.new(1, -84, 0, 18),
+		})
+		text(card, {
+			Text = "Space otomatis di zona Perfect. Telat: +, cepat: -",
+			TextSize = 11,
+			TextColor3 = T.sub,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			Position = UDim2.fromOffset(14, 30),
+			Size = UDim2.new(1, -84, 0, 14),
+		})
+		switches.autoCut = makeSwitch(card, UDim2.new(1, -14, 0, 25), false, function(on)
+			state.autoCut = on
+			effects.autoCut(on)
+			refreshActive()
+		end, cardGlow(card))
+
+		local minus = makeButton(card, 0, "-", T.off, 26)
+		minus.Size = UDim2.fromOffset(34, 26)
+		minus.Position = UDim2.fromOffset(14, 52)
+		hover(minus, T.off)
+
+		local plus = makeButton(card, 0, "+", T.off, 26)
+		plus.AnchorPoint = Vector2.new(1, 0)
+		plus.Size = UDim2.fromOffset(34, 26)
+		plus.Position = UDim2.new(1, -14, 0, 52)
+		hover(plus, T.off)
+
+		local box = new("TextBox", {
+			Position = UDim2.fromOffset(54, 52),
+			Size = UDim2.new(1, -108, 0, 26),
+			BackgroundColor3 = T.bg,
+			TextColor3 = T.text,
+			Font = Enum.Font.GothamBold,
+			TextSize = 12,
+			ClearTextOnFocus = false,
+			BorderSizePixel = 0,
+			Text = "",
+		}, card)
+		round(box, 8)
+		stroke(box, T.stroke, 1, 0.3)
+
+		local function setLead(ms: number)
+			ms = math.clamp(math.floor(ms * 10 + 0.5) / 10, 0, LEAD_MAX)
+			values.cutLead = ms
+			box.Text = string.format("LEAD  %.3f dtk", ms / 1000)
+		end
+		sliderSetters.cutLead = setLead -- supaya ikut dimuat dari settings.json / slot Config
+		setLead(values.cutLead)
+
+		minus.MouseButton1Click:Connect(function() setLead(values.cutLead - 1) end)
+		plus.MouseButton1Click:Connect(function() setLead(values.cutLead + 1) end)
+		box.FocusLost:Connect(function()
+			local raw = string.gsub(box.Text, ",", ".")
+			local n = tonumber(string.match(raw, "%d+%.?%d*") or "")
+			if n then
+				setLead(n * 1000) -- ketik dalam detik, mis. 0.005 atau 0,005
+			else
+				setLead(values.cutLead)
+			end
+		end)
+		box.Focused:Connect(function()
+			box.Text = string.format("%.3f", values.cutLead / 1000)
+		end)
+
+		local sLbl = text(card, {
+			Text = C.msg,
+			TextSize = 10,
+			TextColor3 = T.sub,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			Position = UDim2.fromOffset(14, 88),
+			Size = UDim2.new(1, -28, 0, 14),
+		})
+
+		-- ---------- efek toggle ----------
+		effects.autoCut = function(on: boolean)
+			table.clear(C.hist)
+			C.lastBarW = 0
+			C.msg = on and "Aktif. Tekan E di jamur." or "Dimatikan."
+			sLbl.Text = C.msg
+		end
+
+		-- ---------- logika (satu koneksi, ikut dibersihkan oleh unload lewat track) ----------
+		track(RunService.RenderStepped:Connect(function()
+			if unloaded then return end
+			local hist = C.hist
+			local now = os.clock()
+
+			if not state.autoCut then
+				if #hist > 0 then table.clear(hist) end
+				return
+			end
+
+			local bar = findPath("MainUI.Harvest.Bar")
+			local marker = findPath("MainUI.Harvest.Bar.Marker")
+			local target = findPath("MainUI.Harvest.Bar.Zone.Perfect")
+			if not (bar and marker and target) or not shown(marker) then
+				table.clear(hist)
+				if now - C.lastUi > 0.25 then
+					C.lastUi = now
+					sLbl.Text = "Menunggu minigame... | tekan: " .. C.presses
+				end
+				return
+			end
+
+			-- tunggu animasi muncul selesai (lebar bar berhenti berubah)
+			local bw = bar.AbsoluteSize.X
+			if math.abs(bw - C.lastBarW) > 0.5 then
+				C.lastBarW, C.barChangedAt = bw, now
+				table.clear(hist)
+				return
+			end
+			if now - C.barChangedAt < C.STABLE_FOR then return end
+
+			local cx = marker.AbsolutePosition.X + marker.AbsoluteSize.X / 2
+			-- marker melompat jauh dalam 1 frame (reset setelah potongan): buang riwayat lama
+			if C.lastCx and math.abs(cx - C.lastCx) > bw * 0.3 then table.clear(hist) end
+			C.lastCx = cx
+			hist[#hist + 1] = { now, cx }
+			while #hist > 0 and now - hist[1][1] > C.HIST_WINDOW do table.remove(hist, 1) end
+			if #hist < 3 then return end
+
+			local first = hist[1]
+			local dt = now - first[1]
+			local vel = dt > 0 and (cx - first[2]) / dt or 0
+
+			local pw = target.AbsoluteSize.X
+			if pw < 6 then return end
+			local pl = target.AbsolutePosition.X + pw * C.MARGIN
+			local pr = target.AbsolutePosition.X + pw * (1 - C.MARGIN)
+			local center = target.AbsolutePosition.X + pw / 2
+
+			local lead = (values.cutLead or 5) / 1000
+
+			-- zona Perfect pindah = potongan berikutnya; tunggu zona diam sebentar sebelum menekan
+			local zx = target.AbsolutePosition.X
+			if math.abs(zx - C.zoneX) > 0.5 then C.zoneX, C.zoneChangedAt = zx, now end
+			local zoneSettled = now - C.zoneChangedAt > 0.08
+			local zoneMoved = math.abs(zx - C.pressZoneX) > 3
+
+			-- waktu sampai marker tiba di TENGAH Perfect (negatif = sudah lewat / menjauh)
+			local tta = math.huge
+			if math.abs(vel) > 5 then tta = (center - cx) / vel end
+
+			if now - C.lastUi > 0.1 then
+				C.lastUi = now
+				local errTxt = "-"
+				if C.lastErr then
+					errTxt = string.format("%+.1f px (%s)", C.lastErr, C.lastErr > 0 and "telat" or "cepat")
+				end
+				sLbl.Text = string.format("marker %.0f/%.0f | tekan: %d | selisih: %s",
+					cx, center, C.presses, errTxt)
+			end
+
+			local frame = 1 / 60
+			if tta >= math.min(-frame, lead - frame) and tta <= lead + frame * 0.5
+				and cx >= pl - math.abs(vel) * lead and cx <= pr + math.abs(vel) * lead
+				and zoneSettled
+				and (now - C.lastPress > C.DEBOUNCE or (zoneMoved and now - C.lastPress > C.MIN_GAP)) then
+				C.lastPress = now
+				C.pressZoneX = zx
+				-- positif = terlambat (lewat tengah searah gerak), negatif = terlalu cepat
+				C.lastErr = (cx - center) * (vel >= 0 and 1 or -1)
+				C.presses += 1
+				task.spawn(pressSpace)
+			end
+		end))
+	end
+	buildMiniGame()
+end
+
+-- =====================================================
+-- GUI: SCAN MINI GAME (perekam angka minigame, kartu di bawah Auto Cut)
+-- Hanya MEMBACA properti GUI (posisi, ukuran, warna, teks), tombol yang ditekan, dan RemoteEvent
+-- server->client. Tidak ada hook remote. Aktif HANYA saat Rekam ON.
+-- Dibungkus fungsi sendiri supaya tidak menghabiskan jatah 200 local.
+-- =====================================================
+do
+	local function buildScanner()
+		local MAX_TRACK, MAX_SERIES, MAX_EVENTS, MAX_TEXT, SAMPLE_DT = 5000, 2000, 400, 3000, 0.05
+		local EXCLUDE: any = {
+			UniversalUrbee = true, ControlPanel = true, UU_ITEMS = true, UU_NPC = true, UU_RARITY = true,
+			R4MEN_AutoCut = true, R4MEN_Rec = true, R4MEN_Scanner = true,
+		}
+		EXCLUDE[gui.Name] = true
+		local S: any = {
+			rec = false, t0 = 0, tracks = {}, count = 0, textCount = 0,
+			events = {}, conns = {}, acc = 0, lastKey = nil, lastT = 0, textT = {},
+		}
+
+		local function now() return os.clock() - S.t0 end
+
+		local function addEvent(kind: string, txt: string)
+			if #S.events >= MAX_EVENTS then return end
+			local key = kind .. txt
+			local t = os.clock()
+			if key == S.lastKey and t - S.lastT < 0.05 then return end
+			S.lastKey, S.lastT = key, t
+			S.events[#S.events + 1] = string.format("[%7.2f] %s %s", now(), kind, txt)
+		end
+
+		local function shown(inst: Instance): boolean
+			local cur: Instance? = inst
+			while cur and cur ~= playerGui do
+				if cur:IsA("GuiObject") and not cur.Visible then return false end
+				if cur:IsA("ScreenGui") and not cur.Enabled then return false end
+				cur = cur.Parent
+			end
+			return cur == playerGui
+		end
+
+		local function rootName(inst: Instance): string
+			local c: Instance? = inst
+			while c and c.Parent ~= playerGui do c = c.Parent end
+			return c and c.Name or ""
+		end
+
+		local function ser(v: any, depth: number): string
+			local ty = typeof(v)
+			if ty == "string" then
+				return '"' .. string.sub(v, 1, 60) .. '"'
+			elseif ty == "table" then
+				if depth >= 2 then return "{...}" end
+				local parts, n = {}, 0
+				for k, x in pairs(v) do
+					n += 1
+					if n > 8 then parts[#parts + 1] = "..." break end
+					parts[#parts + 1] = tostring(k) .. "=" .. ser(x, depth + 1)
+				end
+				return "{" .. table.concat(parts, ", ") .. "}"
+			elseif ty == "Instance" then
+				local ok, nm = pcall(function() return v:GetFullName() end)
+				return ok and nm or "Instance"
+			end
+			return tostring(v)
+		end
+
+		local function consider(inst: Instance)
+			if S.tracks[inst] or S.count >= MAX_TRACK then return end
+			if not inst:IsDescendantOf(playerGui) then return end
+			if EXCLUDE[rootName(inst)] then return end
+			local i: any = inst
+			if inst:IsA("Frame") or inst:IsA("ImageLabel") or inst:IsA("ImageButton") then
+				S.count += 1
+				S.tracks[inst] = {
+					path = inst:GetFullName(),
+					color = i.BackgroundColor3:ToHex(),
+					series = {}, last = "", changedAt = -10,
+				}
+			elseif (inst:IsA("TextLabel") or inst:IsA("TextButton")) and S.textCount < MAX_TEXT then
+				S.textCount += 1
+				S.conns[#S.conns + 1] = i:GetPropertyChangedSignal("Text"):Connect(function()
+					if S.rec and i.Text ~= "" and shown(i) then
+						local t = os.clock()
+						if t - (S.textT[inst] or 0) < 0.25 then return end -- timer/teks cepat: tidak membanjiri
+						S.textT[inst] = t
+						addEvent("TEKS", i.Name .. ": '" .. string.sub(i.Text, 1, 60) .. "'")
+					end
+				end)
+			end
+		end
+
+		local function sample()
+			local t = now()
+			for inst, tr in pairs(S.tracks) do
+				if inst.Parent ~= nil and shown(inst) then
+					local p, sz = (inst :: any).AbsolutePosition, (inst :: any).AbsoluteSize
+					local key = string.format("%.0f,%.0f,%.0f,%.0f", p.X, p.Y, sz.X, sz.Y)
+					if key ~= tr.last and #tr.series < MAX_SERIES then
+						tr.last = key
+						tr.changedAt = t
+						tr.series[#tr.series + 1] = { t, p.X, p.Y, sz.X, sz.Y }
+					end
+				end
+			end
+		end
+
+		local function buildReport(): string
+			local L = {}
+			local function add(s: string) L[#L + 1] = s end
+
+			add("== R4MEN SCAN MINI GAME ==")
+			add("GameId: " .. tostring(game.GameId) .. " | PlaceId: " .. tostring(game.PlaceId))
+			add(string.format("Durasi rekam: %.1f detik | objek dipantau: %d", now(), S.count))
+
+			local moving, still = {}, {}
+			for _, tr in pairs(S.tracks) do
+				local n = #tr.series
+				if n >= 1 then
+					local function rng(idx: number)
+						local mn, mx = math.huge, -math.huge
+						for _, s in ipairs(tr.series) do
+							if s[idx] < mn then mn = s[idx] end
+							if s[idx] > mx then mx = s[idx] end
+						end
+						return mn, mx
+					end
+					local xmin, xmax = rng(2)
+					local ymin, ymax = rng(3)
+					local wmin, wmax = rng(4)
+					local info: any = { tr = tr, n = n, xmin = xmin, xmax = xmax, wmin = wmin, wmax = wmax, ymin = ymin, ymax = ymax }
+					if n >= 3 then
+						local dist, active, rev, lastSign = 0, 0, 0, 0
+						for i = 2, n do
+							local a, b = tr.series[i - 1], tr.series[i]
+							local dx, dt = b[2] - a[2], b[1] - a[1]
+							if dt > 0 and dt <= 0.3 then
+								dist += math.abs(dx)
+								active += dt
+							end
+							local sg = (dx > 0 and 1) or (dx < 0 and -1) or 0
+							if sg ~= 0 then
+								if lastSign ~= 0 and sg ~= lastSign then rev += 1 end
+								lastSign = sg
+							end
+						end
+						info.speed = active > 0 and dist / active or 0
+						info.rev = rev
+						moving[#moving + 1] = info
+					else
+						still[#still + 1] = info
+					end
+				end
+			end
+			table.sort(moving, function(a, b) return a.n > b.n end)
+
+			add("")
+			add("## OBJEK BERGERAK / BERUBAH (kandidat penanda & zona)")
+			if #moving == 0 then add("(tidak ada)") end
+			for i, m in ipairs(moving) do
+				if i > 25 then add("... (" .. (#moving - 25) .. " lagi)") break end
+				add(string.format("- %s | warna #%s | %d sampel", m.tr.path, m.tr.color, m.n))
+				add(string.format("    X: %.0f..%.0f | Y: %.0f..%.0f | lebar: %.0f..%.0f | kecepatan: %.0f px/dtk | balik arah: %d",
+					m.xmin, m.xmax, m.ymin, m.ymax, m.wmin, m.wmax, m.speed or 0, m.rev or 0))
+				if i <= 4 then
+					local parts = {}
+					for k = 1, math.min(10, m.n) do
+						local s = m.tr.series[k]
+						parts[#parts + 1] = string.format("t%.2f:x%.0f/w%.0f", s[1], s[2], s[4])
+					end
+					add("    awal: " .. table.concat(parts, "  "))
+				end
+			end
+
+			table.sort(still, function(a, b) return a.wmax > b.wmax end)
+			add("")
+			add("## OBJEK DIAM (bar / zona statis, yang terbesar)")
+			local shownStill = 0
+			for _, m in ipairs(still) do
+				if m.wmax >= 15 then
+					shownStill += 1
+					if shownStill > 15 then break end
+					local s = m.tr.series[#m.tr.series]
+					add(string.format("- %s | warna #%s | X %.0f Y %.0f lebar %.0f tinggi %.0f", m.tr.path, m.tr.color, s[2], s[3], s[4], s[5]))
+				end
+			end
+			if shownStill == 0 then add("(tidak ada)") end
+
+			-- tebakan kasar penanda (bergerak cepat, bolak-balik) supaya mudah dicek
+			local best: any = nil
+			for _, m in ipairs(moving) do
+				if (m.rev or 0) >= 1 and (m.speed or 0) > 30 and (not best or m.speed > best.speed) then best = m end
+			end
+			add("")
+			add("## TEBAKAN KASAR (perlu dicek)")
+			if best then
+				add("penanda: " .. best.tr.path .. string.format(" (%.0f px/dtk)", best.speed))
+			else
+				add("penanda: (tidak jelas)")
+			end
+
+			add("")
+			add("## KEJADIAN (teks, tombol, remote)")
+			if #S.events == 0 then add("(tidak ada)") end
+			for _, e in ipairs(S.events) do add(e) end
+
+			return table.concat(L, "\n")
+		end
+
+		local function stopRec()
+			S.rec = false
+			for _, c in ipairs(S.conns) do pcall(function() c:Disconnect() end) end
+			table.clear(S.conns)
+		end
+
+		local function startRec()
+			stopRec()
+			table.clear(S.tracks)
+			table.clear(S.events)
+			table.clear(S.textT)
+			S.count, S.textCount = 0, 0
+			S.t0 = os.clock()
+			S.acc = 0
+			S.rec = true
+
+			for _, d in ipairs(playerGui:GetDescendants()) do consider(d) end
+
+			S.conns[#S.conns + 1] = playerGui.DescendantAdded:Connect(function(d)
+				task.defer(function()
+					if not S.rec then return end
+					consider(d)
+					if d.Parent == playerGui and not EXCLUDE[d.Name] then
+						addEvent("GUI BARU", d.Name)
+					end
+				end)
+			end)
+
+			S.conns[#S.conns + 1] = UIS.InputBegan:Connect(function(input)
+				if not S.rec then return end
+				local label: string? = nil
+				if input.UserInputType == Enum.UserInputType.MouseButton1 then label = "Klik"
+				elseif input.UserInputType == Enum.UserInputType.Touch then label = "Tap"
+				elseif input.UserInputType == Enum.UserInputType.Keyboard then label = input.KeyCode.Name end
+				if not label then return end
+				sample()
+				local parts, t = {}, now()
+				for _, tr in pairs(S.tracks) do
+					if t - tr.changedAt < 1 and #tr.series >= 3 then
+						local s = tr.series[#tr.series]
+						parts[#parts + 1] = string.format("%s x%.0f w%.0f", string.match(tr.path, "([^%.]+)$") or tr.path, s[2], s[4])
+					end
+				end
+				addEvent("TEKAN " .. label, "posisi: " .. (#parts > 0 and table.concat(parts, " | ") or "(tidak ada objek bergerak)"))
+			end)
+
+			-- server -> client (hanya mendengarkan; tidak ada hook)
+			for _, d in ipairs(ReplicatedStorage:GetDescendants()) do
+				if d:IsA("RemoteEvent") then
+					S.conns[#S.conns + 1] = d.OnClientEvent:Connect(function(...)
+						if not S.rec then return end
+						local args = table.pack(...)
+						local parts = {}
+						for i = 1, math.min(args.n, 6) do parts[#parts + 1] = ser(args[i], 0) end
+						addEvent("SERVER->CLIENT", d.Name .. "(" .. table.concat(parts, ", ") .. ")")
+					end)
+				end
+			end
+		end
+
+		-- ---------- kartu UI ----------
+		local page = pages["Mini Game"]
+		sectionLabel(page, 2, "Scan Mini Game")
+		local card = makeCard(page, 144, 3)
+		text(card, {
+			Text = "Perekam Minigame",
+			Font = Enum.Font.GothamBold,
+			TextSize = 14,
+			Position = UDim2.fromOffset(14, 10),
+			Size = UDim2.new(1, -28, 0, 18),
+		})
+		text(card, {
+			Text = "Rekam beberapa putaran, salin, lalu kirim hasilnya ke chat. Matikan Auto Cut dulu.",
+			TextSize = 11,
+			TextColor3 = T.sub,
+			TextWrapped = true,
+			TextYAlignment = Enum.TextYAlignment.Top,
+			Position = UDim2.fromOffset(14, 30),
+			Size = UDim2.new(1, -28, 0, 28),
+		})
+
+		local recBtn = makeButton(card, 0, "Rekam: OFF", T.accent, 28)
+		recBtn.Size = UDim2.new(1, -28, 0, 28)
+		recBtn.Position = UDim2.fromOffset(14, 62)
+		hover(recBtn, T.accent)
+
+		local copyBtn = makeButton(card, 0, "Salin hasil", T.accent2, 28)
+		copyBtn.Size = UDim2.new(0.5, -18, 0, 28)
+		copyBtn.Position = UDim2.fromOffset(14, 96)
+		hover(copyBtn, T.accent2)
+
+		local clearBtn = makeButton(card, 0, "Hapus", T.off, 28)
+		clearBtn.AnchorPoint = Vector2.new(1, 0)
+		clearBtn.Size = UDim2.new(0.5, -18, 0, 28)
+		clearBtn.Position = UDim2.new(1, -14, 0, 96)
+		hover(clearBtn, T.off)
+
+		local sLbl = text(card, {
+			Text = "Siap. Tekan Rekam lalu main minigame.",
+			TextSize = 10,
+			TextColor3 = T.sub,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			Position = UDim2.fromOffset(14, 128),
+			Size = UDim2.new(1, -28, 0, 12),
+		})
+
+		local function recOffUi()
+			recBtn.Text = "Rekam: OFF"
+			tween(recBtn, { BackgroundColor3 = T.accent }, 0.15)
+		end
+
+		recBtn.MouseButton1Click:Connect(function()
+			if not S.rec then
+				if state.autoCut then toast("Auto Cut sedang ON: tekanan Space-nya ikut terekam") end
+				startRec()
+				recBtn.Text = "Rekam: ON"
+				tween(recBtn, { BackgroundColor3 = T.good }, 0.15)
+				sLbl.Text = "Merekam... mainkan minigame beberapa putaran."
+			else
+				stopRec()
+				recOffUi()
+				sLbl.Text = string.format("Selesai: %d objek, %d kejadian. Tekan Salin.", S.count, #S.events)
+			end
+		end)
+
+		copyBtn.MouseButton1Click:Connect(function()
+			if S.rec then stopRec(); recOffUi() end
+			if S.count == 0 and #S.events == 0 then
+				sLbl.Text = "Belum ada data."
+				return
+			end
+			local report = buildReport()
+			local clip = setclipboard or toclipboard
+			local copied = clip and pcall(clip, report)
+			if writefile then pcall(writefile, settings.path("scan_" .. tostring(game.GameId) .. ".txt"), report) end
+			sLbl.Text = copied and "Disalin ke clipboard (+ file scan_*.txt)" or "Tidak bisa salin; lihat file scan_*.txt di folder R4MEN"
+			toast(copied and "Hasil scan disalin" or "Executor tidak bisa menyalin; lihat file scan")
+		end)
+
+		clearBtn.MouseButton1Click:Connect(function()
+			table.clear(S.tracks); table.clear(S.events)
+			S.count = 0
+			sLbl.Text = "Data dihapus."
+		end)
+
+		-- pembacaan posisi: satu koneksi, ikut dibersihkan unload lewat track
+		track(RunService.Heartbeat:Connect(function(dt)
+			if not S.rec or unloaded then return end
+			S.acc += dt
+			if S.acc >= SAMPLE_DT then
+				S.acc = 0
+				sample()
+			end
+		end))
+
+		-- koneksi rekaman diputus saat GUI dihancurkan (Unload)
+		gui.Destroying:Connect(function() stopRec() end)
+	end
+	buildScanner()
+end
 
 -- =====================================================
 -- PENYIMPANAN FILE LOKAL (writefile/readfile)
