@@ -4624,7 +4624,7 @@ sectionLabel(pages.ESP, 4, "Loot & Item ESP")
 do
 
 -- ---------- UI ----------
-local scannerCard = makeCard(pages.ESP, 340, 5)
+local scannerCard = makeCard(pages.ESP, 296, 5)
 
 local scanBtn = new("TextButton", {
 	Position = UDim2.fromOffset(14, 12),
@@ -6671,8 +6671,12 @@ do
 	local hopMode = "Sepi"
 	local hopping = false
 
+	-- Dipindah dari tab ESP ke tab Teleport, ditaruh paling bawah (LayoutOrder besar, di bawah daftar waypoint)
+	sectionLabel(teleportPage, 100, "Pindah Server")
+	local hopCard = makeCard(teleportPage, 56, 101)
+
 	local hopBtn = new("TextButton", {
-		Position = UDim2.fromOffset(14, 296),
+		Position = UDim2.fromOffset(14, 12),
 		Size = UDim2.new(1, -28 - 98, 0, 32),
 		BackgroundColor3 = T.accent,
 		Text = "🌐 HOP SERVER",
@@ -6681,13 +6685,13 @@ do
 		TextSize = 12,
 		AutoButtonColor = false,
 		BorderSizePixel = 0,
-	}, scannerCard)
+	}, hopCard)
 	round(hopBtn, 8)
 	hover(hopBtn, T.accent)
 
-	local modeBtn = smallButton(scannerCard, "Mode: Sepi", UDim2.fromOffset(90, 32), 0)
+	local modeBtn = smallButton(hopCard, "Mode: Sepi", UDim2.fromOffset(90, 32), 0)
 	modeBtn.AnchorPoint = Vector2.new(1, 0)
-	modeBtn.Position = UDim2.new(1, -14, 0, 296)
+	modeBtn.Position = UDim2.new(1, -14, 0, 12)
 	hover(modeBtn, T.bg)
 	modeBtn.MouseButton1Click:Connect(function()
 		hopMode = (hopMode == "Sepi") and "Acak" or "Sepi"
@@ -7079,6 +7083,147 @@ local function refreshKeyUI()
 		.. "]. Atur di tab Settings."
 end
 
+-- ---------- Pop-up "Keybind sudah dipakai" (satu local saja, supaya batas local level atas aman) ----------
+local keyConflictUI: any = {
+	open = false,
+	titles = {},
+	order = { "toggleKey", "saveKey", "tpKey", "cycleKey", "floatUpKey", "floatDownKey", "followKey", "autoCutKey" },
+}
+do
+	local ui = keyConflictUI
+	local overlay = new("TextButton", {
+		Name = "KeyConflict",
+		-- tanpa latar gelap: area ini hanya seukuran kartu (transparan) supaya klik tidak tembus ke belakang pop-up
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromOffset(300, 176),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		Text = "",
+		AutoButtonColor = false,
+		Visible = false,
+		ZIndex = 40,
+	}, gui)
+
+	local card = new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromOffset(300, 176),
+		BackgroundColor3 = T.bg,
+		BorderSizePixel = 0,
+	}, overlay)
+	round(card, 14)
+	grad(stroke(card, WHITE, 1.5, 0.1), T.accent, T.accent2, 45)
+
+	local icon = new("Frame", {
+		Position = UDim2.fromOffset(16, 16),
+		Size = UDim2.fromOffset(30, 30),
+		BackgroundColor3 = T.danger,
+		BorderSizePixel = 0,
+	}, card)
+	round(icon, 15)
+	text(icon, {
+		Size = UDim2.fromScale(1, 1),
+		Text = "!",
+		Font = Enum.Font.GothamBold,
+		TextSize = 18,
+		TextXAlignment = Enum.TextXAlignment.Center,
+	})
+	text(card, {
+		Text = "Keybind sudah dipakai",
+		Font = Enum.Font.GothamBold,
+		TextSize = 15,
+		Position = UDim2.fromOffset(56, 16),
+		Size = UDim2.new(1, -72, 0, 30),
+	})
+	local msg = text(card, {
+		RichText = true,
+		TextWrapped = true,
+		TextSize = 12,
+		TextColor3 = T.sub,
+		TextYAlignment = Enum.TextYAlignment.Top,
+		Position = UDim2.fromOffset(16, 56),
+		Size = UDim2.new(1, -32, 0, 56),
+	})
+
+	local retryInfo: any = nil
+
+	local function makeBtn(label: string, x: number, w: number, bg: Color3)
+		local b = new("TextButton", {
+			Position = UDim2.new(0, x, 1, -16),
+			AnchorPoint = Vector2.new(0, 1),
+			Size = UDim2.new(0, w, 0, 32),
+			BackgroundColor3 = bg,
+			Text = label,
+			TextColor3 = T.text,
+			Font = Enum.Font.GothamBold,
+			TextSize = 12,
+			AutoButtonColor = false,
+		}, card)
+		round(b, 8)
+		hover(b, bg)
+		return b
+	end
+	local retryBtn = makeBtn("Pilih Tombol Lain", 16, 150, T.accent)
+	local closeBtn = makeBtn("Tutup", 174, 110, T.card2)
+
+	ui.close = function()
+		overlay.Visible = false
+		ui.open = false
+	end
+
+	retryBtn.MouseButton1Click:Connect(function()
+		ui.close()
+		if retryInfo then
+			listening = { name = retryInfo.name, allowClear = retryInfo.allowClear }
+			refreshKeyUI()
+		end
+	end)
+	closeBtn.MouseButton1Click:Connect(function() ui.close() end)
+
+	-- cari fungsi lain yang sudah memakai tombol ini
+	ui.find = function(name: string, kc: Enum.KeyCode): string?
+		for _, n in ipairs(ui.order) do
+			if n ~= name and settings[n] == kc then return n end
+		end
+		return nil
+	end
+
+	ui.show = function(kc: Enum.KeyCode, owner: string, info: any)
+		retryInfo = info
+		msg.Text = "<b>[" .. kc.Name .. "]</b> sudah dipakai oleh <b>" .. tostring(ui.titles[owner] or owner)
+			.. "</b>.\nSatu tombol hanya boleh untuk satu fungsi. Pilih tombol lain, atau kosongkan dulu yang lama."
+		ui.open = true
+		overlay.Visible = true
+		card.Size = UDim2.fromOffset(280, 164)
+		tween(card, { Size = UDim2.fromOffset(300, 176) }, 0.15)
+		-- kedipkan tombol pemilik keybind
+		local ob = keyButtons[owner]
+		if ob then
+			ob.BackgroundColor3 = T.danger
+			tween(ob, { BackgroundColor3 = T.bg }, 0.7)
+		end
+	end
+
+	-- dipakai saat memuat setelan tersimpan: kalau ada tombol ganda, yang belakangan dikosongkan
+	ui.dedupe = function(): boolean
+		local seen: { [any]: boolean } = {}
+		local cleared = false
+		for _, n in ipairs(ui.order) do
+			local kc = settings[n]
+			if kc then
+				if seen[kc] then
+					settings[n] = nil
+					cleared = true
+				else
+					seen[kc] = true
+				end
+			end
+		end
+		return cleared
+	end
+end
+
 local function addKeyRow(order: number, title: string, desc: string, name: string, allowClear: boolean)
 	local card = makeCard(settingsPage, 64, order)
 	text(card, {
@@ -7112,6 +7257,7 @@ local function addKeyRow(order: number, title: string, desc: string, name: strin
 	stroke(btn, T.accent, 1.5, 0.1)
 	hover(btn, T.bg)
 	keyButtons[name] = btn
+	keyConflictUI.titles[name] = title
 	btn.MouseButton1Click:Connect(function()
 		listening = { name = name, allowClear = allowClear }
 		refreshKeyUI()
@@ -7126,9 +7272,10 @@ addKeyRow(4, "Tombol Ganti Waypoint", "Pindah ke waypoint berikutnya. Backspace 
 addKeyRow(5, "Float: Naik", "Tahan untuk naik saat Float aktif. Backspace untuk mengosongkan.", "floatUpKey", true)
 addKeyRow(6, "Float: Turun", "Tahan untuk turun saat Float aktif. Backspace untuk mengosongkan.", "floatDownKey", true)
 addKeyRow(7, "Follow: Mulai / Stop", "Mulai ikuti (target terakhir / nama di kotak / teman terdekat) atau berhenti. Backspace untuk mengosongkan.", "followKey", true)
+addKeyRow(8, "Auto Cut: ON / OFF", "Nyalakan atau matikan Auto Cut (Mini Game). Belum diatur = kosong. Backspace untuk mengosongkan.", "autoCutKey", true)
 refreshKeyUI()
 
-local sizeCard = makeCard(settingsPage, 78, 8)
+local sizeCard = makeCard(settingsPage, 78, 9)
 text(sizeCard, {
 	Text = "Ukuran Panel",
 	Font = Enum.Font.GothamBold,
@@ -7175,15 +7322,15 @@ for i, preset in ipairs({
 	end)
 end
 
-local offAllBtn = makeButton(settingsPage, 9, "Matikan Semua Fitur", T.accent, 40)
+local offAllBtn = makeButton(settingsPage, 10, "Matikan Semua Fitur", T.accent, 40)
 hover(offAllBtn, T.accent)
 offAllBtn.MouseButton1Click:Connect(function()
 	disableAllFeatures()
 end)
 
-local unloadBtn = makeButton(settingsPage, 10, "Unload & Bersihkan Semua", T.off, 40)
+local unloadBtn = makeButton(settingsPage, 11, "Unload & Bersihkan Semua", T.off, 40)
 text(settingsPage, {
-	LayoutOrder = 11,
+	LayoutOrder = 12,
 	Text = "Menghapus panel, mematikan semua fitur, mengembalikan speed/jump ke semula, menghapus lantai float dan ESP, dan memutus semua koneksi script. Waypoint juga ikut hilang.",
 	TextSize = 11,
 	TextColor3 = T.sub,
@@ -7197,7 +7344,7 @@ text(settingsPage, {
 -- =====================================================
 do
 local MAX_SLOTS = 10
-local KEY_NAMES = { "toggleKey", "saveKey", "tpKey", "cycleKey", "floatUpKey", "floatDownKey", "followKey" }
+local KEY_NAMES = { "toggleKey", "saveKey", "tpKey", "cycleKey", "floatUpKey", "floatDownKey", "followKey", "autoCutKey" }
 
 local slots: { { name: string, data: any } } = {}
 local remote: RemoteFunction? = nil
@@ -7268,6 +7415,9 @@ local function applySnapshot(d: any)
 				local ok, kc = pcall(function() return Enum.KeyCode[v] end)
 				if ok and kc then settings[n] = kc end
 			end
+		end
+		if keyConflictUI.dedupe() then
+			toast("Ada keybind ganda, yang bentrok dikosongkan")
 		end
 		refreshKeyUI()
 	end
@@ -8260,6 +8410,14 @@ end
 -- KEYBIND
 -- =====================================================
 track(UIS.InputBegan:Connect(function(input, processed)
+	-- pop-up "keybind sudah dipakai" sedang tampil: Esc / Enter menutup, tombol lain diabaikan
+	if keyConflictUI.open then
+		if input.KeyCode == Enum.KeyCode.Escape or input.KeyCode == Enum.KeyCode.Return then
+			keyConflictUI.close()
+		end
+		return
+	end
+
 	if listening then
 		if input.UserInputType == Enum.UserInputType.Keyboard then
 			local info = listening
@@ -8268,8 +8426,16 @@ track(UIS.InputBegan:Connect(function(input, processed)
 				-- batal
 			elseif input.KeyCode == Enum.KeyCode.Backspace and info.allowClear then
 				settings[info.name] = nil
+			elseif info.name == "autoCutKey" and input.KeyCode == Enum.KeyCode.Space then
+				-- Auto Cut sendiri menekan Space; kalau Space jadi keybind-nya, tiap potongan akan mematikannya
+				toast("Space dipakai Auto Cut untuk memotong, pilih tombol lain")
 			else
-				settings[info.name] = input.KeyCode
+				local owner = keyConflictUI.find(info.name, input.KeyCode)
+				if owner then
+					keyConflictUI.show(input.KeyCode, owner, info)
+				else
+					settings[info.name] = input.KeyCode
+				end
 			end
 			refreshKeyUI()
 		end
@@ -8295,6 +8461,9 @@ track(UIS.InputBegan:Connect(function(input, processed)
 		cycleWaypoint()
 	elseif kc == settings.followKey then
 		follow.toggle()
+	elseif kc == settings.autoCutKey then
+		setFeature("autoCut", not state.autoCut)
+		toast(state.autoCut and "Auto Cut: ON" or "Auto Cut: OFF")
 	end
 end))
 
