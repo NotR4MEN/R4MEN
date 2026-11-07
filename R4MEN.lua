@@ -61,6 +61,9 @@ local settings: { [string]: any } = {
 	dotsSelectedOnly = true, -- true = titik biru HANYA untuk item yang dicentang (lampu/pintu dll tidak ditandai). false = titik untuk semua yang terdeteksi
 	autoRarity = true, -- true = data rarity dibaca otomatis saat script jalan (profil disimpan per game). false = hanya saat dropdown Rarity dibuka / tombol SCAN
 	clickNeedsShift = false, -- true = harus menahan Shift kiri saat klik label (menghindari klik tembus ke game)
+	followKey = Enum.KeyCode.Semicolon, -- tombol berhenti / lanjut mengikuti (bisa diganti di tab Settings)
+	followFallbackNearest = false, -- Follow keybind: kalau tidak ada target/teman, true = ikuti pemain TERDEKAT siapa pun (hati-hati di server ramai)
+	followCatchup = 0, -- Follow Player: kalau > 0, otomatis teleport ke target bila jarak melebihi angka ini (studs). 0 = mati (jalan kaki saja)
 	toggleKey = Enum.KeyCode.K,
 	saveKey = Enum.KeyCode.LeftBracket,
 	tpKey = Enum.KeyCode.RightBracket,
@@ -154,9 +157,11 @@ local state: { [string]: boolean } = {
 	fullbright = false,
 	noFog = false,
 	fov = false,
+	follow = false,
 }
 
 local values: { [string]: number } = {
+	followDist = 6,
 	speed = 50,
 	jump = 100,
 	freecam = 60,
@@ -631,7 +636,11 @@ local ext: { [string]: (boolean) -> () } = {
 	fov = function() end,
 }
 
+-- Follow Player: satu tabel (hemat jatah 200 local). Diisi di bagian GUI Movement.
+local follow: any = { target = nil, set = function() end, pick = function() end }
+
 local effects: { [string]: (boolean) -> () } = {
+	follow = function(on) follow.set(on) end,
 	speed = function(on) if not on then restoreSpeed() end end,
 	jump = function(on) if not on then restoreJump() end end,
 	infJump = function() end,
@@ -2140,6 +2149,404 @@ addSliderCard(movementPage, 1, "Speed", "Bawaan Roblox: 16", "speed", 16, 1500, 
 addSliderCard(movementPage, 2, "Jump Power", "Bawaan Roblox: 50", "jump", 50, 300, 1000)
 addToggleCard(movementPage, 3, "Infinite Jump", "Lompat berkali-kali di udara.", "infJump")
 
+-- =====================================================
+-- FOLLOW PLAYER
+-- Karakter otomatis berjalan mengikuti pemain lain.
+--  * Mengikuti JEJAK LANGKAH target (titik-titik yang dia lewati), jadi di gunung/jalur berkelok
+--    kamu lewat jalur yang sama dengan temanmu, bukan lurus menabrak tebing.
+--  * Lompat otomatis saat jejak naik / saat tersangkut; titik jejak yang tak terjangkau dilewati.
+--  * Menekan WASD = kontrol manual (follow jeda selama tombol ditahan).
+--  * Berhenti saat sudah dekat (slider Jarak Berhenti). Opsional: settings.followCatchup (teleport bila ketinggalan jauh).
+-- =====================================================
+do
+	local TRAIL_STEP = 3   -- jarak minimal antar titik jejak (studs)
+	local TRAIL_MAX = 400  -- batas jumlah titik jejak
+	local ARRIVE = 4       -- dianggap sampai di titik jejak bila sedekat ini
+	local trail: { Vector3 } = {}
+	local jumpAt: { [Vector3]: boolean } = {} -- titik jejak tempat target melompat
+	local wasJump = false
+	local lastCrumb: Vector3? = nil
+	local stuckT, stuckAcc, lastPos = 0, 0, nil :: Vector3?
+	local lastTp = 0
+
+	local function setStatus(s: string)
+		if follow.statusLbl then follow.statusLbl.Text = s end
+	end
+
+	local function resetTrail()
+		table.clear(trail)
+		table.clear(jumpAt)
+		wasJump = false
+		lastCrumb = nil
+		stuckT, stuckAcc, lastPos = 0, 0, nil
+	end
+
+	-- Cocok persis menang. Kalau hanya cocok sebagian dan ada LEBIH DARI SATU pemain cocok,
+	-- tidak dipilih sembarang: dikembalikan daftar nama supaya kamu mengetik lebih lengkap.
+	local function findPlayer(q: string): (Player?, { string }?)
+		local low = string.lower(q)
+		if low == "" then return nil, nil end
+		local partial: { Player } = {}
+		for _, p in ipairs(Players:GetPlayers()) do
+			if p ~= player then
+				local n, d = string.lower(p.Name), string.lower(p.DisplayName)
+				if n == low or d == low then return p, nil end
+				if string.find(n, low, 1, true) or string.find(d, low, 1, true) then
+					partial[#partial + 1] = p
+				end
+			end
+		end
+		if #partial == 1 then return partial[1], nil end
+		if #partial > 1 then
+			local names: { string } = {}
+			for i = 1, math.min(#partial, 4) do names[i] = partial[i].Name end
+			return nil, names
+		end
+		return nil, nil
+	end
+
+	follow.resolve = function()
+		local box = follow.box
+		if not box then return end
+		local q = string.match(box.Text, "^%s*(.-)%s*$") or ""
+		if q == "" then return end
+		local p, many = findPlayer(q)
+		if p then
+			follow.target = p
+			resetTrail()
+			setStatus("Target: " .. p.Name)
+		elseif many then
+			toast("Ada beberapa yang cocok: " .. table.concat(many, ", ") .. " - ketik lebih lengkap")
+		else
+			toast("Pemain tidak ditemukan")
+		end
+	end
+
+	local function turnOff(msg: string?)
+		state.follow = false
+		if switches.follow then switches.follow.Set(false) end
+		refreshActive()
+		resetTrail()
+		setStatus(msg or "Tidak mengikuti")
+		if msg then toast(msg) end
+	end
+
+	follow.set = function(on: boolean)
+		if on then
+			if not follow.target or not follow.target.Parent then
+				follow.target = nil
+				follow.resolve()
+			end
+			if not follow.target then
+				toast("Pilih pemain dulu (ketik nama lalu Set, atau tombol Ikuti di tab Teleport)")
+				turnOff("Belum ada target")
+				return
+			end
+			resetTrail()
+			setStatus("Mengikuti: " .. follow.target.Name)
+		else
+			resetTrail()
+			setStatus("Tidak mengikuti")
+		end
+	end
+
+	-- Dipanggil dari daftar pemain (tab Teleport): klik "Ikuti" = mulai; klik lagi pada orang yang sama = berhenti.
+	follow.pick = function(p: Player)
+		if state.follow and follow.target == p then
+			setFeature("follow", false)
+			toast("Berhenti mengikuti")
+			return
+		end
+		follow.target = p
+		if follow.box then follow.box.Text = p.Name end
+		resetTrail()
+		setFeature("follow", true)
+		toast("Mengikuti " .. p.Name)
+	end
+
+	-- Teman Roblox (Friends) yang ada di server: dipakai keybind supaya tidak salah ikut orang asing.
+	local friendCache: { [number]: boolean } = {}
+	local function isFriend(p: Player): boolean
+		local c = friendCache[p.UserId]
+		if c ~= nil then return c end
+		local ok, res = pcall(function() return player:IsFriendsWith(p.UserId) end)
+		c = ok and res == true
+		friendCache[p.UserId] = c
+		return c
+	end
+
+	local function nearestPlayer(friendsOnly: boolean): Player?
+		local myRoot = getRoot()
+		local best: Player? = nil
+		local bestD = math.huge
+		for _, p in ipairs(Players:GetPlayers()) do
+			if p ~= player and (not friendsOnly or isFriend(p)) then
+				local r = p.Character and p.Character:FindFirstChild("HumanoidRootPart") :: BasePart?
+				local d = (myRoot and r) and (r.Position - myRoot.Position).Magnitude or 1e9
+				if d < bestD then
+					best, bestD = p, d
+				end
+			end
+		end
+		return best
+	end
+
+	-- Keybind (settings.followKey) = MULAI atau STOP:
+	--  * sedang mengikuti            -> berhenti
+	--  * tidak mengikuti, urutan memilih target:
+	--      1) target terakhir (kalau masih di server)
+	--      2) nama yang diketik di kotak Follow Player
+	--      3) teman Roblox terdekat di server
+	--      4) (hanya bila settings.followFallbackNearest = true) pemain terdekat siapa pun
+	follow.toggle = function()
+		if state.follow then
+			setFeature("follow", false)
+			toast("Berhenti mengikuti")
+			return
+		end
+		local p: Player? = nil
+		if follow.target and follow.target.Parent then
+			p = follow.target
+		end
+		if not p and follow.box and string.match(follow.box.Text, "%S") then
+			follow.resolve()
+			p = follow.target
+			if not p then return end -- pesan (tidak ketemu / ambigu) sudah ditampilkan
+		end
+		if not p then p = nearestPlayer(true) end
+		if not p and settings.followFallbackNearest == true then p = nearestPlayer(false) end
+		if p then
+			follow.pick(p)
+		else
+			toast("Tidak ada teman Roblox di server ini. Pilih manual lewat tombol Ikuti / kartu Follow Player")
+		end
+	end
+
+	local WASD = { Enum.KeyCode.W, Enum.KeyCode.A, Enum.KeyCode.S, Enum.KeyCode.D }
+
+	-- Stepped = sebelum fisika, setelah kontrol bawaan menulis arah jalan, jadi arah kita yang dipakai.
+	-- followStep = HITUNG arah jalan (sekali per frame). applyMove = TERAPKAN arah itu (beberapa kali per frame).
+	local function followStep(dt: number)
+		follow.dir, follow.jump = nil, false
+		if unloaded or not state.follow or state.freecam then return end
+		local hum, hrp = getHum(), getRoot()
+		if not (hum and hrp) or hum.Health <= 0 then return end
+
+		local p: Player? = follow.target
+		if not p or not p.Parent then
+			turnOff("Target keluar dari server")
+			return
+		end
+		local troot = p.Character and p.Character:FindFirstChild("HumanoidRootPart") :: BasePart?
+		if not troot then return end
+
+		local tpos, mypos = troot.Position, hrp.Position
+
+		-- rekam jejak langkah target (+ tandai titik tempat dia MELOMPAT)
+		local thum = p.Character and p.Character:FindFirstChildOfClass("Humanoid")
+		local jumpingNow = thum ~= nil and thum:GetState() == Enum.HumanoidStateType.Jumping
+		local newJump = jumpingNow and not wasJump
+		wasJump = jumpingNow
+		if not lastCrumb or newJump or (tpos - lastCrumb).Magnitude >= TRAIL_STEP then
+			trail[#trail + 1] = tpos
+			lastCrumb = tpos
+			if newJump then jumpAt[tpos] = true end
+			if #trail > TRAIL_MAX then table.remove(trail, 1) end
+		end
+
+		local dist = (tpos - mypos).Magnitude
+
+		-- opsional: ketinggalan terlalu jauh -> teleport dekat target
+		local cu = settings.followCatchup
+		if type(cu) == "number" and cu > 0 and dist > cu and os.clock() - lastTp > 3 then
+			lastTp = os.clock()
+			local char = player.Character
+			if char then
+				char:PivotTo(troot.CFrame + Vector3.new(3, 3, 0))
+				hrp.AssemblyLinearVelocity = Vector3.zero
+				resetTrail()
+				toast("Menyusul " .. p.Name)
+			end
+			return
+		end
+
+		-- sudah dekat: berhenti & kosongkan jejak
+		if dist <= values.followDist then
+			table.clear(trail)
+			table.clear(jumpAt)
+			stuckT, stuckAcc, lastPos = 0, 0, nil
+			setStatus(string.format("Dekat %s (%d st)", p.Name, math.floor(dist + 0.5)))
+			return
+		end
+
+		-- kontrol manual (WASD) = jeda
+		if UIS:GetFocusedTextBox() == nil then
+			for _, k in ipairs(WASD) do
+				if UIS:IsKeyDown(k) then return end
+			end
+		end
+
+		-- buang titik jejak yang sudah dicapai
+		while #trail > 0 do
+			local c = trail[1]
+			local flat = Vector3.new(c.X - mypos.X, 0, c.Z - mypos.Z).Magnitude
+			-- titik tempat target melompat: dekati lebih presisi, lalu lompat di situ
+			local isJ = jumpAt[c] == true
+			if flat < (isJ and 1.5 or ARRIVE) and math.abs(c.Y - mypos.Y) < 6 then
+				if isJ then
+					follow.jump = true
+					jumpAt[c] = nil
+				end
+				table.remove(trail, 1)
+			else
+				break
+			end
+		end
+
+		local goal = trail[1] or tpos
+		local delta = goal - mypos
+		local flatV = Vector3.new(delta.X, 0, delta.Z)
+		if flatV.Magnitude > 0.1 then
+			follow.dir = flatV.Unit
+		end
+		if delta.Y > 2.5 and flatV.Magnitude < 10 then
+			follow.jump = true -- jejak naik: lompat
+		end
+
+		-- deteksi tersangkut: hampir tak bergerak padahal sedang berjalan
+		stuckAcc += dt
+		if stuckAcc >= 0.3 then
+			stuckAcc = 0
+			if lastPos then
+				local moved = Vector3.new(mypos.X - lastPos.X, 0, mypos.Z - lastPos.Z).Magnitude
+				if moved < 0.3 then
+					stuckT += 0.3
+					follow.jump = true
+					if stuckT >= 1.5 and #trail > 0 then
+						table.remove(trail, 1) -- titik tak terjangkau: lewati
+						stuckT = 0
+					end
+				else
+					stuckT = 0
+				end
+			end
+			lastPos = mypos
+			setStatus(string.format("Mengikuti %s (%d st)", p.Name, math.floor(dist + 0.5)))
+		end
+	end
+
+	-- Terapkan arah jalan di BEBERAPA titik frame (setelah kontrol bawaan menulis Move di RenderStepped,
+	-- sebelum fisika di Stepped, dan di Heartbeat) supaya tidak tertimpa script kontrol game.
+	local cmdSince = 0
+	local function applyMove()
+		local dir: Vector3? = follow.dir
+		local hum = getHum()
+		if not (dir and hum) or hum.Health <= 0 then
+			cmdSince = 0
+			return
+		end
+		hum:Move(dir, false)
+		if follow.jump then hum.Jump = true end
+
+		-- Cadangan: game yang mengabaikan Humanoid:Move -> dorong lewat velocity horizontal
+		if cmdSince == 0 then cmdSince = os.clock() end
+		if os.clock() - cmdSince > 0.7 and hum.FloorMaterial ~= Enum.Material.Air and not hum.Sit then
+			local hrp = getRoot()
+			if hrp then
+				local ws = math.max(hum.WalkSpeed, 16)
+				local v = hrp.AssemblyLinearVelocity
+				if Vector3.new(v.X, 0, v.Z).Magnitude < ws * 0.5 then
+					hrp.AssemblyLinearVelocity = Vector3.new(dir.X * ws, v.Y, dir.Z * ws)
+				end
+			end
+		end
+	end
+
+	track(RunService.RenderStepped:Connect(function(dt)
+		if unloaded then return end
+		followStep(dt)
+		applyMove()
+	end))
+	track(RunService.Stepped:Connect(function()
+		if not unloaded then applyMove() end
+	end))
+	track(RunService.Heartbeat:Connect(function()
+		if not unloaded then applyMove() end
+	end))
+
+	-- ---------- UI ----------
+	sectionLabel(movementPage, 4, "Ikuti pemain")
+	local card = makeCard(movementPage, 134, 5)
+	text(card, {
+		Text = "Follow Player",
+		Font = Enum.Font.GothamBold,
+		TextSize = 14,
+		Position = UDim2.fromOffset(14, 11),
+		Size = UDim2.new(1, -84, 0, 18),
+	})
+	switches.follow = makeSwitch(card, UDim2.new(1, -14, 0, 22), false, function(on)
+		state.follow = on
+		effects.follow(on)
+		refreshActive()
+	end, cardGlow(card))
+
+	local box = new("TextBox", {
+		Position = UDim2.fromOffset(14, 42),
+		Size = UDim2.new(1, -28 - 70, 0, 30),
+		BackgroundColor3 = T.bg,
+		Text = "",
+		PlaceholderText = "Ketik nama teman (mis: asel)",
+		PlaceholderColor3 = T.sub,
+		TextColor3 = T.text,
+		Font = Enum.Font.GothamMedium,
+		TextSize = 12,
+		ClearTextOnFocus = false,
+		BorderSizePixel = 0,
+	}, card)
+	round(box, 8)
+	stroke(box, T.stroke, 1, 0.3)
+	new("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10) }, box)
+	follow.box = box
+
+	local setBtn = new("TextButton", {
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, -14, 0, 42),
+		Size = UDim2.fromOffset(62, 30),
+		BackgroundColor3 = T.accent2,
+		Text = "Set",
+		TextColor3 = WHITE,
+		Font = Enum.Font.GothamBold,
+		TextSize = 12,
+		AutoButtonColor = false,
+		BorderSizePixel = 0,
+	}, card)
+	round(setBtn, 8)
+	hover(setBtn, T.accent2)
+	setBtn.MouseButton1Click:Connect(function() follow.resolve() end)
+	box.FocusLost:Connect(function(enter: boolean)
+		if enter then follow.resolve() end
+	end)
+
+	follow.statusLbl = text(card, {
+		Text = "Belum ada target",
+		TextSize = 11,
+		TextColor3 = T.sub,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Position = UDim2.fromOffset(14, 78),
+		Size = UDim2.new(1, -28, 0, 14),
+	})
+	text(card, {
+		Text = "Mengikuti jejak langkah target (cocok untuk gunung). Tahan WASD untuk jalan manual. Bisa juga lewat tombol Ikuti di tab Teleport.",
+		TextSize = 10,
+		TextColor3 = T.sub,
+		TextWrapped = true,
+		TextYAlignment = Enum.TextYAlignment.Top,
+		Position = UDim2.fromOffset(14, 95),
+		Size = UDim2.new(1, -28, 0, 34),
+	})
+end
+addSliderCard(movementPage, 6, "Jarak Berhenti", "Berhenti saat sudah sedekat ini ke target (studs)", "followDist", 2, 30, 100, true)
+
 sectionLabel(physicsPage, 0, "Fisika & visual")
 local floatDesc = addToggleCard(physicsPage, 1, "Float", "", "float")
 addToggleCard(physicsPage, 2, "Noclip", "Tembus tembok dan objek.", "noclip")
@@ -3614,8 +4021,30 @@ tpTargetCard.Size = UDim2.new(1, 0, 0, 232)
 			TextSize = 11,
 			TextTruncate = Enum.TextTruncate.AtEnd,
 			Position = UDim2.fromOffset(10, 0),
-			Size = UDim2.new(1, -58, 1, 0),
+			Size = UDim2.new(1, -104, 1, 0),
 		})
+
+		local fb = new("TextButton", {
+			AnchorPoint = Vector2.new(1, 0.5),
+			Position = UDim2.new(1, -46, 0.5, 0),
+			Size = UDim2.fromOffset(40, 20),
+			BackgroundColor3 = T.accent,
+			Text = "Ikuti",
+			TextColor3 = WHITE,
+			Font = Enum.Font.GothamBold,
+			TextSize = 10,
+			AutoButtonColor = false,
+			BorderSizePixel = 0,
+		}, btn)
+		round(fb, 5)
+		hover(fb, T.accent)
+		fb.MouseButton1Click:Connect(function()
+			if p.Parent then
+				follow.pick(p)
+			else
+				toast("Pemain sudah keluar")
+			end
+		end)
 
 		local tp = new("TextButton", {
 			AnchorPoint = Vector2.new(1, 0.5),
@@ -6666,9 +7095,10 @@ addKeyRow(3, "Tombol Teleport", "Teleport ke waypoint terpilih. Backspace untuk 
 addKeyRow(4, "Tombol Ganti Waypoint", "Pindah ke waypoint berikutnya. Backspace untuk mengosongkan.", "cycleKey", true)
 addKeyRow(5, "Float: Naik", "Tahan untuk naik saat Float aktif. Backspace untuk mengosongkan.", "floatUpKey", true)
 addKeyRow(6, "Float: Turun", "Tahan untuk turun saat Float aktif. Backspace untuk mengosongkan.", "floatDownKey", true)
+addKeyRow(7, "Follow: Mulai / Stop", "Mulai ikuti (target terakhir / nama di kotak / teman terdekat) atau berhenti. Backspace untuk mengosongkan.", "followKey", true)
 refreshKeyUI()
 
-local sizeCard = makeCard(settingsPage, 78, 7)
+local sizeCard = makeCard(settingsPage, 78, 8)
 text(sizeCard, {
 	Text = "Ukuran Panel",
 	Font = Enum.Font.GothamBold,
@@ -6715,15 +7145,15 @@ for i, preset in ipairs({
 	end)
 end
 
-local offAllBtn = makeButton(settingsPage, 8, "Matikan Semua Fitur", T.accent, 40)
+local offAllBtn = makeButton(settingsPage, 9, "Matikan Semua Fitur", T.accent, 40)
 hover(offAllBtn, T.accent)
 offAllBtn.MouseButton1Click:Connect(function()
 	disableAllFeatures()
 end)
 
-local unloadBtn = makeButton(settingsPage, 9, "Unload & Bersihkan Semua", T.off, 40)
+local unloadBtn = makeButton(settingsPage, 10, "Unload & Bersihkan Semua", T.off, 40)
 text(settingsPage, {
-	LayoutOrder = 10,
+	LayoutOrder = 11,
 	Text = "Menghapus panel, mematikan semua fitur, mengembalikan speed/jump ke semula, menghapus lantai float dan ESP, dan memutus semua koneksi script. Waypoint juga ikut hilang.",
 	TextSize = 11,
 	TextColor3 = T.sub,
@@ -6737,7 +7167,7 @@ text(settingsPage, {
 -- =====================================================
 do
 local MAX_SLOTS = 10
-local KEY_NAMES = { "toggleKey", "saveKey", "tpKey", "cycleKey", "floatUpKey", "floatDownKey" }
+local KEY_NAMES = { "toggleKey", "saveKey", "tpKey", "cycleKey", "floatUpKey", "floatDownKey", "followKey" }
 
 local slots: { { name: string, data: any } } = {}
 local remote: RemoteFunction? = nil
@@ -7212,6 +7642,8 @@ track(UIS.InputBegan:Connect(function(input, processed)
 		teleportSelected()
 	elseif kc == settings.cycleKey then
 		cycleWaypoint()
+	elseif kc == settings.followKey then
+		follow.toggle()
 	end
 end))
 
