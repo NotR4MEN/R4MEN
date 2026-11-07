@@ -7720,6 +7720,8 @@ do
 			MIN_GAP = 0.15,     -- jeda minimal bila zona sudah pindah (potongan berikutnya)
 			STABLE_FOR = 0.2,   -- bar harus stabil segini lama sebelum menekan
 			HOLD = 0.03,        -- lama Space ditahan
+			FAST_SETTLE = 0.03, -- jalur tekan langsung: zona cukup diam segini lama (2 frame) sebelum ditekan
+			FAST_GAP = 0.06,    -- jalur tekan langsung: jeda minimal setelah tekanan sebelumnya
 			presses = 0, lastErr = nil, lastPress = 0,
 			lastBarW = 0, barChangedAt = 0, lastUi = 0,
 			lastCx = nil, zoneX = -1e9, zoneChangedAt = 0, pressZoneX = -1e9,
@@ -7892,11 +7894,11 @@ do
 			C.lastCx = cx
 			hist[#hist + 1] = { now, cx }
 			while #hist > 0 and now - hist[1][1] > C.HIST_WINDOW do table.remove(hist, 1) end
-			if #hist < 3 then return end
-
+			-- riwayat belum cukup (mis. marker baru melompat): jalur "tekan langsung" di bawah tetap boleh jalan,
+			-- jalur prediksi (butuh kecepatan) otomatis nonaktif karena vel = 0
 			local first = hist[1]
 			local dt = now - first[1]
-			local vel = dt > 0 and (cx - first[2]) / dt or 0
+			local vel = (#hist >= 3 and dt > 0) and (cx - first[2]) / dt or 0
 
 			local pw = target.AbsoluteSize.X
 			if pw < 6 then return end
@@ -7910,7 +7912,18 @@ do
 			local zx = target.AbsolutePosition.X
 			if math.abs(zx - C.zoneX) > 0.5 then C.zoneX, C.zoneChangedAt = zx, now end
 			local zoneSettled = now - C.zoneChangedAt > 0.08
-			local zoneMoved = math.abs(zx - C.pressZoneX) > 3
+			-- [FIX] zona dianggap "sudah pindah" (= potongan baru) walau hanya bergeser sedikit (>0.5 px) atau
+			-- ukurannya berubah. Dulu ambangnya 3 px: geseran kecil tidak dikenali, sehingga harus menunggu
+			-- DEBOUNCE 0.9 dtk (melewatkan satu putaran marker) baru bisa perfect lagi.
+			local zoneMoved = math.abs(zx - C.pressZoneX) > 0.2 or math.abs(pw - (C.pressZoneW or pw)) > 0.2
+
+			-- [FIX] sinyal kedua yang TIDAK bergantung pada zona: setelah menekan, begitu marker menjauh dari
+			-- titik tekan (lebih dari 1x lebar zona Perfect) lalu kembali, itu pasti putaran/potongan baru,
+			-- jadi boleh ditekan lagi walau zona tidak bergeser sama sekali.
+			if C.pressCenter and not C.left and math.abs(cx - C.pressCenter) > math.max(pw, 10) then
+				C.left = true
+			end
+			local rearmed = zoneMoved or C.left == true
 
 			-- waktu sampai marker tiba di TENGAH Perfect (negatif = sudah lewat / menjauh)
 			local tta = math.huge
@@ -7927,12 +7940,33 @@ do
 			end
 
 			local frame = 1 / 60
+
+			-- [FIX] JALUR "TEKAN LANGSUNG": zona Perfect baru saja pindah/bergeser (potongan baru) dan marker
+			-- SEDANG berada di dalam zona -> tekan sekarang juga, tanpa menunggu marker memutar satu putaran.
+			-- Satu zona hanya ditekan sekali (pressZoneX dicatat), jadi tidak bisa dobel.
+			if zoneMoved and cx >= pl and cx <= pr
+				and now - C.zoneChangedAt > C.FAST_SETTLE
+				and now - C.lastPress > C.FAST_GAP then
+				C.lastPress = now
+				C.pressZoneX = zx
+				C.pressZoneW = pw
+				C.pressCenter = center
+				C.left = false
+				C.lastErr = (cx - center) * (vel >= 0 and 1 or -1)
+				C.presses += 1
+				task.spawn(pressSpace)
+				return
+			end
+
 			if tta >= math.min(-frame, lead - frame) and tta <= lead + frame * 0.5
 				and cx >= pl - math.abs(vel) * lead and cx <= pr + math.abs(vel) * lead
 				and zoneSettled
-				and (now - C.lastPress > C.DEBOUNCE or (zoneMoved and now - C.lastPress > C.MIN_GAP)) then
+				and (now - C.lastPress > C.DEBOUNCE or (rearmed and now - C.lastPress > C.MIN_GAP)) then
 				C.lastPress = now
 				C.pressZoneX = zx
+				C.pressZoneW = pw
+				C.pressCenter = center
+				C.left = false
 				-- positif = terlambat (lewat tengah searah gerak), negatif = terlalu cepat
 				C.lastErr = (cx - center) * (vel >= 0 and 1 or -1)
 				C.presses += 1
