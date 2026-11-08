@@ -7720,8 +7720,8 @@ do
 			MIN_GAP = 0.15,     -- jeda minimal bila zona sudah pindah (potongan berikutnya)
 			STABLE_FOR = 0.2,   -- bar harus stabil segini lama sebelum menekan
 			HOLD = 0.03,        -- lama Space ditahan
-			FAST_SETTLE = 0.03, -- jalur tekan langsung: zona cukup diam segini lama (2 frame) sebelum ditekan
-			FAST_GAP = 0.06,    -- jalur tekan langsung: jeda minimal setelah tekanan sebelumnya
+			FAST_SETTLE = 0.016, -- zona cukup diam segini lama (1 frame) sebelum jalur 1 & 3 menekan
+			FAST_GAP = 0.06,    -- jeda minimal setelah tekanan sebelumnya (jalur 1 & 3)
 			presses = 0, lastErr = nil, lastPress = 0,
 			lastBarW = 0, barChangedAt = 0, lastUi = 0,
 			lastCx = nil, zoneX = -1e9, zoneChangedAt = 0, pressZoneX = -1e9,
@@ -7857,10 +7857,26 @@ do
 		end
 
 		-- ---------- logika (satu koneksi, ikut dibersihkan oleh unload lewat track) ----------
-		track(RunService.RenderStepped:Connect(function()
+		-- satu fungsi untuk semua jalur tekan (mencatat zona yang sudah ditekan)
+		local function firePress(zx: number, pw: number, center: number, cx: number, vel: number)
+			C.lastPress = os.clock()
+			C.pressZoneX = zx
+			C.pressZoneW = pw
+			C.pressCenter = center
+			C.left = false
+			-- positif = terlambat (lewat tengah searah gerak), negatif = terlalu cepat
+			C.lastErr = (cx - center) * (vel >= 0 and 1 or -1)
+			C.presses += 1
+			task.spawn(pressSpace)
+		end
+
+		track(RunService.RenderStepped:Connect(function(dtFrame: number)
 			if unloaded then return end
 			local hist = C.hist
 			local now = os.clock()
+			-- lama frame terbesar yang baru terjadi (turun perlahan): dipakai melebarkan jendela tekan
+			-- supaya di FPS rendah / saat lag, marker tidak "melompati" jendela di antara dua frame
+			C.f = math.max(math.clamp(dtFrame, 1 / 120, 0.1), (C.f or dtFrame) * 0.9)
 
 			if not state.autoCut then
 				if #hist > 0 then table.clear(hist) end
@@ -7911,7 +7927,6 @@ do
 			-- zona Perfect pindah = potongan berikutnya; tunggu zona diam sebentar sebelum menekan
 			local zx = target.AbsolutePosition.X
 			if math.abs(zx - C.zoneX) > 0.5 then C.zoneX, C.zoneChangedAt = zx, now end
-			local zoneSettled = now - C.zoneChangedAt > 0.08
 			-- [FIX] zona dianggap "sudah pindah" (= potongan baru) walau hanya bergeser sedikit (>0.5 px) atau
 			-- ukurannya berubah. Dulu ambangnya 3 px: geseran kecil tidak dikenali, sehingga harus menunggu
 			-- DEBOUNCE 0.9 dtk (melewatkan satu putaran marker) baru bisa perfect lagi.
@@ -7939,38 +7954,37 @@ do
 					cx, center, C.presses, errTxt)
 			end
 
-			local frame = 1 / 60
+			local frame = math.clamp(C.f or (1 / 60), 1 / 60, 0.1)
+			local tooSoon = now - C.lastPress <= C.FAST_GAP
+			local zoneStill = now - C.zoneChangedAt > C.FAST_SETTLE
+			local inFull = cx >= zx + pw * 0.05 and cx <= zx + pw * 0.95       -- di dalam zona Perfect (nyaris seluruhnya)
+			local px = cx + vel * lead                                          -- perkiraan posisi marker saat Space sampai
+			local pxIn = px >= zx + pw * 0.05 and px <= zx + pw * 0.95
 
-			-- [FIX] JALUR "TEKAN LANGSUNG": zona Perfect baru saja pindah/bergeser (potongan baru) dan marker
-			-- SEDANG berada di dalam zona -> tekan sekarang juga, tanpa menunggu marker memutar satu putaran.
-			-- Satu zona hanya ditekan sekali (pressZoneX dicatat), jadi tidak bisa dobel.
-			if zoneMoved and cx >= pl and cx <= pr
-				and now - C.zoneChangedAt > C.FAST_SETTLE
-				and now - C.lastPress > C.FAST_GAP then
-				C.lastPress = now
-				C.pressZoneX = zx
-				C.pressZoneW = pw
-				C.pressCenter = center
-				C.left = false
-				C.lastErr = (cx - center) * (vel >= 0 and 1 or -1)
-				C.presses += 1
-				task.spawn(pressSpace)
+			-- [JALUR 1] TEKAN LANGSUNG: zona Perfect baru pindah/bergeser (potongan baru) dan marker SEDANG di dalamnya
+			-- -> tekan sekarang, tanpa menunggu marker memutar satu putaran. Satu zona hanya ditekan sekali.
+			if zoneMoved and inFull and pxIn and zoneStill and not tooSoon then
+				firePress(zx, pw, center, cx, vel)
 				return
 			end
 
+			-- [JALUR 2] PREDIKSI: tekan tepat saat marker tiba di tengah zona (memakai LEAD).
+			-- Jendela waktunya memakai lama frame nyata (frame), bukan 1/60 tetap.
 			if tta >= math.min(-frame, lead - frame) and tta <= lead + frame * 0.5
 				and cx >= pl - math.abs(vel) * lead and cx <= pr + math.abs(vel) * lead
-				and zoneSettled
+				and now - C.zoneChangedAt > 0.05
 				and (now - C.lastPress > C.DEBOUNCE or (rearmed and now - C.lastPress > C.MIN_GAP)) then
-				C.lastPress = now
-				C.pressZoneX = zx
-				C.pressZoneW = pw
-				C.pressCenter = center
-				C.left = false
-				-- positif = terlambat (lewat tengah searah gerak), negatif = terlalu cepat
-				C.lastErr = (cx - center) * (vel >= 0 and 1 or -1)
-				C.presses += 1
-				task.spawn(pressSpace)
+				firePress(zx, pw, center, cx, vel)
+				return
+			end
+
+			-- [JALUR 3] PENYELAMAT: marker sudah sedikit lewat tengah (jendela prediksi terlewat, mis. frame lag)
+			-- tetapi masih di dalam zona Perfect dan zona ini belum ditekan -> tekan sekarang, jangan tunggu putaran lagi.
+			if #hist >= 3 and math.abs(vel) > 5 and (cx - center) * vel >= 0
+				and inFull and pxIn and zoneStill and not tooSoon
+				and (rearmed or now - C.lastPress > C.DEBOUNCE) then
+				firePress(zx, pw, center, cx, vel)
+				return
 			end
 		end))
 	end
