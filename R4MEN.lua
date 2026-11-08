@@ -1733,7 +1733,9 @@ local function newPage(name: string): ScrollingFrame
 		Padding = UDim.new(0, 8),
 		SortOrder = Enum.SortOrder.LayoutOrder,
 	}, p)
-	new("UIPadding", { PaddingRight = UDim.new(0, 8), PaddingBottom = UDim.new(0, 14) }, p)
+	-- [FIX] PaddingLeft/Top: garis tepi (UIStroke) kartu digambar setengah di luar kotaknya, dan ScrollingFrame
+	-- memotong yang keluar dari tepi. Tanpa ruang di kiri/atas, outline sisi kiri kartu terlihat terpotong.
+	new("UIPadding", { PaddingLeft = UDim.new(0, 3), PaddingTop = UDim.new(0, 3), PaddingRight = UDim.new(0, 8), PaddingBottom = UDim.new(0, 14) }, p)
 	pages[name] = p
 	return p
 end
@@ -3409,6 +3411,7 @@ do
 		ScrollBarImageColor3 = T.stroke,
 	}, card)
 	new("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }, scroll)
+	new("UIPadding", { PaddingLeft = UDim.new(0, 2), PaddingTop = UDim.new(0, 2), PaddingRight = UDim.new(0, 2) }, scroll)
 
 	local emptyLbl = text(card, {
 		Text = "Belum ada data - tekan SCAN NPC / HEWAN",
@@ -3991,6 +3994,7 @@ tpTargetCard.Size = UDim2.new(1, 0, 0, 232)
 		Padding = UDim.new(0, 4),
 		SortOrder = Enum.SortOrder.LayoutOrder,
 	}, plrScroll)
+	new("UIPadding", { PaddingLeft = UDim.new(0, 2), PaddingTop = UDim.new(0, 2), PaddingRight = UDim.new(0, 2) }, plrScroll)
 
 	local plrEmpty = text(tpTargetCard, {
 		Text = "Tidak ada pemain lain di server",
@@ -4750,6 +4754,7 @@ new("UIListLayout", {
 	Padding = UDim.new(0, 4),
 	SortOrder = Enum.SortOrder.LayoutOrder,
 }, lootScroll)
+new("UIPadding", { PaddingLeft = UDim.new(0, 2), PaddingTop = UDim.new(0, 2), PaddingRight = UDim.new(0, 2) }, lootScroll)
 
 local emptyLbl = text(scannerCard, {
 	Text = "Belum ada data — tekan SCAN ITEM",
@@ -7721,6 +7726,7 @@ do
 			STABLE_FOR = 0.2,   -- bar harus stabil segini lama sebelum menekan
 			HOLD = 0.03,        -- lama Space ditahan
 			FAST_SETTLE = 0.016, -- zona cukup diam segini lama (1 frame) sebelum jalur 1 & 3 menekan
+			NEAR = 0.2,         -- jalur 1: "dekat tengah" = dalam 20% lebar zona dari titik tengah
 			FAST_GAP = 0.06,    -- jeda minimal setelah tekanan sebelumnya (jalur 1 & 3)
 			presses = 0, lastErr = nil, lastPress = 0,
 			lastBarW = 0, barChangedAt = 0, lastUi = 0,
@@ -7866,6 +7872,8 @@ do
 			C.left = false
 			-- positif = terlambat (lewat tengah searah gerak), negatif = terlalu cepat
 			C.lastErr = (cx - center) * (vel >= 0 and 1 or -1)
+			-- selisih dalam milidetik (piksel dibagi kecepatan marker): bisa dibandingkan antar rarity
+			C.lastErrMs = (math.abs(vel) > 5) and (C.lastErr / math.abs(vel) * 1000) or nil
 			C.presses += 1
 			task.spawn(pressSpace)
 		end
@@ -7876,7 +7884,8 @@ do
 			local now = os.clock()
 			-- lama frame terbesar yang baru terjadi (turun perlahan): dipakai melebarkan jendela tekan
 			-- supaya di FPS rendah / saat lag, marker tidak "melompati" jendela di antara dua frame
-			C.f = math.max(math.clamp(dtFrame, 1 / 120, 0.1), (C.f or dtFrame) * 0.9)
+			C.dt = math.clamp(dtFrame, 1 / 120, 0.1)
+			C.f = math.max(C.dt, (C.f or dtFrame) * 0.9)
 
 			if not state.autoCut then
 				if #hist > 0 then table.clear(hist) end
@@ -7949,39 +7958,50 @@ do
 				local errTxt = "-"
 				if C.lastErr then
 					errTxt = string.format("%+.1f px (%s)", C.lastErr, C.lastErr > 0 and "telat" or "cepat")
+					if C.lastErrMs then
+						errTxt = errTxt .. string.format(" = %+.0f ms", C.lastErrMs)
+					end
 				end
 				sLbl.Text = string.format("marker %.0f/%.0f | tekan: %d | selisih: %s",
 					cx, center, C.presses, errTxt)
 			end
 
-			local frame = math.clamp(C.f or (1 / 60), 1 / 60, 0.1)
+			local frame = math.clamp(C.f or (1 / 60), 1 / 60, 0.1)   -- frame terpanjang yang baru terjadi (batas TELAT)
+			local curDt = C.dt or (1 / 60)                           -- lama frame saat ini (batas CEPAT)
 			local tooSoon = now - C.lastPress <= C.FAST_GAP
 			local zoneStill = now - C.zoneChangedAt > C.FAST_SETTLE
 			local inFull = cx >= zx + pw * 0.05 and cx <= zx + pw * 0.95       -- di dalam zona Perfect (nyaris seluruhnya)
 			local px = cx + vel * lead                                          -- perkiraan posisi marker saat Space sampai
 			local pxIn = px >= zx + pw * 0.05 and px <= zx + pw * 0.95
+			local haveVel = #hist >= 3 and math.abs(vel) > 5
+			local passed = haveVel and (cx - center) * vel >= 0                 -- marker sudah lewat tengah (menjauh)
+			local nearCenter = math.abs(cx - center) <= pw * C.NEAR              -- marker sudah dekat tengah
 
-			-- [JALUR 1] TEKAN LANGSUNG: zona Perfect baru pindah/bergeser (potongan baru) dan marker SEDANG di dalamnya
-			-- -> tekan sekarang, tanpa menunggu marker memutar satu putaran. Satu zona hanya ditekan sekali.
-			if zoneMoved and inFull and pxIn and zoneStill and not tooSoon then
+			-- [JALUR 1] TEKAN LANGSUNG: zona Perfect baru pindah/bergeser (potongan baru), marker di dalam zona DAN
+			-- sudah dekat tengah / sudah lewat tengah -> tekan sekarang (tidak menunggu satu putaran).
+			-- Kalau marker masih jauh dari tengah, JANGAN tekan di tepi zona (itu yang membuat selisih "cepat" besar):
+			-- jalur 2 yang menekan tepat di tengah.
+			if zoneMoved and inFull and pxIn and zoneStill and not tooSoon and (nearCenter or passed) then
 				firePress(zx, pw, center, cx, vel)
 				return
 			end
 
 			-- [JALUR 2] PREDIKSI: tekan tepat saat marker tiba di tengah zona (memakai LEAD).
-			-- Jendela waktunya memakai lama frame nyata (frame), bukan 1/60 tetap.
-			if tta >= math.min(-frame, lead - frame) and tta <= lead + frame * 0.5
+			-- Batas telat memakai frame terpanjang (anti-lompat saat FPS turun); batas cepat memakai frame SAAT INI.
+			-- Untuk zona yang baru pindah, jeda tunggu dipersingkat (zona sudah pasti potongan baru).
+			local settleOk = now - C.zoneChangedAt > (zoneMoved and C.FAST_SETTLE or 0.05)
+			local gapOk = now - C.lastPress > C.DEBOUNCE
+				or (rearmed and now - C.lastPress > (zoneMoved and C.FAST_GAP or C.MIN_GAP))
+			if tta >= math.min(-frame, lead - frame) and tta <= lead + curDt * 0.5
 				and cx >= pl - math.abs(vel) * lead and cx <= pr + math.abs(vel) * lead
-				and now - C.zoneChangedAt > 0.05
-				and (now - C.lastPress > C.DEBOUNCE or (rearmed and now - C.lastPress > C.MIN_GAP)) then
+				and settleOk and gapOk then
 				firePress(zx, pw, center, cx, vel)
 				return
 			end
 
 			-- [JALUR 3] PENYELAMAT: marker sudah sedikit lewat tengah (jendela prediksi terlewat, mis. frame lag)
 			-- tetapi masih di dalam zona Perfect dan zona ini belum ditekan -> tekan sekarang, jangan tunggu putaran lagi.
-			if #hist >= 3 and math.abs(vel) > 5 and (cx - center) * vel >= 0
-				and inFull and pxIn and zoneStill and not tooSoon
+			if passed and inFull and pxIn and zoneStill and not tooSoon
 				and (rearmed or now - C.lastPress > C.DEBOUNCE) then
 				firePress(zx, pw, center, cx, vel)
 				return
