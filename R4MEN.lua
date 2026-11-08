@@ -58,6 +58,7 @@ local settings: { [string]: any } = {
 	saveFolder = "R4MEN", -- nama folder penyimpanan di dalam folder workspace executor (boleh diganti)
 	seedReplicated = false, -- [FIX] jangan seed nama dari ReplicatedStorage (banyak sampah)
 	clickTp = true, -- klik/tap label ESP (item & NPC) = teleport ke sana. Ubah ke false untuk mematikan
+	mushroomOnly = true, -- true = daftar & ESP item HANYA untuk jamur yang ada di data rarity game (pisau/alat/pintu tidak ikut). false = semua yang terdeteksi
 	dotsSelectedOnly = true, -- true = titik biru HANYA untuk item yang dicentang (lampu/pintu dll tidak ditandai). false = titik untuk semua yang terdeteksi
 	autoRarity = true, -- true = data rarity dibaca otomatis saat script jalan (profil disimpan per game). false = hanya saat dropdown Rarity dibuka / tombol SCAN
 	clickNeedsShift = false, -- true = harus menahan Shift kiri saat klik label (menghindari klik tembus ke game)
@@ -1733,9 +1734,7 @@ local function newPage(name: string): ScrollingFrame
 		Padding = UDim.new(0, 8),
 		SortOrder = Enum.SortOrder.LayoutOrder,
 	}, p)
-	-- [FIX] PaddingLeft/Top: garis tepi (UIStroke) kartu digambar setengah di luar kotaknya, dan ScrollingFrame
-	-- memotong yang keluar dari tepi. Tanpa ruang di kiri/atas, outline sisi kiri kartu terlihat terpotong.
-	new("UIPadding", { PaddingLeft = UDim.new(0, 3), PaddingTop = UDim.new(0, 3), PaddingRight = UDim.new(0, 8), PaddingBottom = UDim.new(0, 14) }, p)
+	new("UIPadding", { PaddingRight = UDim.new(0, 8), PaddingBottom = UDim.new(0, 14) }, p)
 	pages[name] = p
 	return p
 end
@@ -3411,7 +3410,6 @@ do
 		ScrollBarImageColor3 = T.stroke,
 	}, card)
 	new("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }, scroll)
-	new("UIPadding", { PaddingLeft = UDim.new(0, 2), PaddingTop = UDim.new(0, 2), PaddingRight = UDim.new(0, 2) }, scroll)
 
 	local emptyLbl = text(card, {
 		Text = "Belum ada data - tekan SCAN NPC / HEWAN",
@@ -3994,7 +3992,6 @@ tpTargetCard.Size = UDim2.new(1, 0, 0, 232)
 		Padding = UDim.new(0, 4),
 		SortOrder = Enum.SortOrder.LayoutOrder,
 	}, plrScroll)
-	new("UIPadding", { PaddingLeft = UDim.new(0, 2), PaddingTop = UDim.new(0, 2), PaddingRight = UDim.new(0, 2) }, plrScroll)
 
 	local plrEmpty = text(tpTargetCard, {
 		Text = "Tidak ada pemain lain di server",
@@ -4175,7 +4172,14 @@ xpcall(function()
 		Legendary = Color3.fromRGB(255, 196, 60),
 		Mythic = Color3.fromRGB(255, 90, 120),
 	}
-	local DEF_NUM = { [1] = "Common", [2] = "Uncommon", [3] = "Rare", [4] = "Epic", [5] = "Legendary", [6] = "Mythic" }
+	local DEF_NUM = { [1] = "Common", [2] = "Uncommon", [3] = "Rare", [4] = "Epic", [5] = "Legendary", [6] = "Mythic", [7] = "Secret" }
+	local EXTRACOL = { -- [PATCH] warna tetap untuk rarity di atas Mythic
+		Secret = Color3.fromRGB(0, 235, 235),
+		Exotic = Color3.fromRGB(255, 140, 40),
+		Divine = Color3.fromRGB(255, 245, 160),
+		Godly = Color3.fromRGB(255, 255, 255),
+		Unique = Color3.fromRGB(150, 255, 190),
+	}
 	local BASECOL = {} -- salinan warna dasar; RCOL sendiri dipakai sebagai api.colors dan diisi ulang sesuai data game
 	for k, v in pairs(RCOL) do BASECOL[k] = v end
 
@@ -4240,6 +4244,7 @@ xpcall(function()
 			local rk = rankOf(rn)
 			local c = nil
 			if rk >= 1 and rk <= 6 then c = BASECOL[NAMES[rk]] end
+			if not c and EXTRACOL[rn] then c = EXTRACOL[rn] end
 			if not c then
 				autoN = autoN + 1
 				c = Color3.fromHSV((autoN * 0.381966) % 1, 0.55, 1)
@@ -4283,9 +4288,39 @@ xpcall(function()
 		return string.upper(string.sub(s, 1, 1)) .. string.sub(s, 2)
 	end
 
-	local function scanTable(root, found)
+	-- [PATCH] catat SUMBER tiap entri (nama modul + nama wadahnya) supaya data jamur bisa dipisah dari item lain (pisau, dll)
+	local function subPath(path, k)
+		if type(k) ~= "string" or exactWord(k) then return path, false end
+		local _, n = string.gsub(path, "/", "")
+		if n >= 3 then return path, false end
+		return path .. "/" .. k, true
+	end
+	local function srcOf(path, app)
+		if app then
+			local up = string.match(path, "^(.*)/[^/]*$")
+			if up then return up end
+		end
+		return path
+	end
+
+	local function fieldsOf(t)
+		local out, n = {}, 0
+		for k, v in pairs(t) do
+			if type(k) == "string" and (type(v) == "string" or type(v) == "number" or type(v) == "boolean") then
+				n = n + 1
+				if n > 12 then break end
+				out[#out + 1] = k .. "=" .. tostring(v)
+			end
+		end
+		table.sort(out)
+		local str = table.concat(out, ", ")
+		if #str > 220 then str = string.sub(str, 1, 220) .. "..." end
+		return str
+	end
+
+	local function scanTable(root, found, rootName)
 		local seen, nodes = {}, 0
-		local function walk(t, depth, key)
+		local function walk(t, depth, key, path, app)
 			if depth > 5 or seen[t] or nodes > 5000 then return end
 			seen[t] = true
 			nodes = nodes + 1
@@ -4302,7 +4337,7 @@ xpcall(function()
 			if rv ~= nil then
 				local nm = t.Name or t.DisplayName or t.name or t.displayName or t.Title or key
 				if nm ~= nil and type(nm) ~= "table" then
-					table.insert(found, { name = tostring(nm), rar = rv, sc = best })
+					table.insert(found, { name = tostring(nm), rar = rv, sc = best, src = srcOf(path, app), fields = fieldsOf(t) })
 				end
 			end
 
@@ -4319,15 +4354,73 @@ xpcall(function()
 								nm = iv.Name or iv.DisplayName or iv.name
 							end
 							if nm ~= nil and type(nm) ~= "table" then
-								table.insert(found, { name = tostring(nm), rar = k, sc = 1 })
+								table.insert(found, { name = tostring(nm), rar = k, sc = 1, src = path })
 							end
 						end
 					end
-					walk(v, depth + 1, (type(k) == "string") and k or key)
+					local np, ap = subPath(path, k)
+					walk(v, depth + 1, (type(k) == "string") and k or key, np, ap)
 				end
 			end
 		end
-		pcall(walk, root, 0, nil)
+		pcall(walk, root, 0, nil, tostring(rootName or "?"), false)
+	end
+
+	-- [PATCH] cari nama rarity ASLI di config game: array nama ({"Common",...}), kamus nama->nomor, atau tabel ber-Order
+	local function findRarityNames(root)
+		local seen, nodes, res = {}, 0, nil
+		local ORDK = { "Order", "Tier", "Level", "Rank", "Id", "ID", "Index", "Value", "Num", "Number" }
+		local function walk(t, depth)
+			if res or depth > 4 or seen[t] or nodes > 3000 then return end
+			seen[t] = true
+			nodes = nodes + 1
+			local n = #t
+			if n >= 5 and n <= 14 then
+				local arr, hits = {}, 0
+				for i = 1, n do
+					local v = t[i]
+					local nmv = v
+					if type(v) == "table" then nmv = v.Name or v.name or v.DisplayName or v.Title end
+					if type(nmv) == "string" then
+						arr[i] = nmv
+						if exactWord(nmv) then hits = hits + 1 end
+					end
+				end
+				if hits >= 4 then
+					res = arr
+					return
+				end
+			end
+			local d, dh = {}, 0
+			for k, v in pairs(t) do
+				if type(k) == "string" and exactWord(k) then
+					local num = nil
+					if type(v) == "number" then
+						num = v
+					elseif type(v) == "table" then
+						for _, f in ipairs(ORDK) do
+							if type(v[f]) == "number" then
+								num = v[f]
+								break
+							end
+						end
+					end
+					if num then
+						d[num] = k
+						dh = dh + 1
+					end
+				end
+			end
+			if dh >= 4 then
+				res = d
+				return
+			end
+			for _, v in pairs(t) do
+				if type(v) == "table" then walk(v, depth + 1) end
+			end
+		end
+		pcall(walk, root, 0)
+		return res
 	end
 
 	local function loadCore()
@@ -4350,6 +4443,7 @@ xpcall(function()
 		end
 
 		local found = {}
+		local modKeys, gameNames = {}, nil
 		for i, m in ipairs(mods) do
 			if i > 80 or unloaded then break end
 			local done, res = false, nil
@@ -4361,7 +4455,76 @@ xpcall(function()
 			local t0 = os.clock()
 			while not done and os.clock() - t0 < 1.5 do task.wait() end
 			if done and type(res) == "table" then
-				scanTable(res, found)
+				scanTable(res, found, m.Name)
+				if #modKeys < 10 then
+					local ks = {}
+					for k, v in pairs(res) do
+						if type(k) == "string" and #ks < 25 then ks[#ks + 1] = k .. "(" .. type(v) .. ")" end
+					end
+					table.sort(ks)
+					modKeys[#modKeys + 1] = m.Name .. ": " .. table.concat(ks, ", ")
+				end
+				if not gameNames then gameNames = findRarityNames(res) end
+			end
+		end
+
+		api.modKeys = modKeys
+		-- [PATCH] contoh data mentah utk laporan SCAN (pisau vs jamur)
+		do
+			local DIAG = { accordknife = true, barrowsteelblade = true, ashcap = true, blacktruffle = true }
+			api.diag = {}
+			for _, f in ipairs(found) do
+				if DIAG[norm(f.name)] and #api.diag < 6 then
+					api.diag[#api.diag + 1] = tostring(f.name) .. " | sumber=" .. tostring(f.src) .. " | rar=" .. tostring(f.rar) .. " | " .. tostring(f.fields or "")
+				end
+			end
+		end
+
+		-- [PATCH] HANYA DATA JAMUR: modul/wadah yang memuat 4 jamur acuan (Honey Fungus dst.) dianggap data jamur.
+		-- Item lain di modul/wadah lain (pisau, alat, dll) dibuang dari data rarity. Tidak ada acuan = tanpa filter.
+		do
+			local ANCH = { honeyfungus = true, amethystdeceiver = true, blacktrumpet = true, blacktruffle = true }
+			local anchSrc, anyAnch = {}, false
+			for _, f in ipairs(found) do
+				if ANCH[norm(f.name)] then
+					anchSrc[f.src or "?"] = true
+					anyAnch = true
+				end
+			end
+			api.mushOnly = false
+			api.srcInfo = "jamur acuan tidak ditemukan -> tanpa filter jamur (semua sumber dipakai)"
+			if anyAnch then
+				local function isMushSrc(src)
+					if anchSrc[src] then return true end
+					local l = string.lower(src)
+					return (string.find(l, "mushroom", 1, true) or string.find(l, "shroom", 1, true)
+						or string.find(l, "fung", 1, true) or string.find(l, "jamur", 1, true)
+						or string.find(l, "wild", 1, true)) ~= nil
+				end
+				local kept, keptN, dropN = {}, {}, {}
+				for _, f in ipairs(found) do
+					local sc = f.src or "?"
+					if isMushSrc(sc) then
+						kept[#kept + 1] = f
+						keptN[sc] = (keptN[sc] or 0) + 1
+					else
+						dropN[sc] = (dropN[sc] or 0) + 1
+					end
+				end
+				if #kept > 0 then
+					local parts = {}
+					local function addInfo(tag, tbl)
+						local ks = {}
+						for sc in pairs(tbl) do ks[#ks + 1] = sc end
+						table.sort(ks)
+						for i = 1, math.min(#ks, 6) do parts[#parts + 1] = tag .. ": " .. ks[i] .. " (" .. tbl[ks[i]] .. ")" end
+					end
+					addInfo("dipakai", keptN)
+					addInfo("dibuang", dropN)
+					api.srcInfo = table.concat(parts, "; ")
+					api.mushOnly = true
+					found = kept
+				end
 			end
 		end
 
@@ -4401,10 +4564,69 @@ xpcall(function()
 			end
 			for n in pairs(higher) do table.insert(arr, n) end
 			table.sort(arr)
-			if arr[1] then nm[arr[1]] = "Legendary" end
-			if arr[2] then nm[arr[2]] = "Mythic" end
+			-- [PATCH] semua tier di atas Epic diberi nama berurutan (dulu hanya Legendary & Mythic)
+			local TOPN = { "Legendary", "Mythic", "Secret", "Exotic", "Divine", "Godly", "Unique" }
+			for i, tn in ipairs(arr) do
+				nm[tn] = TOPN[i] or ("Rarity " .. tostring(tn))
+			end
+		end
+		api.namesFromGame = false
+		api.gameNamesStr = nil
+		if gameNames then
+			local maxT = 0
+			for _, f in pairs(best) do
+				if type(f.rar) == "number" and f.rar > maxT then maxT = f.rar end
+			end
+			if maxT > 0 and type(gameNames[1]) == "string" and type(gameNames[maxT]) == "string" then
+				local ks, ps = {}, {}
+				for n, gname in pairs(gameNames) do
+					if type(n) == "number" and type(gname) == "string" and gname ~= "" then
+						nm[n] = gname
+						ks[#ks + 1] = n
+					end
+				end
+				table.sort(ks)
+				for _, n in ipairs(ks) do ps[#ps + 1] = tostring(n) .. "=" .. tostring(gameNames[n]) end
+				api.gameNamesStr = table.concat(ps, ", ")
+				api.namesFromGame = true
+			end
+		end
+		-- [PATCH] jaring pengaman: nomor tier apa pun yang ada di data tapi belum bernama TIDAK dibuang lagi
+		do
+			local nums, seenN, maxKnown = {}, {}, -math.huge
+			for n in pairs(nm) do if n > maxKnown then maxKnown = n end end
+			for _, f in pairs(best) do
+				if type(f.rar) == "number" and not nm[f.rar] and not seenN[f.rar] then
+					seenN[f.rar] = true
+					nums[#nums + 1] = f.rar
+				end
+			end
+			table.sort(nums)
+			local used = {}
+			for _, rn in pairs(nm) do used[rn] = true end
+			local EXTRA = { "Secret", "Exotic", "Divine", "Godly", "Unique" }
+			local ei = 1
+			for _, n in ipairs(nums) do
+				local nameX
+				if n > maxKnown then
+					while ei <= #EXTRA and used[EXTRA[ei]] do ei = ei + 1 end
+					nameX = EXTRA[ei]
+					if nameX then ei = ei + 1 end
+				end
+				nameX = nameX or ("Rarity " .. tostring(n))
+				used[nameX] = true
+				nm[n] = nameX
+			end
 		end
 		numName = nm
+		do
+			local ks = {}
+			for n in pairs(nm) do ks[#ks + 1] = n end
+			table.sort(ks)
+			local ps = {}
+			for _, n in ipairs(ks) do ps[#ps + 1] = tostring(n) .. "=" .. tostring(nm[n]) end
+			api.tierMapInfo = table.concat(ps, ", ")
+		end
 
 		rarMap, keysByLen = {}, {}
 		local count = 0
@@ -4480,12 +4702,14 @@ xpcall(function()
 		if not okR then return false end
 		local okD, d = pcall(function() return HttpSvc:JSONDecode(raw) end)
 		if not (okD and type(d) == "table" and type(d.map) == "table" and type(d.t) == "number") then return false end
-		if d.v ~= 2 then return false end -- [FIX] profil versi lama dibuang
+		if d.v ~= 5 then return false end -- [FIX] profil versi lama dibuang
 		if os.time() - d.t > PROFILE_MAX_AGE then return false end
 		local n = applyMap(d.map)
 		if n == 0 then return false end
 		rebuildMeta()
 		api.tierGuess = d.tg == true
+		api.mushOnly = d.mo == true
+		api.srcInfo = type(d.si) == "string" and d.si or nil
 		cache = {}
 		api.count = n
 		api.loading = false
@@ -4504,7 +4728,7 @@ xpcall(function()
 			end
 			local map = {}
 			for k, rn in pairs(rarMap) do map[k] = rn end
-			settings.save("rarity_" .. tostring(game.GameId) .. ".json", HttpSvc:JSONEncode({ v = 2, t = os.time(), gid = game.GameId, count = api.count, tg = api.tierGuess == true, map = map }))
+			settings.save("rarity_" .. tostring(game.GameId) .. ".json", HttpSvc:JSONEncode({ v = 5, t = os.time(), gid = game.GameId, count = api.count, tg = api.tierGuess == true, mo = api.mushOnly == true, si = api.srcInfo, map = map }))
 		end)
 	end
 
@@ -4583,6 +4807,19 @@ xpcall(function()
 		local c = {}
 		for _, rn in pairs(rarMap) do c[rn] = (c[rn] or 0) + 1 end
 		return c
+	end
+
+	function api.byRarity(n)
+		local out = {}
+		local ks = {}
+		for k in pairs(rarMap) do ks[#ks + 1] = k end
+		table.sort(ks)
+		for _, k in ipairs(ks) do
+			local rn = rarMap[k]
+			out[rn] = out[rn] or {}
+			if #out[rn] < n then out[rn][#out[rn] + 1] = k end
+		end
+		return out
 	end
 
 	function api.sample(n)
@@ -4754,7 +4991,6 @@ new("UIListLayout", {
 	Padding = UDim.new(0, 4),
 	SortOrder = Enum.SortOrder.LayoutOrder,
 }, lootScroll)
-new("UIPadding", { PaddingLeft = UDim.new(0, 2), PaddingTop = UDim.new(0, 2), PaddingRight = UDim.new(0, 2) }, lootScroll)
 
 local emptyLbl = text(scannerCard, {
 	Text = "Belum ada data — tekan SCAN ITEM",
@@ -4881,6 +5117,41 @@ local function rarityOf(name: string): string?
 		cg.rarV = api.version
 	end
 	return r
+end
+
+-- [PATCH] Mode "hanya jamur" (aktif bila data jamur acuan ditemukan di game ini).
+-- Jamur di dunia selalu membawa atribut spesies "Sp" pada modelnya; pisau/alat/pintu tidak.
+local function mushGate(): boolean
+	if settings.mushroomOnly == false then return false end
+	local api = settings.rarityApi
+	return (api and api.ready and api.mushOnly) == true
+end
+
+local function instMush(e: any): boolean?
+	if e.mushC ~= nil then return e.mushC end
+	local ok, r = pcall(function()
+		local tr = e.trig
+		local m = tr and (tr:IsA("Tool") and tr or tr:FindFirstAncestorOfClass("Model")) or e.part
+		if not m then return false end
+		return type(m:GetAttribute("Sp")) == "string"
+	end)
+	if ok then e.mushC = (r == true) end
+	return e.mushC
+end
+
+-- untuk satu entri ESP di dunia
+local function mushOkE(e: any): boolean
+	if not mushGate() then return true end
+	return instMush(e) ~= false
+end
+
+-- untuk satu nama item di daftar: pakai instance di dunia bila ada, kalau tidak pakai data jamur
+local function mushOk(name: string): boolean
+	if not mushGate() then return true end
+	local g = groups[name]
+	local e1 = g and g.list[1]
+	if e1 then return instMush(e1) ~= false end
+	return rarityOf(name) ~= nil
 end
 
 local function rarityColor(name: string): Color3?
@@ -5329,6 +5600,7 @@ end
 
 local function groupMatches(g: any, q: string): boolean
 	if onlyPresent and not groups[g.name] then return false end
+	if not mushOk(g.name) then return false end
 	local terms = termsOf(q)
 	local hasQuery = #terms > 0
 	if hasQuery then
@@ -6153,7 +6425,7 @@ local function updateMarkers()
 	for i = 1, n do
 		local e = all[i]
 		local d = e.dist
-		local sel = itemSel[e.name] == true
+		local sel = itemSel[e.name] == true and mushOkE(e)
 		if d <= DOT_MAX_DIST and (sel or (not settings.dotsSelectedOnly and e.cat ~= "Sentuh")) then
 			local b = math.min(DB, math.floor(d / dStep) + 1)
 			dHist[b] += 1
@@ -6187,7 +6459,7 @@ local function updateMarkers()
 	for i = 1, n do
 		local e = all[i]
 		local d = e.dist
-		local sel = itemSel[e.name] == true
+		local sel = itemSel[e.name] == true and mushOkE(e)
 		local eligible = sel or (not settings.dotsSelectedOnly and e.cat ~= "Sentuh")
 
 		-- pulihkan bila penanda hilang (mis. kamera diganti oleh game)
@@ -7725,9 +7997,8 @@ do
 			MIN_GAP = 0.15,     -- jeda minimal bila zona sudah pindah (potongan berikutnya)
 			STABLE_FOR = 0.2,   -- bar harus stabil segini lama sebelum menekan
 			HOLD = 0.03,        -- lama Space ditahan
-			FAST_SETTLE = 0.016, -- zona cukup diam segini lama (1 frame) sebelum jalur 1 & 3 menekan
-			NEAR = 0.2,         -- jalur 1: "dekat tengah" = dalam 20% lebar zona dari titik tengah
-			FAST_GAP = 0.06,    -- jeda minimal setelah tekanan sebelumnya (jalur 1 & 3)
+			FAST_SETTLE = 0.03, -- jalur tekan langsung: zona cukup diam segini lama (2 frame) sebelum ditekan
+			FAST_GAP = 0.06,    -- jalur tekan langsung: jeda minimal setelah tekanan sebelumnya
 			presses = 0, lastErr = nil, lastPress = 0,
 			lastBarW = 0, barChangedAt = 0, lastUi = 0,
 			lastCx = nil, zoneX = -1e9, zoneChangedAt = 0, pressZoneX = -1e9,
@@ -7863,29 +8134,10 @@ do
 		end
 
 		-- ---------- logika (satu koneksi, ikut dibersihkan oleh unload lewat track) ----------
-		-- satu fungsi untuk semua jalur tekan (mencatat zona yang sudah ditekan)
-		local function firePress(zx: number, pw: number, center: number, cx: number, vel: number)
-			C.lastPress = os.clock()
-			C.pressZoneX = zx
-			C.pressZoneW = pw
-			C.pressCenter = center
-			C.left = false
-			-- positif = terlambat (lewat tengah searah gerak), negatif = terlalu cepat
-			C.lastErr = (cx - center) * (vel >= 0 and 1 or -1)
-			-- selisih dalam milidetik (piksel dibagi kecepatan marker): bisa dibandingkan antar rarity
-			C.lastErrMs = (math.abs(vel) > 5) and (C.lastErr / math.abs(vel) * 1000) or nil
-			C.presses += 1
-			task.spawn(pressSpace)
-		end
-
-		track(RunService.RenderStepped:Connect(function(dtFrame: number)
+		track(RunService.RenderStepped:Connect(function()
 			if unloaded then return end
 			local hist = C.hist
 			local now = os.clock()
-			-- lama frame terbesar yang baru terjadi (turun perlahan): dipakai melebarkan jendela tekan
-			-- supaya di FPS rendah / saat lag, marker tidak "melompati" jendela di antara dua frame
-			C.dt = math.clamp(dtFrame, 1 / 120, 0.1)
-			C.f = math.max(C.dt, (C.f or dtFrame) * 0.9)
 
 			if not state.autoCut then
 				if #hist > 0 then table.clear(hist) end
@@ -7936,6 +8188,7 @@ do
 			-- zona Perfect pindah = potongan berikutnya; tunggu zona diam sebentar sebelum menekan
 			local zx = target.AbsolutePosition.X
 			if math.abs(zx - C.zoneX) > 0.5 then C.zoneX, C.zoneChangedAt = zx, now end
+			local zoneSettled = now - C.zoneChangedAt > 0.08
 			-- [FIX] zona dianggap "sudah pindah" (= potongan baru) walau hanya bergeser sedikit (>0.5 px) atau
 			-- ukurannya berubah. Dulu ambangnya 3 px: geseran kecil tidak dikenali, sehingga harus menunggu
 			-- DEBOUNCE 0.9 dtk (melewatkan satu putaran marker) baru bisa perfect lagi.
@@ -7958,53 +8211,43 @@ do
 				local errTxt = "-"
 				if C.lastErr then
 					errTxt = string.format("%+.1f px (%s)", C.lastErr, C.lastErr > 0 and "telat" or "cepat")
-					if C.lastErrMs then
-						errTxt = errTxt .. string.format(" = %+.0f ms", C.lastErrMs)
-					end
 				end
 				sLbl.Text = string.format("marker %.0f/%.0f | tekan: %d | selisih: %s",
 					cx, center, C.presses, errTxt)
 			end
 
-			local frame = math.clamp(C.f or (1 / 60), 1 / 60, 0.1)   -- frame terpanjang yang baru terjadi (batas TELAT)
-			local curDt = C.dt or (1 / 60)                           -- lama frame saat ini (batas CEPAT)
-			local tooSoon = now - C.lastPress <= C.FAST_GAP
-			local zoneStill = now - C.zoneChangedAt > C.FAST_SETTLE
-			local inFull = cx >= zx + pw * 0.05 and cx <= zx + pw * 0.95       -- di dalam zona Perfect (nyaris seluruhnya)
-			local px = cx + vel * lead                                          -- perkiraan posisi marker saat Space sampai
-			local pxIn = px >= zx + pw * 0.05 and px <= zx + pw * 0.95
-			local haveVel = #hist >= 3 and math.abs(vel) > 5
-			local passed = haveVel and (cx - center) * vel >= 0                 -- marker sudah lewat tengah (menjauh)
-			local nearCenter = math.abs(cx - center) <= pw * C.NEAR              -- marker sudah dekat tengah
+			local frame = 1 / 60
 
-			-- [JALUR 1] TEKAN LANGSUNG: zona Perfect baru pindah/bergeser (potongan baru), marker di dalam zona DAN
-			-- sudah dekat tengah / sudah lewat tengah -> tekan sekarang (tidak menunggu satu putaran).
-			-- Kalau marker masih jauh dari tengah, JANGAN tekan di tepi zona (itu yang membuat selisih "cepat" besar):
-			-- jalur 2 yang menekan tepat di tengah.
-			if zoneMoved and inFull and pxIn and zoneStill and not tooSoon and (nearCenter or passed) then
-				firePress(zx, pw, center, cx, vel)
+			-- [FIX] JALUR "TEKAN LANGSUNG": zona Perfect baru saja pindah/bergeser (potongan baru) dan marker
+			-- SEDANG berada di dalam zona -> tekan sekarang juga, tanpa menunggu marker memutar satu putaran.
+			-- Satu zona hanya ditekan sekali (pressZoneX dicatat), jadi tidak bisa dobel.
+			if zoneMoved and cx >= pl and cx <= pr
+				and now - C.zoneChangedAt > C.FAST_SETTLE
+				and now - C.lastPress > C.FAST_GAP then
+				C.lastPress = now
+				C.pressZoneX = zx
+				C.pressZoneW = pw
+				C.pressCenter = center
+				C.left = false
+				C.lastErr = (cx - center) * (vel >= 0 and 1 or -1)
+				C.presses += 1
+				task.spawn(pressSpace)
 				return
 			end
 
-			-- [JALUR 2] PREDIKSI: tekan tepat saat marker tiba di tengah zona (memakai LEAD).
-			-- Batas telat memakai frame terpanjang (anti-lompat saat FPS turun); batas cepat memakai frame SAAT INI.
-			-- Untuk zona yang baru pindah, jeda tunggu dipersingkat (zona sudah pasti potongan baru).
-			local settleOk = now - C.zoneChangedAt > (zoneMoved and C.FAST_SETTLE or 0.05)
-			local gapOk = now - C.lastPress > C.DEBOUNCE
-				or (rearmed and now - C.lastPress > (zoneMoved and C.FAST_GAP or C.MIN_GAP))
-			if tta >= math.min(-frame, lead - frame) and tta <= lead + curDt * 0.5
+			if tta >= math.min(-frame, lead - frame) and tta <= lead + frame * 0.5
 				and cx >= pl - math.abs(vel) * lead and cx <= pr + math.abs(vel) * lead
-				and settleOk and gapOk then
-				firePress(zx, pw, center, cx, vel)
-				return
-			end
-
-			-- [JALUR 3] PENYELAMAT: marker sudah sedikit lewat tengah (jendela prediksi terlewat, mis. frame lag)
-			-- tetapi masih di dalam zona Perfect dan zona ini belum ditekan -> tekan sekarang, jangan tunggu putaran lagi.
-			if passed and inFull and pxIn and zoneStill and not tooSoon
-				and (rearmed or now - C.lastPress > C.DEBOUNCE) then
-				firePress(zx, pw, center, cx, vel)
-				return
+				and zoneSettled
+				and (now - C.lastPress > C.DEBOUNCE or (rearmed and now - C.lastPress > C.MIN_GAP)) then
+				C.lastPress = now
+				C.pressZoneX = zx
+				C.pressZoneW = pw
+				C.pressCenter = center
+				C.left = false
+				-- positif = terlambat (lewat tengah searah gerak), negatif = terlalu cepat
+				C.lastErr = (cx - center) * (vel >= 0 and 1 or -1)
+				C.presses += 1
+				task.spawn(pressSpace)
 			end
 		end))
 	end
@@ -8719,7 +8962,7 @@ xpcall(function()
 		end
 
 		add("== TES DETEKSI RARITY ==")
-		add("Build: v1.2 | rarity-filter-2 | storage-1")
+		add("Build: v1.2 | rarity-filter-6 | storage-1")
 		add("GameId: " .. tostring(game.GameId))
 
 		-- ---------- 0) STREAMING: batas jarak muat objek dari game ----------
@@ -8881,6 +9124,38 @@ xpcall(function()
 		end
 
 		add("")
+		do
+			local lp = game:GetService("Players").LocalPlayer
+			local ch = lp and lp.Character
+			local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
+			if hrp then
+				local near = {}
+				for _, pr in ipairs(use) do
+					local m = pr:FindFirstAncestorOfClass("Model") or pr.Parent
+					local part = nil
+					if m and m:IsA("BasePart") then
+						part = m
+					elseif m and m:IsA("Model") then
+						part = m.PrimaryPart or m:FindFirstChildWhichIsA("BasePart", true)
+					end
+					if part then near[#near + 1] = { m = m, pr = pr, d = (part.Position - hrp.Position).Magnitude } end
+				end
+				table.sort(near, function(a, b) return a.d < b.d end)
+				add("")
+				add("[1b] 10 ITEM TERDEKAT (untuk cek jamur yang tidak muncul di ESP)")
+				local apiN = settings.rarityApi
+				for i = 1, math.min(10, #near) do
+					local o = near[i]
+					local sp = o.m:GetAttribute("Sp")
+					local key = (type(sp) == "string" and sp) or o.m.Name
+					local rr = apiN and apiN.ready and apiN.get(key) or nil
+					local ak = {}
+					for k in pairs(o.m:GetAttributes()) do ak[#ak + 1] = k end
+					table.sort(ak)
+					add(string.format("  %d. %s | jarak %d | Sp=%s | rarity data=%s | prompt=%s '%s' | atribut: %s", i, o.m.Name, math.floor(o.d), tostring(sp), tostring(rr), o.pr.Name, tostring(o.pr.ObjectText), table.concat(ak, ",")))
+				end
+			end
+		end
 		add("[1] ITEM DI DUNIA (ProximityPrompt): " .. #items .. " item dicek, " .. withEv .. " membawa info rarity")
 		if #items == 0 then
 			add("  Tidak ada item ber-prompt yang termuat. Dekati area mushroom (game bisa memuat item hanya di sekitarmu) lalu scan lagi.")
@@ -8953,6 +9228,15 @@ xpcall(function()
 				for rn, n in pairs(api.summary()) do parts[#parts + 1] = rn .. " " .. n end
 				table.sort(parts)
 				add("  Per rarity: " .. table.concat(parts, ", "))
+				add("  Filter jamur: " .. (api.mushOnly and "AKTIF" or "tidak aktif") .. " | " .. tostring(api.srcInfo or "-"))
+				add("  Nomor tier -> nama dipakai: " .. tostring(api.tierMapInfo or "-"))
+				add("  Nama rarity dari config game: " .. (api.namesFromGame and tostring(api.gameNamesStr) or "TIDAK ditemukan (nama di atas = tebakan urutan)"))
+				for _, ln in ipairs(api.modKeys or {}) do add("  isi modul -> " .. ln) end
+				local brr = api.byRarity(8)
+				for _, rn in ipairs(api.names) do
+					if brr[rn] then add("  " .. rn .. ": " .. table.concat(brr[rn], ", ")) end
+				end
+				for _, ln in ipairs(api.diag or {}) do add("  contoh: " .. ln) end
 				add("  Isi dropdown Rarity: " .. table.concat(api.names, ", "))
 				if api.tierGuess then
 					add("  PERHATIAN: rarity di game ini berupa NOMOR tier. Nama (Common..Mythic) hanya TEBAKAN urutan standar 1-6, cocokkan dengan item yang kamu tahu rarity-nya.")
