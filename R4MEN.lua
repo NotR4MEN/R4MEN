@@ -46,7 +46,7 @@ do
 	env.__R4MEN_UNLOAD = nil
 end
 
-for _, n in ipairs({ "UniversalUrbee", "ControlPanel", "UU_ITEMS", "UU_NPC", "UU_RARITY" }) do
+for _, n in ipairs({ "UniversalUrbee", "ControlPanel", "UU_ITEMS", "UU_NPC", "UU_RARITY", "UU_ZONE" }) do
 	local old = playerGui:FindFirstChild(n)
 	if old then old:Destroy() end
 end
@@ -2881,6 +2881,57 @@ do
 		N.dirty = true
 	end
 
+	-- [PATCH] BATU QUEST (Rainstone / Moonstone / Sunstone): bukan NPC & bukan item,
+	-- jadi dideteksi lewat NAMA dan HANYA masuk tab NPC (scanner item/jamur tidak tersentuh).
+	-- Kalau nama asli di Explorer berbeda, tambahkan di daftar ini (huruf kecil, tanpa spasi/garis bawah).
+	-- (disimpan sebagai field di N supaya TIDAK menambah variabel local: batas Luau 200 local per chunk)
+	N.stoneNames = { "rainstone", "moonstone", "sunstone" }
+	N.isStone = function(n: string): boolean
+		local s = string.lower((string.gsub(n, "[^%a]", "")))
+		for _, w in ipairs(N.stoneNames) do
+			if string.find(s, w, 1, true) then return true end
+		end
+		return false
+	end
+
+	N.addStone = function(inst: Instance, tries: number)
+		if N.byModel[inst] then return end
+		if not (inst:IsA("Model") or inst:IsA("BasePart")) then return end
+		if not N.isStone(inst.Name) then return end
+		if not inst:IsDescendantOf(workspace) then return end
+		-- part di dalam model yang namanya juga batu: biarkan modelnya yang dicatat (anti-duplikat)
+		local par = inst.Parent
+		if inst:IsA("BasePart") and par and par:IsA("Model") and N.isStone(par.Name) then return end
+		local root: BasePart? = nil
+		if inst:IsA("Model") then
+			root = npcRootOf(inst :: Model)
+		else
+			root = inst :: BasePart
+		end
+		if not root then
+			if tries < 4 then
+				task.delay(1, function()
+					if not unloaded and inst.Parent then
+						N.addStone(inst, tries + 1)
+					end
+				end)
+			end
+			return
+		end
+		local name = inst.Name
+		local g = N.groups[name]
+		if not g then
+			g = { name = name, lower = string.lower(name), list = {}, cat = "Part" }
+			N.groups[name] = g
+			N.orderDirty = true
+		end
+		local e: any = { model = inst, root = root, name = name, stone = true }
+		g.list[#g.list + 1] = e
+		e.gi = #g.list
+		N.byModel[inst] = e
+		N.dirty = true
+	end
+
 	local function npcDropVis(e: any)
 		local v = N.vis[e]
 		if v then
@@ -2926,6 +2977,8 @@ do
 		N.addConn = track(workspace.DescendantAdded:Connect(function(inst)
 			if NPC_CLASS[inst.ClassName] then
 				task.defer(npcAdd, inst, 0)
+			elseif inst:IsA("Model") or inst:IsA("BasePart") then
+				task.defer(N.addStone, inst, 0) -- [PATCH] batu quest
 			end
 		end))
 		N.remConn = track(workspace.DescendantRemoving:Connect(function(inst)
@@ -2934,6 +2987,8 @@ do
 				local e = m and N.byModel[m]
 				if e then npcRemove(e) end
 			end
+			local se = N.byModel[inst] -- [PATCH] batu quest
+			if se and se.stone then npcRemove(se) end
 		end))
 	end
 
@@ -3328,7 +3383,7 @@ do
 	stroke(searchBox, T.stroke, 1, 0.3)
 	new("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10) }, searchBox)
 
-	-- Chip kategori: Semua / Hewan / Toko / Quest / Musuh / Lainnya
+	-- Chip kategori: Semua / Hewan / Toko / Quest / Musuh / Part / Lainnya ("Part" = batu quest dkk, dideteksi lewat nama)
 	local chipRow = new("Frame", {
 		Position = UDim2.fromOffset(14, 162),
 		Size = UDim2.new(1, -28, 0, 24),
@@ -3339,7 +3394,7 @@ do
 		Padding = UDim.new(0, 4),
 		SortOrder = Enum.SortOrder.LayoutOrder,
 	}, chipRow)
-	local CAT_CHIPS = { "Semua", "Hewan", "Toko", "Quest", "Musuh", "Lainnya" }
+	local CAT_CHIPS = { "Semua", "Hewan", "Toko", "Quest", "Musuh", "Part", "Lainnya" }
 	local chipBtns: { [string]: any } = {}
 	do
 		local n = #CAT_CHIPS
@@ -3797,6 +3852,8 @@ do
 				local inst = desc[i]
 				if NPC_CLASS[inst.ClassName] then
 					npcAdd(inst, 0)
+				elseif inst:IsA("Model") or inst:IsA("BasePart") then
+					N.addStone(inst, 0) -- [PATCH] batu quest
 				end
 				if i % 400 == 0 and os.clock() - t0 > 0.004 then
 					RunService.Heartbeat:Wait()
@@ -4337,7 +4394,7 @@ xpcall(function()
 			if rv ~= nil then
 				local nm = t.Name or t.DisplayName or t.name or t.displayName or t.Title or key
 				if nm ~= nil and type(nm) ~= "table" then
-					table.insert(found, { name = tostring(nm), rar = rv, sc = best, src = srcOf(path, app), fields = fieldsOf(t) })
+					table.insert(found, { name = tostring(nm), rar = rv, sc = best, src = srcOf(path, app), fields = fieldsOf(t), lvl = t.level, prc = t.price, shp = t.shop })
 				end
 			end
 
@@ -4478,6 +4535,20 @@ xpcall(function()
 					api.diag[#api.diag + 1] = tostring(f.name) .. " | sumber=" .. tostring(f.src) .. " | rar=" .. tostring(f.rar) .. " | " .. tostring(f.fields or "")
 				end
 			end
+		end
+
+		-- [PATCH] daftar semua alat/pisau (sumber TOOLS) lengkap dengan level, harga, toko
+		do
+			api.tools = {}
+			for _, f in ipairs(found) do
+				if string.find(string.lower(tostring(f.src or "")), "tool", 1, true) then
+					api.tools[#api.tools + 1] = { n = tostring(f.name), r = tonumber(f.rar) or 0, l = tonumber(f.lvl) or 0, p = tostring(f.prc or "?"), s = tostring(f.shp or "-") }
+				end
+			end
+			table.sort(api.tools, function(a, b)
+				if a.s ~= b.s then return a.s < b.s end
+				return a.l < b.l
+			end)
 		end
 
 		-- [PATCH] HANYA DATA JAMUR: modul/wadah yang memuat 4 jamur acuan (Honey Fungus dst.) dianggap data jamur.
@@ -5142,6 +5213,7 @@ end
 -- untuk satu entri ESP di dunia
 local function mushOkE(e: any): boolean
 	if not mushGate() then return true end
+	if itemSel[e.name] == true then return true end -- item non-jamur (pisau/alat) yang dicentang manual lewat pencarian tetap di-ESP
 	return instMush(e) ~= false
 end
 
@@ -5266,7 +5338,7 @@ local function makeLabel(e: any)
 		toast("Teleport ke " .. e.name)
 	end)
 	e.nameLbl = text(bg, {
-		Text = e.name,
+		Text = ((mushGate() and instMush(e) == false) and "[ALAT] " or "") .. e.name,
 		Font = Enum.Font.GothamBold,
 		TextSize = 12,
 		TextXAlignment = Enum.TextXAlignment.Center,
@@ -5600,9 +5672,11 @@ end
 
 local function groupMatches(g: any, q: string): boolean
 	if onlyPresent and not groups[g.name] then return false end
-	if not mushOk(g.name) then return false end
 	local terms = termsOf(q)
 	local hasQuery = #terms > 0
+	-- non-jamur (pisau/alat) HANYA muncul kalau dicari manual (kotak pencarian tidak kosong)
+	local isMush = mushOk(g.name)
+	if not isMush and not hasQuery then return false end
 	if hasQuery then
 		local hit = false
 		for i = 1, #terms do
@@ -5611,7 +5685,7 @@ local function groupMatches(g: any, q: string): boolean
 		if not hit then return false end
 	end
 	-- Di tab Terpilih, item yang dicentang manual tetap tampil walau rarity-nya di luar filter
-	if rarSelN > 0 and not (filterMode == "Terpilih" and itemSel[g.name] == true) then
+	if rarSelN > 0 and isMush and not (filterMode == "Terpilih" and itemSel[g.name] == true) then
 		local rapi = settings.rarityApi
 		if rapi and not rapi.failed then
 			local r = rarityOf(g.name)
@@ -6580,7 +6654,7 @@ do
 	local K: any = {
 		STRIP = 16, RW = 18, PAD = 4, GAP = 4,
 		MIN_W = 130,
-		BASE_CH = 26, BASE_NS = 12, BASE_IS = 11, BASE_XS = 16,
+		BASE_CH = 26, BASE_NS = 12, BASE_IS = 11, BASE_XS = 16, BASE_ZH = 20,
 		MIN_SC = 0.55, MAX_SC = 1, DEF_SC = 0.75,
 	}
 	K.AREA_L, K.AREA_R = K.STRIP + 2, K.RW + 2
@@ -6601,6 +6675,7 @@ do
 		K.IS = math.max(7, math.floor(K.BASE_IS * s + 0.5))
 		K.XS = math.max(10, math.floor(K.BASE_XS * s + 0.5))
 		K.IW = math.ceil(textW("×99 · 9999 st", Enum.Font.GothamBold, K.IS)) + 4
+		K.ZH = math.max(12, math.floor(K.BASE_ZH * s + 0.5))
 	end
 	applyScale(pin.sc or K.DEF_SC)
 
@@ -6658,6 +6733,40 @@ do
 		BorderSizePixel = 0,
 	}, bar)
 
+	K.zr = new("TextLabel", {
+		BackgroundTransparency = 1,
+		RichText = true,
+		Text = "",
+		Font = Enum.Font.GothamBold,
+		TextSize = K.NS,
+		TextColor3 = T.text,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Position = UDim2.fromOffset(K.AREA_L, K.PAD),
+		Size = UDim2.new(1, -(K.AREA_L + K.AREA_R), 0, K.ZH),
+		Visible = false,
+	}, bar)
+	-- X luar: menutup seluruh pop-up (baris daerah + semua kotak). X di tiap kotak = hapus item saja.
+	K.xAll = new("TextButton", {
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, -5, 0, K.PAD),
+		Size = UDim2.fromOffset(K.ZH, K.ZH),
+		BackgroundColor3 = T.off,
+		Text = "X",
+		TextColor3 = WHITE,
+		Font = Enum.Font.GothamBold,
+		TextSize = 9,
+		AutoButtonColor = false,
+		BorderSizePixel = 0,
+		Visible = false,
+		ZIndex = 6,
+	}, bar)
+	new("UICorner", { CornerRadius = UDim.new(0.5, 0) }, K.xAll)
+	hover(K.xAll, T.off)
+	K.want = function(): boolean
+		return not pin.closed and (#pin.list > 0 or (pin.zoneText ~= nil and pin.zoneText ~= ""))
+	end
+
 	-- gagang perpanjang (kanan bawah): hanya mengubah PANJANG, tinggi terkunci
 	local rgrip = new("TextButton", {
 		AnchorPoint = Vector2.new(1, 1),
@@ -6704,19 +6813,28 @@ do
 
 	-- susun kotak: lebar tiap kotak mengikuti panjang namanya, tinggi tetap
 	local function relayout()
-		local innerW = pin.w - K.AREA_L - K.AREA_R
-		local x, r = 0, 0
+		local n = #pin.list
+		-- semua kotak selebar nama terpanjang (maks 230); bilah melebar ke kanan
+		local cw = 0
 		for _, name in ipairs(pin.list) do
+			local want = math.ceil(textW(name, Enum.Font.GothamBold, K.NS)) + K.IW + K.XS + 32
+			if want > cw then cw = want end
+		end
+		cw = math.min(cw, 230)
+		-- TINGGI DIKUNCI maks 3 baris kotak (tidak pernah bertambah ke bawah). Item ke-4 dst masuk kolom baru ke kanan.
+		-- Ukuran manual (grip) hanya MEMPERPANJANG ke kanan: kotak ikut melebar, tidak pernah turun jadi baris baru.
+		local rows = math.max(1, math.min(3, n))
+		local cols = math.max(1, math.ceil(n / rows))
+		pin.w = clampBar(math.max(220, K.AREA_L + K.AREA_R + cols * cw + (cols - 1) * K.GAP, pin.userW or 0), pin.h)
+		local innerW = pin.w - K.AREA_L - K.AREA_R
+		cw = math.max(cw, math.floor((innerW - (cols - 1) * K.GAP) / cols))
+		local r = rows - 1
+		for i, name in ipairs(pin.list) do
 			local c = chips[name]
 			if c then
-				local want = math.ceil(textW(name, Enum.Font.GothamBold, K.NS)) + K.IW + K.XS + 32
-				local w = math.min(want, innerW)
-				if x > 0 and x + w > innerW then
-					x = 0
-					r += 1
-				end
-				c.chip.Position = UDim2.fromOffset(x, r * (K.CH + K.GAP))
-				c.chip.Size = UDim2.fromOffset(w, K.CH)
+				local col, row = math.floor((i - 1) / rows), (i - 1) % rows -- isi ke bawah dulu (maks 3), lalu kolom berikutnya
+				c.chip.Position = UDim2.fromOffset(col * (cw + K.GAP), row * (K.CH + K.GAP))
+				c.chip.Size = UDim2.fromOffset(cw, K.CH)
 				c.holder.Size = UDim2.new(1, -(K.XS + 8), 1, 0)
 				c.nm.TextSize = K.NS
 				c.nm.Size = UDim2.new(1, -(8 + K.IW + 8), 1, 0)
@@ -6724,11 +6842,23 @@ do
 				c.info.Size = UDim2.new(0, K.IW, 1, 0)
 				c.x.Size = UDim2.fromOffset(K.XS, K.XS)
 				c.x.TextSize = math.max(7, K.NS - 3)
-				x += w + K.GAP
 			end
 		end
-		local nRows = (#pin.list > 0) and (r + 1) or 1
-		pin.h = nRows * K.CH + (nRows - 1) * K.GAP + 2 * K.PAD
+		local showZ = pin.zoneText ~= nil and pin.zoneText ~= ""
+		local nRows = (#pin.list > 0) and (r + 1) or 0
+		local chipsH = nRows > 0 and (nRows * K.CH + (nRows - 1) * K.GAP) or 0
+		local topH = showZ and K.ZH or 0
+		local gapH = (showZ and nRows > 0) and K.GAP or 0
+		K.zr.Visible = showZ
+		K.zr.TextSize = K.NS
+		K.zr.Size = UDim2.new(1, -(K.AREA_L + K.ZH + 10), 0, K.ZH)
+		K.xAll.Visible = showZ
+		K.xAll.Size = UDim2.fromOffset(K.ZH, K.ZH)
+		K.xAll.TextSize = math.max(7, K.NS - 3)
+		area.Position = UDim2.fromOffset(K.AREA_L, K.PAD + topH + gapH)
+		area.Size = UDim2.new(1, -(K.AREA_L + K.AREA_R), 1, -(2 * K.PAD + topH + gapH))
+		if nRows == 0 and not showZ then chipsH = K.CH end
+		pin.h = topH + gapH + chipsH + 2 * K.PAD
 		bar.Size = UDim2.fromOffset(pin.w, pin.h)
 	end
 
@@ -6828,7 +6958,7 @@ do
 		for i, name in ipairs(pin.list) do
 			buildChip(name, i)
 		end
-		bar.Visible = #pin.list > 0
+		bar.Visible = K.want()
 		relayout()
 		tickBar()
 	end
@@ -6841,12 +6971,18 @@ do
 			resizing = true
 			sMouse = input.Position
 			sW, sS = pin.w, pin.sc
+			if os.clock() - (pin.lastClick or 0) < 0.35 then
+				pin.userW = nil
+				persistDirty = true
+				relayout()
+			end
+			pin.lastClick = os.clock()
 		end
 	end)
 	track(UIS.InputChanged:Connect(function(input)
 		if resizing and isMove(input) then
 			local d = input.Position - sMouse
-			pin.w = clampBar(sW + d.X, pin.h)
+			if math.abs(d.X) > 3 then pin.userW = sW + d.X end
 			applyScale(sS + d.Y / 80)
 			relayout()
 		end
@@ -6876,6 +7012,7 @@ do
 			return
 		end
 		persistDirty = true
+		if pin.set[name] and pin.closed then pin.setClosed(false) end
 		refreshBar()
 		local r = rows[name]
 		if r then r.apply() end
@@ -6888,6 +7025,40 @@ do
 		bar.Position = UDim2.new(0.5, -pin.w / 2, 0, 36)
 		refreshBar()
 	end
+
+	-- Label daerah di baris atas pop-up (diisi dari blok LABEL DAERAH)
+	K.esc = function(s: string): string
+		s = string.gsub(s, "&", "&amp;")
+		s = string.gsub(s, "<", "&lt;")
+		s = string.gsub(s, ">", "&gt;")
+		return s
+	end
+	K.hex = function(c: Color3): string
+		return string.format("#%02X%02X%02X", math.floor(c.R * 255 + 0.5), math.floor(c.G * 255 + 0.5), math.floor(c.B * 255 + 0.5))
+	end
+	pin.setZone = function(z: string?, p: string?)
+		if z == pin.zoneText and p == pin.placeText then return end
+		pin.zoneText, pin.placeText = z, p
+		local txt = ""
+		if z and z ~= "" then
+			txt = K.esc(z)
+			if p and p ~= "" then
+				txt ..= '  <font color="' .. K.hex(T.sub) .. '">' .. K.esc(p) .. "</font>"
+			end
+		end
+		K.zr.Text = txt
+		bar.Visible = K.want()
+		relayout()
+	end
+	pin.setClosed = function(v: boolean, silent: boolean?)
+		pin.closed = v
+		bar.Visible = K.want()
+		if not silent and pin.onClosed then pin.onClosed(v) end
+	end
+	K.xAll.MouseButton1Click:Connect(function()
+		pin.setClosed(true)
+	end)
+	settings.pin = pin
 
 	local accT = 0
 	track(RunService.Heartbeat:Connect(function(dt)
@@ -6912,7 +7083,7 @@ local function saveCatalog()
 	for nm, v in pairs(itemSel) do
 		if v then sel[#sel + 1] = nm end
 	end
-	local okJ, json = pcall(function() return HttpService:JSONEncode({ names = names, sel = sel, pins = pin.list, pinW = pin.w, pinH = pin.h, pinS = pin.sc }) end)
+	local okJ, json = pcall(function() return HttpService:JSONEncode({ names = names, sel = sel, pins = pin.list, pinW = pin.w, pinH = pin.h, pinS = pin.sc, pinU = pin.userW }) end)
 	if not okJ then return end
 	pcall(settings.save, catName, json)
 	persistDirty = false
@@ -6950,6 +7121,7 @@ do
 			pin.w, pin.h = data.pinW, data.pinH
 		end
 		if type(data.pinS) == "number" then pin.sc = data.pinS end
+		if type(data.pinU) == "number" then pin.userW = data.pinU end
 		if type(data.pins) == "table" then
 			for _, nm in ipairs(data.pins) do
 				if type(nm) == "string" then pin.add(nm) end
@@ -8264,7 +8436,7 @@ do
 	local function buildScanner()
 		local MAX_TRACK, MAX_SERIES, MAX_EVENTS, MAX_TEXT, SAMPLE_DT = 5000, 2000, 400, 3000, 0.05
 		local EXCLUDE: any = {
-			UniversalUrbee = true, ControlPanel = true, UU_ITEMS = true, UU_NPC = true, UU_RARITY = true,
+			UniversalUrbee = true, ControlPanel = true, UU_ITEMS = true, UU_NPC = true, UU_RARITY = true, UU_ZONE = true,
 			R4MEN_AutoCut = true, R4MEN_Rec = true, R4MEN_Scanner = true,
 		}
 		EXCLUDE[gui.Name] = true
@@ -8843,7 +9015,7 @@ xpcall(function()
 	end
 
 	-- ---------- UI (kecil, di tab Config) ----------
-	local card = makeCard(configPage, 150, 200)
+	local card = makeCard(configPage, 186, 200)
 	text(card, {
 		Text = "Tes Deteksi Rarity & Streaming",
 		Font = Enum.Font.GothamBold,
@@ -8881,7 +9053,7 @@ xpcall(function()
 	stroke(copyB, T.stroke, 1, 0.3)
 
 	local status = text(card, {
-		Text = "Belum scan. Tekan SCAN: tes rarity + cek batas jarak muat game (streaming). Lalu Salin hasil.",
+		Text = "Belum scan. Tekan SCAN: tes rarity + cek batas jarak muat game (streaming) + info lokasi/map. Lalu Salin hasil.",
 		TextSize = 11,
 		TextColor3 = T.sub,
 		TextWrapped = true,
@@ -8962,7 +9134,7 @@ xpcall(function()
 		end
 
 		add("== TES DETEKSI RARITY ==")
-		add("Build: v1.2 | rarity-filter-6 | storage-1")
+		add("Build: v1.2 | rarity-filter-6 | storage-1 | PATCH-ZONA-v5")
 		add("GameId: " .. tostring(game.GameId))
 
 		-- ---------- 0) STREAMING: batas jarak muat objek dari game ----------
@@ -9237,6 +9409,65 @@ xpcall(function()
 					if brr[rn] then add("  " .. rn .. ": " .. table.concat(brr[rn], ", ")) end
 				end
 				for _, ln in ipairs(api.diag or {}) do add("  contoh: " .. ln) end
+				add("  === DAFTAR PISAU/ALAT (urut toko, lalu level) ===")
+				for _, t in ipairs(api.tools or {}) do
+					local tn = (api.names and api.names[t.r]) or "?"
+					add("   - [" .. t.s .. "] " .. t.n .. " | tier " .. tostring(t.r) .. " (" .. tostring(tn) .. ") | level " .. tostring(t.l) .. " | harga " .. t.p)
+				end
+				add("  === NPC DI WORKSPACE (nama | jarak) ===")
+				pcall(function()
+					local hrp0 = getRoot()
+					local nf = workspace:FindFirstChild("NPCs")
+					if not nf then add("   (folder NPCs tidak ada)") return end
+					local rows = {}
+					for _, c in ipairs(nf:GetChildren()) do
+						local okP, pv = pcall(function() return c:GetPivot().Position end)
+						local d = (okP and hrp0) and math.floor((pv - hrp0.Position).Magnitude) or -1
+						rows[#rows + 1] = { n = c.Name, d = d }
+					end
+					table.sort(rows, function(a, b) return a.d < b.d end)
+					for _, r in ipairs(rows) do add("   - " .. r.n .. " | " .. tostring(r.d) .. " st") end
+				end)
+				add("  === OBJEK 'THORN' / 'WHISPER' / 'ELDER' DI DEKATMU (hanya yang termuat) ===")
+				pcall(function()
+					local hrp0 = getRoot()
+					local n = 0
+					local KEYS = { "thorn", "whisper", "elder", "threestone", "three stone" }
+					for _, o in ipairs(workspace:GetDescendants()) do
+						if n >= 15 then break end
+						local txt = string.lower(o.Name)
+						if o:IsA("ProximityPrompt") then
+							txt = txt .. " " .. string.lower(o.ObjectText) .. " " .. string.lower(o.ActionText)
+						end
+						local hit = false
+						for _, k in ipairs(KEYS) do
+							if string.find(txt, k, 1, true) then hit = true break end
+						end
+						if hit and not o:IsA("Terrain") then
+							local tgt = o:IsA("ProximityPrompt") and o.Parent or o
+							local okP, pv = pcall(function() return tgt:GetPivot().Position end)
+							local d = (okP and hrp0) and math.floor((pv - hrp0.Position).Magnitude) or -1
+							n = n + 1
+							add("   - " .. o.ClassName .. " | " .. o:GetFullName() .. " | " .. tostring(d) .. " st")
+						end
+					end
+					if n == 0 then add("   (tidak ada yang termuat di dekatmu; coba lagi sambil berjalan ke area lain)") end
+				end)
+				add("  === OBJEK BERNAMA 'WAYSTATION' ===")
+				pcall(function()
+					local hrp0 = getRoot()
+					local n = 0
+					for _, o in ipairs(workspace:GetDescendants()) do
+						if n >= 8 then break end
+						if string.find(string.lower(o.Name), "waystation", 1, true) then
+							local okP, pv = pcall(function() return o:GetPivot().Position end)
+							local d = (okP and hrp0) and math.floor((pv - hrp0.Position).Magnitude) or -1
+							n = n + 1
+							add("   - " .. o:GetFullName() .. " | " .. tostring(d) .. " st")
+						end
+					end
+					if n == 0 then add("   (tidak ada)") end
+				end)
 				add("  Isi dropdown Rarity: " .. table.concat(api.names, ", "))
 				if api.tierGuess then
 					add("  PERHATIAN: rarity di game ini berupa NOMOR tier. Nama (Common..Mythic) hanya TEBAKAN urutan standar 1-6, cocokkan dengan item yang kamu tahu rarity-nya.")
@@ -9258,6 +9489,180 @@ xpcall(function()
 			add("  • " .. g.src .. "." .. g.inst.Name .. " (" .. #g.inst:GetChildren() .. " isi): " .. table.concat(names, ", "))
 		end
 
+		-- ---------- [PATCH] 5) LOKASI / MAP (satu pintu dengan tes rarity & streaming) ----------
+		local locLine = ""
+		local okLoc, errLoc = pcall(function()
+			add("")
+			add("[5] LOKASI / MAP")
+			local placeName = "?"
+			local okP, info = pcall(function()
+				return game:GetService("MarketplaceService"):GetProductInfo(game.PlaceId)
+			end)
+			if okP and type(info) == "table" and info.Name then placeName = tostring(info.Name) end
+			add("  Place: " .. placeName .. " | PlaceId: " .. tostring(game.PlaceId))
+			locLine = "📍 " .. placeName
+			local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+			if hrp then
+				local pp = (hrp :: BasePart).Position
+				add(string.format("  Posisi: %.0f, %.0f, %.0f", pp.X, pp.Y, pp.Z))
+			end
+			local function attrs(label: string, inst: Instance?)
+				if not inst then return end
+				for k, v in pairs(inst:GetAttributes()) do
+					add("  " .. label .. " attr " .. tostring(k) .. " = " .. tostring(v))
+				end
+			end
+			attrs("Player", player)
+			attrs("Character", player.Character)
+			attrs("Workspace", workspace)
+			attrs("ReplicatedStorage", ReplicatedStorage)
+			attrs("Lighting", game:GetService("Lighting"))
+			local ls = player:FindFirstChild("leaderstats")
+			if ls then
+				for _, v in ipairs(ls:GetChildren()) do
+					local okv, val = pcall(function() return (v :: any).Value end)
+					add("  leaderstats " .. v.Name .. " = " .. tostring(okv and val or "?"))
+				end
+			end
+			local KW = { "map", "zone", "area", "world", "island", "region", "lobby", "biome", "level", "stage", "lokasi", "location" }
+			local function kwHit(s: string): boolean
+				s = string.lower(s)
+				for _, w in ipairs(KW) do
+					if string.find(s, w, 1, true) then return true end
+				end
+				return false
+			end
+			local kids = workspace:GetChildren()
+			local names, hits = {}, {}
+			for i, c in ipairs(kids) do
+				if i <= 40 then names[#names + 1] = c.Name end
+				if kwHit(c.Name) and #hits < 20 then hits[#hits + 1] = c.Name .. " (" .. c.ClassName .. ")" end
+			end
+			add("  Workspace: " .. #kids .. " objek. Kandidat nama area: " .. (#hits > 0 and table.concat(hits, ", ") or "(tidak ada)"))
+			add("  Isi Workspace (40 pertama): " .. table.concat(names, ", "))
+			-- teks di layar yang menyebut map/zona (banyak game menampilkan nama area di UI)
+			local pg = player:FindFirstChild("PlayerGui")
+			local found = 0
+			if pg then
+				for _, d in ipairs(pg:GetDescendants()) do
+					maybeYield()
+					if found >= 8 then break end
+					if d:IsA("TextLabel") and d.Visible and d.Text ~= "" and #d.Text <= 40
+						and not (gui and d:IsDescendantOf(gui)) and not d:FindFirstAncestor("UU_ZONE") and kwHit(d.Text) then
+						found += 1
+						add("  Teks UI: \"" .. d.Text .. "\" (" .. d.Name .. ")")
+					end
+				end
+			end
+		end)
+		if not okLoc then add("  (bagian lokasi error: " .. tostring(errLoc) .. ")") end
+
+		-- ---------- [PATCH] 5b) ZONA & TEMPAT BAWAAN GAME (WorldConfig.zoneAt / RootData.placeAt) ----------
+		local okZ, errZ = pcall(function()
+			add("")
+			add("[5b] ZONA & TEMPAT BAWAAN GAME")
+			local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+			if not hrp then
+				add("  (karakter belum siap)")
+				return
+			end
+			local pos = (hrp :: BasePart).Position
+			local lim = 8 -- batas isi per tabel (dinaikkan untuk daftar ZONES / PLACES supaya tidak terpotong)
+			local function desc(v: any, depth: number): string
+				if type(v) == "table" then
+					if depth <= 0 then return "{...}" end
+					local parts, n = {}, 0
+					for k, x in pairs(v) do
+						n += 1
+						if n > lim then
+							parts[#parts + 1] = "..."
+							break
+						end
+						parts[#parts + 1] = tostring(k) .. "=" .. desc(x, depth - 1)
+					end
+					return "{" .. table.concat(parts, ", ") .. "}"
+				end
+				return tostring(v)
+			end
+			local function getMod(nm: string): any
+				for _, d in ipairs(ReplicatedStorage:GetDescendants()) do
+					if d:IsA("ModuleScript") and d.Name == nm then
+						local done, res = false, nil
+						task.spawn(function()
+							local ok, r = pcall(require, d)
+							if ok then res = r end
+							done = true
+						end)
+						local t0 = os.clock()
+						while not done and os.clock() - t0 < 1.5 do task.wait() end
+						return res
+					end
+				end
+				return nil
+			end
+			local function try(label: string, tbl: any, fn: string)
+				if type(tbl) ~= "table" or type(tbl[fn]) ~= "function" then
+					add("  " .. label .. ": (fungsi tidak ada)")
+					return
+				end
+				local tries = { { pos }, { pos.X, pos.Z }, { tbl, pos } }
+				for i, args in ipairs(tries) do
+					local ok, r = pcall(tbl[fn], table.unpack(args))
+					if ok then
+						add("  " .. label .. " (cara " .. i .. "): " .. desc(r, 2))
+						return
+					elseif i == #tries then
+						add("  " .. label .. ": error di semua cara (" .. tostring(r) .. ")")
+					end
+				end
+			end
+			local W, R = getMod("WorldConfig"), getMod("RootData")
+			if type(W) == "table" then
+				try("WorldConfig.zoneAt", W, "zoneAt")
+				try("WorldConfig.inGloam", W, "inGloam")
+				try("WorldConfig.inWild", W, "inWild")
+				try("WorldConfig.inLongHall", W, "inLongHall")
+				try("WorldConfig.inPlayArea", W, "inPlayArea")
+				lim = 40
+				add("  WorldConfig.ZONES: " .. desc(W.ZONES, 3))
+				lim = 8
+			else
+				add("  Modul WorldConfig tidak ditemukan / gagal dimuat")
+			end
+			if type(R) == "table" then
+				try("RootData.placeAt", R, "placeAt")
+				lim = 60
+				add("  RootData.PLACES: " .. desc(R.PLACES, 3))
+				add("  RootData.PLACE: " .. desc(R.PLACE, 2))
+				lim = 8
+			else
+				add("  Modul RootData tidak ditemukan / gagal dimuat")
+			end
+			-- cadangan: atribut Zone pada jamur di sekitar (contoh di data Anda: Meadow, Hollow)
+			local tally, nearest, nd = {}, nil, math.huge
+			for _, m in ipairs(workspace:GetDescendants()) do
+				maybeYield()
+				if m:IsA("Model") then
+					local z = m:GetAttribute("Zone")
+					if type(z) == "string" then
+						local okp, pv = pcall(function() return (m :: Model):GetPivot().Position end)
+						if okp then
+							local d = (pv - pos).Magnitude
+							if d <= 300 then tally[z] = (tally[z] or 0) + 1 end
+							if d < nd then
+								nd, nearest = d, z
+							end
+						end
+					end
+				end
+			end
+			local tl = {}
+			for z, c in pairs(tally) do tl[#tl + 1] = z .. "=" .. c end
+			add("  Zona jamur terdekat: " .. (nearest and (nearest .. " (" .. math.floor(nd) .. " st)") or "-")
+				.. " | dalam 300 st: " .. (#tl > 0 and table.concat(tl, ", ") or "-"))
+		end)
+		if not okZ then add("  (bagian 5b error: " .. tostring(errZ) .. ")") end
+
 		-- ---------- KESIMPULAN ----------
 		local hint = withEv > 0 or #groups > 0 or #rsHits > 0
 		local verdict, col
@@ -9278,7 +9683,7 @@ xpcall(function()
 		add("KESIMPULAN: " .. verdict)
 
 		lastReport = table.concat(lines, "\n")
-		setStatus(verdict .. "\n" .. stLine, col)
+		setStatus(verdict .. "\n" .. stLine .. (locLine ~= "" and ("\n" .. locLine) or ""), col)
 		print(lastReport)
 		if writefile then
 			pcall(function()
@@ -9316,6 +9721,217 @@ xpcall(function()
 			toast("Executor tidak bisa menyalin; lihat file rarity_scan_" .. tostring(game.GameId) .. ".txt")
 		end
 	end)
+	-- ---------- [PATCH] LABEL DAERAH: selalu tampil, bisa digeser, ada tombol ✕ ----------
+	-- Nama daerah dibaca dari fungsi bawaan game (WorldConfig.zoneAt / RootData.placeAt) berdasarkan posisimu.
+	-- Kalau fungsi itu tidak memberi nama, dipakai cadangan: atribut Zone pada jamur terdekat (diberi tanda "perkiraan").
+	do
+		local HttpSvc = game:GetService("HttpService")
+		local zpath = "zone_label.json"
+		local Z: any = { W = nil, R = nil, loaded = false, zCall = nil, pCall = nil, hidden = false, fx = nil, fy = nil, fbAt = 0, fbName = nil }
+		do
+			local d = settings.load(zpath)
+			if type(d) == "table" then
+				if type(d.fx) == "number" then Z.fx = d.fx end
+				if type(d.fy) == "number" then Z.fy = d.fy end
+				Z.hidden = d.v == 2 and d.hidden == true -- status lama (v1) diabaikan supaya label tampil lagi
+			end
+		end
+
+		-- Label daerah SEKARANG menyatu di pop-up item (pin.setZone): satu UI, tidak terpisah lagi.
+		local zoneL: any = { Text = "📍 Memuat..." }
+		local placeL: any = { Text = "" }
+		local frame: any = { Visible = not Z.hidden }
+		Z.fit = function()
+			local P: any = settings.pin
+			if not (P and P.setZone) then return end
+			P.setZone(zoneL.Text, placeL.Text)
+		end
+
+		-- tombol tampil/sembunyi di kartu Config
+		local zoneTog = new("TextButton", {
+			Position = UDim2.fromOffset(14, 150),
+			Size = UDim2.new(1, -28, 0, 28),
+			BackgroundColor3 = T.bg,
+			Text = "",
+			TextColor3 = T.sub,
+			Font = Enum.Font.GothamMedium,
+			TextSize = 12,
+			AutoButtonColor = false,
+			BorderSizePixel = 0,
+		}, card)
+		round(zoneTog, 8)
+		stroke(zoneTog, T.stroke, 1, 0.3)
+		local function refreshTog()
+			zoneTog.Text = Z.hidden and "📍 Pop-up Pin + Daerah: SEMBUNYI (klik = tampil)" or "📍 Pop-up Pin + Daerah: TAMPIL (klik = sembunyi)"
+		end
+		refreshTog()
+
+		-- hanya status tampil/sembunyi yang disimpan (posisi & ukuran ikut pop-up item)
+		local function saveZ()
+			pcall(function()
+				settings.save(zpath, HttpSvc:JSONEncode({ hidden = Z.hidden, v = 2 }))
+			end)
+		end
+		settings.flushers["zone_label"] = saveZ
+
+		-- X luar & tombol Config sama-sama membuka/menutup pop-up gabungan
+		local P0: any = settings.pin
+		if P0 then
+			P0.onClosed = function(v: boolean)
+				Z.hidden = v
+				frame.Visible = not v
+				refreshTog()
+				saveZ()
+			end
+			P0.setClosed(Z.hidden, true)
+		else
+			warn("R4MEN: pop-up pin tidak ditemukan (label daerah tidak bisa ditempel)")
+		end
+		Z.fit()
+		zoneTog.MouseButton1Click:Connect(function()
+			local P: any = settings.pin
+			if P then P.setClosed(not P.closed) end
+		end)
+
+
+		-- ---------- membaca nama daerah ----------
+		task.spawn(function()
+			local function getMod(nm: string): any
+				for _, d in ipairs(ReplicatedStorage:GetDescendants()) do
+					if d:IsA("ModuleScript") and d.Name == nm then
+						local done, res = false, nil
+						task.spawn(function()
+							local ok, r = pcall(require, d)
+							if ok then res = r end
+							done = true
+						end)
+						local t0 = os.clock()
+						while not done and os.clock() - t0 < 3 do task.wait() end
+						return res
+					end
+				end
+				return nil
+			end
+			Z.W = getMod("WorldConfig")
+			Z.R = getMod("RootData")
+			Z.loaded = true
+		end)
+
+		local NAME_KEYS = { "name", "Name", "title", "Title", "label", "Label", "zone", "Zone", "place", "Place", "id", "Id", "key" }
+		local function nameOf(r: any, tbl: any): string?
+			if type(r) == "string" and r ~= "" then
+				-- kalau hasilnya kunci di tabel ZONES yang punya nama tampilan, pakai itu
+				local e = (type(tbl) == "table" and type(tbl.ZONES) == "table") and tbl.ZONES[r] or nil
+				if type(e) == "table" then
+					for _, k in ipairs({ "name", "Name", "title", "Title", "label", "Label" }) do
+						if type(e[k]) == "string" and e[k] ~= "" then return e[k] end
+					end
+				end
+				return r
+			elseif type(r) == "table" then
+				for _, k in ipairs(NAME_KEYS) do
+					if type(r[k]) == "string" and r[k] ~= "" then return r[k] end
+				end
+				if type(r[1]) == "string" then return r[1] end
+			elseif type(r) == "number" and type(tbl) == "table" and type(tbl.ZONES) == "table" then
+				local e = tbl.ZONES[r]
+				if e ~= nil then return nameOf(e, nil) end
+			end
+			return nil
+		end
+
+		local function query(tbl: any, fn: string, pos: Vector3, memo: string): string?
+			if type(tbl) ~= "table" or type(tbl[fn]) ~= "function" then return nil end
+			local f = tbl[fn]
+			local variants = {
+				function() return f(pos) end,
+				function() return f(pos.X, pos.Z) end,
+				function() return f(tbl, pos) end,
+			}
+			local order = {}
+			if Z[memo] then order[1] = Z[memo] end
+			for i = 1, #variants do
+				if i ~= Z[memo] then order[#order + 1] = i end
+			end
+			for _, i in ipairs(order) do
+				local ok, r = pcall(variants[i])
+				if ok then
+					local n = nameOf(r, tbl)
+					if n then
+						Z[memo] = i
+						return n
+					end
+				end
+			end
+			return nil
+		end
+
+		-- cadangan: zona jamur terdekat (hanya bila fungsi game tidak memberi nama)
+		local function fallbackZone(pos: Vector3): string?
+			local mf = workspace:FindFirstChild("Mushrooms")
+			if not mf then return nil end
+			local best, bd = nil, 250
+			local function visit(inst: Instance, depth: number)
+				for _, m in ipairs(inst:GetChildren()) do
+					if m:IsA("Model") then
+						local z = m:GetAttribute("Zone")
+						if type(z) == "string" then
+							local okp, pv = pcall(function() return (m :: Model):GetPivot().Position end)
+							if okp then
+								local d = (pv - pos).Magnitude
+								if d < bd then bd, best = d, z end
+							end
+						end
+					elseif depth < 2 and (m:IsA("Folder")) then
+						visit(m, depth + 1)
+					end
+				end
+			end
+			visit(mf, 1)
+			return best
+		end
+
+		local function fmt(sv: string): string
+			return (string.gsub(sv, "(%l)(%u)", "%1 %2"))
+		end
+
+		local acc, fbBusy = 0, false
+		track(RunService.Heartbeat:Connect(function(dt)
+			if unloaded then return end
+			acc += dt
+			if acc < 0.4 or Z.hidden or not frame.Visible or not Z.loaded then return end
+			acc = 0
+			local hrp = getRoot()
+			if not hrp then return end
+			local pos = hrp.Position
+			local okQ = pcall(function()
+				local zn = query(Z.W, "zoneAt", pos, "zCall")
+				local pl = query(Z.R, "placeAt", pos, "pCall")
+				local tag = ""
+				if not zn then
+					if not fbBusy and os.clock() - Z.fbAt > 3 then
+						fbBusy = true
+						Z.fbAt = os.clock()
+						task.spawn(function()
+							local okF, nm = pcall(fallbackZone, pos)
+							Z.fbName = okF and nm or nil
+							fbBusy = false
+						end)
+					end
+					zn = Z.fbName
+					if zn then tag = " (perkiraan)" end
+				end
+				zoneL.Text = "📍 " .. (zn and (fmt(zn) .. tag) or "Wilayah tidak dikenal")
+				placeL.Text = pl and ("🏞 " .. fmt(pl)) or ""
+				Z.fit()
+			end)
+			if not okQ then
+				zoneL.Text = "📍 (gagal membaca lokasi)"
+				placeL.Text = ""
+				Z.fit()
+			end
+		end))
+	end
 end, warn)
 
 -- =====================================================
@@ -9342,7 +9958,7 @@ local function unload()
 	end
 	table.clear(conns)
 
-	for _, n in ipairs({ "UU_ITEMS", "UU_NPC", "UU_RARITY" }) do
+	for _, n in ipairs({ "UU_ITEMS", "UU_NPC", "UU_RARITY", "UU_ZONE" }) do
 		local f = playerGui:FindFirstChild(n)
 		if f then f:Destroy() end
 	end
