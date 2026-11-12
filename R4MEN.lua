@@ -1,3 +1,58 @@
+--[=[
+==============================================================================
+ PANDUAN STRUKTUR SCRIPT  --  R4MEN Universal (BACA INI DULU sebelum mengubah)
+==============================================================================
+ File ini = satu string besar SRC (di bawah) yang dijalankan lewat loadstring dan
+ juga disalin ke R4MEN_auto.lua. Semua kode panel ada DI DALAM string SRC.
+ JANGAN menulis urutan karakter penutup string SRC (kurung siku, dua sama dengan,
+ kurung siku) di komentar atau kode apa pun di dalam SRC: itu memotong script.
+ Cari bagian dengan pencarian teks (nomor baris cepat usang), pakai judul di bawah.
+
+ SUSUNAN TAB (7 tab, urutan sidebar = daftar di  for i, name in ipairs({...})
+ tepat di bawah "GUI: SIDEBAR TAB & HALAMAN"):
+
+  1. Movement : Speed, Jump Power, Infinite Jump, Follow Player (+ slider Jarak Berhenti)
+  2. Physics  : Float, Noclip, WalkFling
+  3. Visual   : Fullbright (+ slider Kecerahan, Jam Dunia), Hilangkan Kabut, FOV, Free Cam
+  4. ESP      : ESP Chams (pemain)  ->  ESP NPC / Hewan  ->  Loot & Item ESP (+ pop-up Pin)
+  5. Teleport : TP ke Pemain (daftar pemain), Waypoint, Pindah Server (Hop)
+  6. Mini Game: Auto Cut (Mushrooming) / Auto Minigame universal -> Catur -> Scan Rarity -> Rekam Minigame + Auto Minigame -> Hasil
+  7. Settings : Keybind, Ukuran Panel, Config (simpan/muat + toggle pop-up Pin/Daerah),
+                Utilitas (Anti-AFK), Matikan Semua Fitur, Unload
+
+ CARA MEMINDAHKAN FITUR KE TAB LAIN
+  * Halaman dibuat lewat newPage("Nama") dan disimpan di tabel pages["Nama"].
+    Variabel: movementPage, physicsPage, teleportPage, settingsPage (configPage = settingsPage),
+    pages.ESP, pages["Mini Game"]. Halaman Visual dibuat di blok "HALAMAN VISUAL".
+  * Untuk memindah fitur: ganti halaman induk pada pemanggilan addToggleCard / addSliderCard /
+    makeCard / sectionLabel, lalu atur LayoutOrder (angka kecil = di atas).
+  * Menambah/menghapus tab: ubah newPage(...) DAN daftar nama di loop sidebar.
+  * Urutan LayoutOrder yang dipakai: Settings = Keybind 0-9, Config 20-60 (slot save 30+i),
+    Utilitas 200, tombol Matikan Semua 300, Unload 301-302.
+    Mini Game = Auto Minigame universal 0-1, Auto Cut 2, Catur 9-10, Scan 100-106. ESP = ESP Chams -2/-1, NPC 1-2, Item 4-5.
+    Visual = Pencahayaan 0-4, Kamera 5-7.
+
+ PETA BAGIAN (judul komentar "-- GUI: ..." di dalam script)
+  AUTO-RERUN        : antre queue_on_teleport supaya script jalan lagi setelah pindah server
+  STATE             : tabel settings, state (toggle), values (slider)
+  PENYIMPANAN       : settings.path / save / load / flush (folder R4MEN, cadangan .bak)
+  SPEED, INFINITE JUMP, FLOAT, NOCLIP & FLING, EFEK TOGGLE & RESET ALL (effects, setFeature)
+  WAYPOINT & TP TARGET, THEME & HELPER (T, new, round, stroke, text, tween, hover)
+  ESP CHAMS, FREE CAM, KERANGKA UTAMA (header, bubble, toast), SIDEBAR TAB & HALAMAN
+  GRIP RESIZE, KOMPONEN (makeCard, addToggleCard, addSliderCard, makeButton)
+  HALAMAN MOVEMENT & PHYSICS (+ FOLLOW PLAYER), HALAMAN VISUAL, ESP NPC / HEWAN,
+  HALAMAN TELEPORT & ITEM DETECTOR, DATA RARITY, ITEM ESP (runScanner, pop-up Pin, SERVER HOP),
+  waypoint UI, HALAMAN SETTINGS (keybind, ukuran, Anti-AFK), CONFIG, HALAMAN MINI GAME (Auto Cut + Auto Minigame universal), GUI: CATUR (jendela catur + AI + saran langkah),
+  PENYIMPANAN FILE LOKAL, TAB SCAN (Rekam Minigame: capture/classifier/pattern evidence), KEYBIND, LABEL DAERAH, UNLOAD, START.
+
+ ATURAN PENTING
+  * Luau membatasi 200 variabel local per chunk. Bagian baru HARUS dibungkus do ... end
+    atau function agar tidak menambah local di level atas.
+  * Fitur toggle baru: tambahkan kunci di state, entri di effects, lalu addToggleCard.
+  * Nilai slider baru: tambahkan di values + sliderSetters agar ikut tersimpan.
+  * Anti-AFK dikecualikan dari "Matikan Semua"; fitur lain mati saat script dimulai.
+==============================================================================
+]=]
 local SRC = [==[
 -- ===== AUTO-RERUN: HANYA DI GAME YANG SAMA =====
 do
@@ -46,7 +101,7 @@ do
 	env.__R4MEN_UNLOAD = nil
 end
 
-for _, n in ipairs({ "UniversalUrbee", "ControlPanel", "UU_ITEMS", "UU_NPC", "UU_RARITY", "UU_ZONE" }) do
+for _, n in ipairs({ "UniversalUrbee", "ControlPanel", "UU_ITEMS", "UU_NPC", "UU_RARITY", "UU_ZONE", "UU_CHESS" }) do
 	local old = playerGui:FindFirstChild(n)
 	if old then old:Destroy() end
 end
@@ -57,6 +112,12 @@ end
 local settings: { [string]: any } = {
 	saveFolder = "R4MEN", -- nama folder penyimpanan di dalam folder workspace executor (boleh diganti)
 	seedReplicated = false, -- [FIX] jangan seed nama dari ReplicatedStorage (banyak sampah)
+	nameDetect = true, -- [SCAN+] true = item TANPA Prompt/Klik/Tool (kunci, linggis, senter, dll) ikut terdeteksi lewat NAMA modelnya. false = cara lama
+	manyThreshold = 60, -- [SCAN+] nama item tanpa folder yang jumlahnya >= angka ini dimasukkan ke grup "Banyak / Dekorasi". 0 = fitur dimatikan
+	groupHideMany = true, -- [SCAN+] true = grup "Banyak / Dekorasi" tidak tampil di daftar utama (hanya lewat dropdown Grup atau pencarian). false = ikut tampil
+	groupAlias = {}, -- [SCAN+] ganti judul grup dari nama folder game, mis. { WpnPrimary = "Senjata Utama" }
+	itemGroups = {}, -- [SCAN+] grup buatan sendiri berdasar kata, mis. { Granat = { "grenade", "smoke", "c4" } }
+	itemWords = {}, -- [SCAN+] kata tambahan untuk deteksi nama, mis. { "wayang", "topeng", "dupa" } (huruf kecil, satu kata). Masuk grup "Item Lainnya"
 	clickTp = true, -- klik/tap label ESP (item & NPC) = teleport ke sana. Ubah ke false untuk mematikan
 	mushroomOnly = true, -- true = daftar & ESP item HANYA untuk jamur yang ada di data rarity game (pisau/alat/pintu tidak ikut). false = semua yang terdeteksi
 	dotsSelectedOnly = true, -- true = titik biru HANYA untuk item yang dicentang (lampu/pintu dll tidak ditandai). false = titik untuk semua yang terdeteksi
@@ -66,12 +127,22 @@ local settings: { [string]: any } = {
 	followFallbackNearest = false, -- Follow keybind: kalau tidak ada target/teman, true = ikuti pemain TERDEKAT siapa pun (hati-hati di server ramai)
 	followCatchup = 0, -- Follow Player: kalau > 0, otomatis teleport ke target bila jarak melebihi angka ini (studs). 0 = mati (jalan kaki saja)
 	toggleKey = Enum.KeyCode.K,
+	miniGameIds = {}, -- opsional: GameId Mushrooming untuk pengecekan paling pasti, mis. { 123456789 }
+	autoMiniGameIds = {}, -- GameId game yang punya Lockpick / Safe Dial. Kartu "Auto Minigame" HANYA muncul di game ini. Isi mis. { 123456789 } (lihat GameId di Scan / print(game.GameId))
 	saveKey = Enum.KeyCode.LeftBracket,
 	tpKey = Enum.KeyCode.RightBracket,
 	cycleKey = Enum.KeyCode.Quote,
+	recordMiniKey = Enum.KeyCode.F, -- Rekam Minigame: ON / OFF (bisa diganti di Settings)
 	floatUpKey = Enum.KeyCode.PageUp,
 	floatDownKey = Enum.KeyCode.PageDown,
 }
+
+-- Auto Cut (Jamur) hanya untuk Mushrooming: dikenali lewat GameId ATAU modul khas game-nya.
+-- Perekam Minigame & tab Mini Game tetap ada di semua game.
+settings.autoMiniOk = table.find(settings.autoMiniGameIds, game.GameId) ~= nil -- Auto Minigame (Lockpick/Safe Dial): khusus GameId di autoMiniGameIds
+settings.miniGameOk = table.find(settings.miniGameIds, game.GameId) ~= nil
+	or (ReplicatedStorage:FindFirstChild("WorldConfig", true) ~= nil
+		and ReplicatedStorage:FindFirstChild("RootData", true) ~= nil)
 
 -- =====================================================
 -- PENYIMPANAN TERPUSAT (path seragam, cadangan .bak, flush paksa)
@@ -154,12 +225,14 @@ local state: { [string]: boolean } = {
 	walkFling = false,
 	esp = false,
 	freecam = false,
-	antiAfk = true, -- aktif sejak awal; bisa dimatikan lewat tombol di tab Visual
+	antiAfk = true, -- aktif sejak awal; bisa dimatikan lewat tombol di tab Settings
 	fullbright = false,
 	noFog = false,
 	fov = false,
 	follow = false,
 	autoCut = false, -- Mini Game: Auto Cut jamur (mati saat script dijalankan)
+	autoMinigame = false, -- Mini Game: Auto Minigame universal (mati saat script dijalankan)
+	chess = false, -- Mini Game: saran langkah catur dari papan in-game (mati saat script dijalankan)
 }
 
 local values: { [string]: number } = {
@@ -172,6 +245,7 @@ local values: { [string]: number } = {
 	fov = 70,
 	npcDist = 50000,
 	cutLead = 5, -- Mini Game: LEAD dalam milidetik (5 = 0.005 dtk)
+	chessTime = 3, -- Mini Game: batas waktu berpikir saran catur (detik)
 }
 
 local targetUsername = ""
@@ -662,6 +736,8 @@ local effects: { [string]: (boolean) -> () } = {
 	freecam = function(on) setFreecam(on) end,
 	antiAfk = function() end,
 	autoCut = function() end, -- diisi blok GUI Mini Game
+	autoMinigame = function() end, -- diisi blok GUI Auto Minigame universal
+	chess = function() end, -- diisi blok GUI Catur
 	fullbright = function(on) ext.light(on) end,
 	noFog = function(on) ext.fog(on) end,
 	fov = function(on) ext.fov(on) end,
@@ -698,6 +774,7 @@ local function disableAllFeatures()
 	ext.fog(false)
 	ext.fov(false)
 	clearMarkings()
+	if effects.scanRec then pcall(effects.scanRec, false) end
 	refreshActive()
 end
 
@@ -972,11 +1049,27 @@ type EspObj = {
 	bb: BillboardGui,
 	name: TextLabel,
 	info: TextLabel,
+	hum: Humanoid?,
+	root: Instance?,
+	head: Instance?,
+	alive: boolean,
+	kids: number,
+	t: number,
 }
 
 local espFolder: Folder? = nil
 local espObjs: { [Player]: EspObj } = {}
 local espAccum = 0
+
+local function ensureEspFolder(): Folder
+	-- Folder ini khusus BillboardGui. Highlight pemain dipasang langsung ke Model
+	-- karakter agar mengikuti lifecycle karakter/respawn secara langsung.
+	if not (espFolder and espFolder.Parent == workspace) then
+		if espFolder then espFolder:Destroy() end
+		espFolder = new("Folder", { Name = "UU_ESP" }, workspace)
+	end
+	return espFolder
+end
 
 local function removeEsp(p: Player)
 	local o = espObjs[p]
@@ -997,30 +1090,43 @@ local function clearEsp()
 	end
 end
 
+-- [FIX] Pembuat Highlight terpisah supaya bisa dibuat ulang saat musuh mati/respawn.
+-- Highlight bisa berhenti tergambar (padahal objeknya masih ada) kalau game mengganti
+-- bagian tubuh / me-reset Humanoid pada model yang sama; membuatnya ulang memperbaikinya.
+local function makeEspHighlight(char: Model, folder: Instance): Highlight
+	return new("Highlight", {
+		Name = "UU_PlayerHighlight",
+		Adornee = char,
+		Enabled = true,
+		DepthMode = Enum.HighlightDepthMode.AlwaysOnTop,
+		FillColor = Color3.fromRGB(80, 200, 255),
+		OutlineColor = Color3.fromRGB(80, 200, 255),
+		FillTransparency = 0.45,
+		OutlineTransparency = 0.05,
+	}, folder)
+end
+
 local function buildEsp(p: Player, char: Model)
+	if not char or not char:IsDescendantOf(workspace) then return end
+
 	local head = char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
 	if not head then return end
 
-	if not (espFolder and espFolder.Parent) then
-		espFolder = new("Folder", { Name = "UU_ESP" }, workspace.CurrentCamera or workspace)
-	end
+	local folder = ensureEspFolder()
 
-	local hl = new("Highlight", {
-		Adornee = char,
-		DepthMode = Enum.HighlightDepthMode.AlwaysOnTop,
-		FillColor = ESP_SOFT_WHITE,
-		OutlineColor = ESP_SOFT_WHITE,
-		FillTransparency = 0.6,
-		OutlineTransparency = 0.15,
-	}, espFolder)
+	-- Penting: Highlight menjadi child karakter, bukan child Folder ESP bersama.
+	-- Dengan begitu objek Highlight ikut hilang saat karakter lama dibuang dan
+	-- dibuat ulang pada karakter baru setelah respawn.
+	local hl = makeEspHighlight(char, folder)
 
 	local bb = new("BillboardGui", {
+		Name = "UU_PlayerBillboard",
 		Adornee = head,
 		AlwaysOnTop = true,
 		Size = UDim2.fromOffset(170, 32),
 		StudsOffsetWorldSpace = Vector3.new(0, 2.4, 0),
 		MaxDistance = math.huge,
-	}, espFolder)
+	}, folder)
 
 	local nameLbl = text(bb, {
 		Size = UDim2.new(1, 0, 0.5, 0),
@@ -1042,7 +1148,12 @@ local function buildEsp(p: Player, char: Model)
 		RichText = true,
 	})
 
-	espObjs[p] = { char = char, hl = hl, bb = bb, name = nameLbl, info = infoLbl }
+	local hum0 = char:FindFirstChildOfClass("Humanoid")
+	espObjs[p] = {
+		char = char, hl = hl, bb = bb, name = nameLbl, info = infoLbl,
+		hum = hum0, root = char:FindFirstChild("HumanoidRootPart"), head = head,
+		alive = hum0 ~= nil and hum0.Health > 0, kids = #char:GetChildren(), t = os.clock(),
+	}
 end
 
 local function updateEsp(dt: number)
@@ -1050,8 +1161,12 @@ local function updateEsp(dt: number)
 	if espAccum < 0.1 then return end
 	espAccum = 0
 
-	local teamsObj = game:GetService("Teams")
-	local hasTeams = #teamsObj:GetChildren() > 0
+	-- Jika folder ESP hilang/terlepas, bersihkan referensi lama agar semua pemain
+	-- dibuat ulang. Ini juga mencegah ESP tertinggal pada CurrentCamera lama.
+	if espFolder and espFolder.Parent ~= workspace then
+		clearEsp()
+	end
+
 	local myRoot = getRoot()
 
 	for _, p in ipairs(Players:GetPlayers()) do
@@ -1059,19 +1174,63 @@ local function updateEsp(dt: number)
 			local char = p.Character
 			local o = espObjs[p]
 
-			if o and (o.char ~= char or not o.char.Parent) then
+			-- Respawn / streaming: buang ESP lama ketika model karakter berubah atau
+			-- karakter sementara tidak berada di Workspace.
+			if o and (o.char ~= char or not char or not char:IsDescendantOf(workspace)) then
 				removeEsp(p)
 				o = nil
 			end
-			if char and not o then
+
+			local head = char and (char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart"))
+			-- Bangun ulang jika Highlight/Billboard dihancurkan game atau tidak lagi
+			-- terhubung ke folder ESP/karakter yang benar.
+			if o and (
+				 not o.hl or o.hl.Parent ~= espFolder
+				 or not o.bb or o.bb.Parent ~= espFolder
+				 or o.hl.Adornee ~= char
+				 or not head or o.bb.Adornee ~= head
+				 or not o.name or o.name.Parent ~= o.bb
+				 or not o.info or o.info.Parent ~= o.bb
+			) then
+				removeEsp(p)
+				o = nil
+			end
+
+			if char and char:IsDescendantOf(workspace) and not o then
 				buildEsp(p, char)
 				o = espObjs[p]
 			end
 
+			-- [FIX] Siluet hilang setelah musuh mati lalu hidup lagi: buat ulang Highlight
+			-- bila Humanoid/Head/Root berganti, nyawa naik dari 0, jumlah bagian karakter
+			-- berubah, atau tiap 3 detik sebagai pengaman.
+			if o and char then
+				local hum0 = char:FindFirstChildOfClass("Humanoid")
+				local root0 = char:FindFirstChild("HumanoidRootPart")
+				local alive0 = hum0 ~= nil and hum0.Health > 0
+				local kids0 = #char:GetChildren()
+				local now = os.clock()
+				local needs = o.hum ~= hum0 or o.root ~= root0 or o.head ~= head
+					or (alive0 and not o.alive) or kids0 ~= o.kids or now - o.t > 3
+				o.alive = alive0
+				if needs then
+					local old = o.hl
+					o.hl = makeEspHighlight(char, ensureEspFolder())
+					if old then old:Destroy() end
+					o.hum, o.root, o.head, o.kids, o.t = hum0, root0, head, kids0, now
+				end
+			end
+
 			if o and char then
 				local col = Color3.fromRGB(80, 200, 255) -- BIRU MUDA = PEMAIN
+				-- Paksa properti inti tetap benar jika diubah oleh game lain.
+				o.hl.Enabled = true
+				o.hl.Adornee = char
+				o.hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
 				o.hl.FillColor = col
 				o.hl.OutlineColor = col
+				o.hl.FillTransparency = 0.45
+				o.hl.OutlineTransparency = 0.05
 				o.name.Text = "[P] " .. p.Name
 				o.name.TextColor3 = col
 
@@ -1101,6 +1260,19 @@ end
 setEsp = function(on: boolean)
 	if not on then
 		clearEsp()
+	else
+		-- Diagnosis: Roblox renders up to 255 Highlight instances per client.
+		-- Warn when the game itself is already close to filling the available slots.
+		task.defer(function()
+			if unloaded or not state.esp then return end
+			local count = 0
+			for _, inst in ipairs(game:GetDescendants()) do
+				if inst:IsA("Highlight") then count += 1 end
+			end
+			if count >= 245 then
+				toast("Peringatan: " .. tostring(count) .. "/255 Highlight sudah ada di game. Siluet bisa dibatasi oleh slot Roblox.")
+			end
+		end)
 	end
 end
 
@@ -1110,9 +1282,71 @@ track(RunService.Heartbeat:Connect(function(dt)
 	end
 end))
 
-track(Players.PlayerRemoving:Connect(function(p)
-	removeEsp(p)
-end))
+-- Lifecycle khusus pemain lain: CharacterAdded sering terpanggil sebelum seluruh rig
+-- selesai masuk Workspace. Tunggu sampai model, Head/HRP, dan Humanoid siap, lalu
+-- buat ulang Highlight pada folder Workspace yang stabil (Adornee = karakter baru).
+do
+	local characterHooks: { [Player]: { RBXScriptConnection } } = {}
+
+	local function rebuildAfterRespawn(p: Player, char: Model)
+		removeEsp(p) -- buang Billboard/Highlight milik karakter sebelum respawn
+		task.spawn(function()
+			for _ = 1, 100 do -- maksimum 10 detik menunggu rig selesai dimuat
+				if unloaded or not state.esp or p.Parent ~= Players or p.Character ~= char then
+					return
+				end
+				if char:IsDescendantOf(workspace) then
+					local head = char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
+					local hum = char:FindFirstChildOfClass("Humanoid")
+					local root = char:FindFirstChild("HumanoidRootPart")
+					if head and hum and root then
+						local existing = espObjs[p]
+						if existing and existing.char ~= char then
+							removeEsp(p)
+							existing = nil
+						end
+						if not existing then buildEsp(p, char) end
+						return
+					end
+				end
+				task.wait(0.1)
+			end
+			warn("R4MEN ESP: karakter " .. p.Name .. " belum siap setelah respawn; update loop akan mencoba lagi")
+		end)
+	end
+
+	local function bindPlayer(p: Player)
+		if p == player or characterHooks[p] then return end
+		local hooks = {}
+		table.insert(hooks, p.CharacterRemoving:Connect(function(char)
+			local o = espObjs[p]
+			if o and o.char == char then removeEsp(p) end
+		end))
+		table.insert(hooks, p.CharacterAdded:Connect(function(char)
+			if state.esp and not unloaded then
+				rebuildAfterRespawn(p, char)
+			end
+		end))
+		characterHooks[p] = hooks
+		for _, c in ipairs(hooks) do track(c) end
+		if p.Character and state.esp then
+			rebuildAfterRespawn(p, p.Character)
+		end
+	end
+
+	local function unbindPlayer(p: Player)
+		local hooks = characterHooks[p]
+		if hooks then
+			for _, c in ipairs(hooks) do c:Disconnect() end
+			characterHooks[p] = nil
+		end
+		removeEsp(p)
+	end
+
+	for _, p in ipairs(Players:GetPlayers()) do bindPlayer(p) end
+	track(Players.PlayerAdded:Connect(bindPlayer))
+	track(Players.PlayerRemoving:Connect(unbindPlayer))
+end
 
 -- =====================================================
 -- FREE CAM
@@ -1770,12 +2004,12 @@ end
 local movementPage = newPage("Movement")
 local physicsPage = newPage("Physics")
 local teleportPage = newPage("Teleport")
-newPage("Mini Game") -- halaman Mini Game (Auto Cut); diisi blok GUI Mini Game
+newPage("Mini Game") -- halaman Mini Game (Auto Cut + Scan Rarity + Rekam Minigame); diisi blok GUI Mini Game & blok TAB SCAN
 newPage("ESP") -- halaman ESP sendiri (ESP NPC/Hewan + Loot & Item ESP); diakses lewat pages.ESP
-local configPage = newPage("Config")
 local settingsPage = newPage("Settings")
+local configPage = settingsPage -- Config tidak punya tab sendiri: kontennya ada di tab Settings (bagian "Config")
 
-for i, name in ipairs({ "Movement", "Physics", "Visual", "ESP", "Teleport", "Mini Game", "Config", "Settings" }) do
+for i, name in ipairs({ "Movement", "Physics", "Visual", "ESP", "Teleport", "Mini Game", "Settings" }) do
 	local b = new("TextButton", {
 		LayoutOrder = i,
 		Size = UDim2.new(1, 0, 0, 38),
@@ -2552,16 +2786,18 @@ do
 end
 addSliderCard(movementPage, 6, "Jarak Berhenti", "Berhenti saat sudah sedekat ini ke target (studs)", "followDist", 2, 30, 100, true)
 
-sectionLabel(physicsPage, 0, "Fisika & visual")
+sectionLabel(physicsPage, 0, "Fisika")
 local floatDesc = addToggleCard(physicsPage, 1, "Float", "", "float")
 addToggleCard(physicsPage, 2, "Noclip", "Tembus tembok dan objek.", "noclip")
 addToggleCard(physicsPage, 3, "WalkFling",
 	"Otomatis tembus tembok. Pemain lain terpental saat menyentuhmu.", "walkFling")
-addToggleCard(physicsPage, 4, "ESP Chams",
-	"Siluet pemain tembus tembok + username, darah, jarak. Warna ikut tim; tanpa tim: putih lembut.", "esp")
+-- ESP Chams (pemain) ada di tab ESP, paling atas (LayoutOrder negatif supaya selalu di atas ESP NPC/Hewan & Item)
+sectionLabel(pages.ESP, -2, "ESP Pemain")
+addToggleCard(pages.ESP, -1, "ESP Chams",
+	"Siluet pemain tembus tembok + username, darah, jarak. Warna biru muda = pemain.", "esp")
 
 -- =====================================================
--- GUI: HALAMAN VISUAL (Fullbright, FOV, Anti-AFK) -- blok 1
+-- GUI: HALAMAN VISUAL (Fullbright, Kabut, FOV, Free Cam) -- blok 1
 -- Dibungkus do...end supaya local-nya tidak menghabiskan jatah 200 local.
 -- =====================================================
 do
@@ -2575,12 +2811,11 @@ do
 
 	sectionLabel(visualPage, 5, "Kamera")
 	addSliderCard(visualPage, 6, "FOV", "Bawaan Roblox: 70", "fov", 30, 120, 120)
+	addSliderCard(visualPage, 7, "Free Cam", "WASD + E/Q, Shift cepat, klik kanan = lihat", "freecam", 5, 600, 1000)
 
 	-- ESP NPC / Hewan ada di tab ESP (satu tempat dengan scan barang) -- lihat blok 2
 
-	sectionLabel(visualPage, 10, "Utilitas")
-	addToggleCard(visualPage, 11, "Anti-AFK", "Mencegah kick karena diam 20 menit. Aktif sejak awal.", "antiAfk")
-	switches.antiAfk.Set(true)
+	-- Anti-AFK ada di tab Settings (bagian "Utilitas")
 
 	-- ---------- Fullbright / kabut / FOV ----------
 	local Lighting = game:GetService("Lighting")
@@ -2701,12 +2936,12 @@ end
 -- GUI: ESP NPC / HEWAN -- blok 2
 -- Pola sama dengan Item ESP: SCAN -> daftar nama unik -> centang yang mau ditandai.
 -- Pelacakan live lewat DescendantAdded/Removing; visual hanya untuk yang dipilih,
--- dalam jarak slider, dan dibatasi NPC terdekat (Highlight Roblox maks. ~31 sekaligus).
+-- dalam jarak slider, dan dibatasi NPC terdekat (batas Highlight engine kini 255 instance).
 -- =====================================================
 do
 	local NPC_COL = Color3.fromRGB(255, 176, 72)
 	local NPC_MAX = math.huge      -- tanpa batas: semua NPC terpilih dalam jarak ditandai (label nama+jarak)
-	local NPC_HL_MAX = 30          -- siluet: batas keras mesin Roblox ~31 Highlight sekaligus (sisanya tetap berlabel)
+	local NPC_HL_MAX = 30          -- batasi siluet NPC agar slot Highlight tetap hemat (sisanya tetap berlabel)
 	local NPC_ROW_LIMIT = math.huge -- tanpa batas baris daftar
 	local ROWS_PER_PASS = 30       -- baris baru dibuat bertahap (30/langkah) agar layar tidak freeze
 	local NPC_CLASS: { [string]: boolean } = { Humanoid = true, AnimationController = true }
@@ -2715,7 +2950,7 @@ do
 		groups = {}, byModel = {}, order = {}, sel = {}, rows = {}, vis = {},
 		folder = nil, addConn = nil, remConn = nil,
 		scanning = false, scanned = false, dirty = false, orderDirty = true,
-		acc = 0, acc2 = 0, interval = 0.15, cand = {}, cat = "Semua",
+		acc = 0, acc2 = 0, interval = 0.15, cand = {}, cat = "Semua", rarFilter = "Semua",
 		shown = 0, inRange = 0, selTotal = 0, base = "", err = nil, live = false,
 		setStatus = function() end, -- diisi di bagian UI
 	}
@@ -2775,6 +3010,8 @@ do
 	end
 
 	-- ---------- kategori (tebakan dari nama model + teks tombol interaksi NPC) ----------
+	local npcClassify: (Model, string) -> string
+	do -- [FIX] bungkus agar local-nya tidak menghabiskan jatah 200 local
 	local CAT_ANIMAL = { "cat", "dog", "pig", "cow", "hen", "duck", "goat", "deer", "bear", "wolf", "fox", "bird", "crow", "owl", "bat", "rat",
 		"fish", "frog", "lion", "ape", "ox", "elk", "yak", "emu", "sheep", "horse", "boar", "mouse", "snake", "tiger", "zebra", "hippo",
 		"croc", "monkey", "elephant", "giraffe", "buffalo", "rabbit", "hare", "squirrel", "turkey", "chicken", "rooster", "camel", "moose",
@@ -2827,7 +3064,7 @@ do
 		return false
 	end
 
-	local function npcClassify(m: Model, lower: string): string
+	function npcClassify(m: Model, lower: string): string
 		local toks = nameWords(m.Name)
 		local shopP, questP = false, false
 		for _, d in ipairs(m:GetDescendants()) do
@@ -2847,16 +3084,90 @@ do
 		end
 		return "Lainnya"
 	end
+	end -- [FIX] akhir pembungkus klasifikasi NPC
+
+	-- ---------- RARITY NPC: baca bukti langsung dari model/atribut lalu cocokkan ke Rarity API ----------
+	-- Nilai yang tidak cocok tetap Unknown; tidak ada rarity hasil tebakan.
+	N.resolveRarity = function(m: Instance): string?
+		local api = settings.rarityApi
+		if not api then return nil end
+		local keys = { "Rarity", "Tier", "Grade", "Quality", "Rank", "Species", "SpeciesId", "BeeId", "PetId", "Type", "Variant", "Mutation", "Sp" }
+		local function lookupValue(v: any, field: string?): string?
+			if type(v) == "number" then
+				local tierNames = api.tierNames
+				if type(tierNames) == "table" and type(tierNames[v]) == "string" then return tierNames[v] end
+				if field and string.lower(field) == "tier" and type(tierNames) == "table" and type(tierNames[tostring(v)]) == "string" then
+					return tierNames[tostring(v)]
+				end
+				return nil
+			end
+			if type(v) == "string" and v ~= "" then
+				local raw = string.gsub(v, "^%s*(.-)%s*$", "%1")
+				if raw == "" then return nil end
+				if field and string.lower(field) == "rarity" then return raw end
+				if api.get then
+					local ok, r = pcall(api.get, raw)
+					if ok and type(r) == "string" and r ~= "" then return r end
+				end
+				for _, n in ipairs(api.names or {}) do
+					if string.lower(n) == string.lower(raw) then return n end
+				end
+			end
+			return nil
+		end
+		for _, key in ipairs(keys) do
+			local ok, value = pcall(function() return m:GetAttribute(key) end)
+			if ok then
+				local r = lookupValue(value, key)
+				if r then return r end
+			end
+		end
+		local okDesc, descendants = pcall(function() return m:GetDescendants() end)
+		if okDesc then
+			local checked = 0
+			for _, d in ipairs(descendants) do
+				if checked >= 180 then break end
+				if d:IsA("ValueBase") then
+					checked += 1
+					local key = string.lower(d.Name)
+					for _, wanted in ipairs(keys) do
+						if key == string.lower(wanted) then
+							local r = lookupValue(d.Value, d.Name)
+							if r then return r end
+							break
+						end
+					end
+				end
+			end
+		end
+		if api.getAttr then
+			local ok, r = pcall(api.getAttr, m)
+			if ok and type(r) == "string" and r ~= "" then return r end
+		end
+		return lookupValue(m.Name)
+	end
+
+	N.refreshRarity = function()
+		for _, e in pairs(N.byModel) do
+			if e.model and e.model.Parent then
+				e.rarity = N.resolveRarity(e.model)
+			end
+		end
+	end
 
 	local function npcAdd(inst: Instance, tries: number)
 		local m = inst.Parent
 		if not m or not m:IsA("Model") or N.byModel[m] then return end
-		if not m:IsDescendantOf(workspace) then return end
 		if Players:GetPlayerFromCharacter(m) then return end
-		local root = npcRootOf(m :: Model)
+		-- [FIX] model yang BARU spawn sering belum masuk workspace / belum punya part saat Humanoid-nya
+		-- muncul. Dulu langsung dibuang (tanpa retry); sekarang dicoba lagi sampai ~10 detik.
+		local root: BasePart? = nil
+		if m:IsDescendantOf(workspace) then
+			root = npcRootOf(m :: Model)
+		end
 		if not root then
-			-- struktur belum lengkap (streaming) -> coba lagi sebentar lagi
-			if tries < 4 then
+			-- struktur belum lengkap (spawn / streaming) -> coba lagi sebentar lagi
+			if tries < 10 then
 				task.delay(1, function()
 					if not unloaded and inst.Parent then
 						npcAdd(inst, tries + 1)
@@ -2874,7 +3185,8 @@ do
 			N.groups[name] = g
 			N.orderDirty = true
 		end
-		local e: any = { model = m, root = root, name = name }
+		local okR, rar = pcall(N.resolveRarity, m) -- [FIX] error rarity tidak boleh membatalkan pendaftaran NPC baru
+		local e: any = { model = m, root = root, name = name, rarity = okR and rar or nil, inst = inst }
 		g.list[#g.list + 1] = e
 		e.gi = #g.list
 		N.byModel[m] = e
@@ -3003,9 +3315,31 @@ do
 		return cam and cam.CFrame.Position or nil
 	end
 
+	N.makeHl = function(e: any): Highlight
+		local hf = N.hlFolder
+		if not (hf and hf.Parent == workspace) then
+			hf = new("Folder", { Name = "UU_NPC_HL" }, workspace)
+			N.hlFolder = hf
+		end
+		return new("Highlight", {
+			Name = "UU_NpcHighlight",
+			Adornee = e.model,
+			Enabled = true,
+			DepthMode = Enum.HighlightDepthMode.AlwaysOnTop,
+			FillColor = NPC_COL,
+			OutlineColor = NPC_COL,
+			FillTransparency = 0.45,
+			OutlineTransparency = 0.1,
+		}, hf)
+	end
+
 	local function npcClearVis()
 		for e in pairs(N.vis) do
 			npcDropVis(e)
+		end
+		if N.hlFolder then
+			N.hlFolder:Destroy()
+			N.hlFolder = nil
 		end
 		if N.folder then
 			N.folder:Destroy()
@@ -3086,17 +3420,32 @@ do
 		end
 		if not v then v = npcBuildVis(e) end
 
-		if i <= NPC_HL_MAX then
-			if not v.hl then
-				v.hl = new("Highlight", {
-					Adornee = e.model,
-					DepthMode = Enum.HighlightDepthMode.AlwaysOnTop,
-					FillColor = NPC_COL,
-					OutlineColor = NPC_COL,
-					FillTransparency = 0.65,
-					OutlineTransparency = 0.2,
-				}, N.folder)
+		-- Saat ESP pemain aktif, dahulukan siluet pemain. Label NPC tetap berjalan,
+		-- tetapi Highlight NPC dilepas sementara agar tidak menghabiskan slot render.
+		local npcHighlightLimit = state.esp and 10 or NPC_HL_MAX
+		if i <= npcHighlightLimit then
+			-- [FIX] sama seperti ESP pemain: Highlight di folder Workspace, dibuat ulang bila
+			-- hilang / Adornee berubah / jumlah bagian model berubah / tiap 4 detik, properti dipaksa benar.
+			local now = os.clock()
+			local kids = #e.model:GetChildren()
+			local hl = v.hl
+			if hl and (hl.Parent ~= N.hlFolder or hl.Adornee ~= e.model or kids ~= v.kids or now - (v.t or 0) > 4) then
+				v.hl = N.makeHl(e)
+				hl:Destroy()
+				hl = v.hl
+				v.kids, v.t = kids, now
+			elseif not hl then
+				hl = N.makeHl(e)
+				v.hl = hl
+				v.kids, v.t = kids, now
 			end
+			hl.Enabled = true
+			hl.Adornee = e.model
+			hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+			hl.FillColor = NPC_COL
+			hl.OutlineColor = NPC_COL
+			hl.FillTransparency = 0.45
+			hl.OutlineTransparency = 0.1
 		elseif v.hl then
 			v.hl:Destroy()
 			v.hl = nil
@@ -3194,7 +3543,7 @@ do
 
 	-- Diletakkan di tab ESP, tepat di atas "Loot & Item ESP" (scan NPC di atas, scan barang di bawah).
 	sectionLabel(pages.ESP, 1, "ESP NPC / Hewan")
-	local card = makeCard(pages.ESP, 364, 2)
+	local card = makeCard(pages.ESP, 394, 2)
 	text(card, {
 		Text = "ESP NPC / Hewan",
 		Font = Enum.Font.GothamBold,
@@ -3384,6 +3733,7 @@ do
 	new("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10) }, searchBox)
 
 	-- Chip kategori: Semua / Hewan / Toko / Quest / Musuh / Part / Lainnya ("Part" = batu quest dkk, dideteksi lewat nama)
+	do -- [FIX] bungkus agar local-nya tidak menghabiskan jatah 200 local
 	local chipRow = new("Frame", {
 		Position = UDim2.fromOffset(14, 162),
 		Size = UDim2.new(1, -28, 0, 24),
@@ -3427,9 +3777,123 @@ do
 			end)
 		end
 	end
+	end -- [FIX] akhir pembungkus Chip kategori
+
+	-- Dropdown rarity NPC ditempatkan rapi di antara chip kategori dan tombol Pilih hasil/Kosongkan.
+	do -- [FIX] bungkus agar local-nya tidak menghabiskan jatah 200 local
+	local rarDrop = new("TextButton", {
+		Position = UDim2.fromOffset(14, 192),
+		Size = UDim2.new(1, -28, 0, 24),
+		BackgroundColor3 = T.bg,
+		Text = "✦  Rarity: Semua  ▼",
+		TextColor3 = T.sub,
+		Font = Enum.Font.GothamMedium,
+		TextSize = 10,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		AutoButtonColor = false,
+		BorderSizePixel = 0,
+	}, card)
+	round(rarDrop, 6)
+	stroke(rarDrop, T.stroke, 1, 0.35)
+	new("UIPadding", { PaddingLeft = UDim.new(0, 9), PaddingRight = UDim.new(0, 8) }, rarDrop)
+
+	local rarPanel = new("ScrollingFrame", {
+		Position = UDim2.fromOffset(14, 220),
+		Size = UDim2.fromOffset(164, 0),
+		CanvasSize = UDim2.fromOffset(0, 0),
+		ScrollBarThickness = 3,
+		ScrollBarImageColor3 = T.accent,
+		ScrollingDirection = Enum.ScrollingDirection.Y,
+		BackgroundColor3 = T.card,
+		BorderSizePixel = 0,
+		Active = true,
+		Visible = false,
+		ZIndex = 40,
+	}, card)
+	round(rarPanel, 7)
+	stroke(rarPanel, T.stroke, 1, 0.2)
+
+	local function refreshNpcRarityMenu()
+		local api = settings.rarityApi
+		local opts, seen = { "Semua" }, { ["Semua"] = true }
+		if api then
+			for _, name in ipairs(api.names or {}) do
+				if type(name) == "string" and not seen[name] and #opts < 22 then
+					seen[name] = true
+					opts[#opts + 1] = name
+				end
+			end
+		end
+		local observed = {}
+		for _, group in pairs(N.groups) do
+			for _, entry in ipairs(group.list) do
+				local rarity = entry.rarity
+				if type(rarity) == "string" and not seen[rarity] then
+					seen[rarity] = true
+					observed[#observed + 1] = rarity
+				end
+			end
+		end
+		table.sort(observed)
+		for _, rarity in ipairs(observed) do
+			if #opts >= 24 then break end
+			opts[#opts + 1] = rarity
+		end
+		opts[#opts + 1] = "Unknown"
+		for _, child in ipairs(rarPanel:GetChildren()) do
+			if child:IsA("TextButton") then child:Destroy() end
+		end
+		local rowH = 22
+		for i, name in ipairs(opts) do
+			local active = N.rarFilter == name
+			local b = new("TextButton", {
+				Position = UDim2.fromOffset(4, 4 + (i - 1) * 24),
+				Size = UDim2.new(1, -8, 0, rowH),
+				BackgroundColor3 = active and T.cardSel or T.bg,
+				Text = (name == "Semua" and "Semua rarity" or name) .. (active and "   ✓" or ""),
+				TextColor3 = active and T.text or T.sub,
+				Font = Enum.Font.GothamMedium,
+				TextSize = 10,
+				TextXAlignment = Enum.TextXAlignment.Left,
+				AutoButtonColor = false,
+				BorderSizePixel = 0,
+				ZIndex = 41,
+			}, rarPanel)
+			round(b, 5)
+			new("UIPadding", { PaddingLeft = UDim.new(0, 7) }, b)
+			b.MouseButton1Click:Connect(function()
+				N.rarFilter = name
+				rarPanel.Visible = false
+				rarDrop.Text = "✦  Rarity: " .. name .. "  ▼"
+				rarDrop.BackgroundColor3 = name == "Semua" and T.bg or T.cardSel
+				rarDrop.TextColor3 = name == "Semua" and T.sub or WHITE
+				npcRefreshList()
+			end)
+		end
+		local h = 8 + #opts * 24
+		rarPanel.CanvasSize = UDim2.fromOffset(0, h)
+		rarPanel.Size = UDim2.fromOffset(164, math.min(h, 128))
+	end
+	N.refreshRarityDropdown = refreshNpcRarityMenu
+
+	rarDrop.MouseButton1Click:Connect(function()
+		local api = settings.rarityApi
+		if api and api.ensure then api.ensure() end
+		if not rarPanel.Visible then
+			N.refreshRarity()
+			refreshNpcRarityMenu()
+			npcRefreshList()
+		end
+		rarPanel.Visible = not rarPanel.Visible
+		rarDrop.Text = "✦  Rarity: " .. N.rarFilter .. (rarPanel.Visible and "  ▲" or "  ▼")
+	end)
+	rarPanel.MouseLeave:Connect(function()
+		-- Panel tetap terbuka sampai pilihan dibuat atau tombol ditekan lagi.
+	end)
+	end -- [FIX] akhir pembungkus Rarity NPC
 
 	local actionRow = new("Frame", {
-		Position = UDim2.fromOffset(14, 192),
+		Position = UDim2.fromOffset(14, 222),
 		Size = UDim2.new(1, -28, 0, 24),
 		BackgroundTransparency = 1,
 	}, card)
@@ -3455,7 +3919,7 @@ do
 	local clrBtn = miniBtn("Kosongkan", UDim2.new(0.5, 3, 0, 0))
 
 	local scroll = new("ScrollingFrame", {
-		Position = UDim2.fromOffset(14, 222),
+		Position = UDim2.fromOffset(14, 252),
 		Size = UDim2.new(1, -28, 0, 130),
 		BackgroundTransparency = 1,
 		BorderSizePixel = 0,
@@ -3471,14 +3935,14 @@ do
 		TextSize = 11,
 		TextColor3 = T.sub,
 		TextXAlignment = Enum.TextXAlignment.Center,
-		Position = UDim2.fromOffset(14, 222),
+		Position = UDim2.fromOffset(14, 252),
 		Size = UDim2.new(1, -28, 0, 130),
 	})
 
 	-- Editor ganti nama: muncul di atas baris tombol "Pilih hasil" saat "Ubah" ditekan
 	do
 		local ov = new("Frame", {
-			Position = UDim2.fromOffset(14, 190),
+			Position = UDim2.fromOffset(14, 222),
 			Size = UDim2.new(1, -28, 0, 62),
 			BackgroundColor3 = T.bg,
 			BorderSizePixel = 0,
@@ -3571,6 +4035,13 @@ do
 
 	local function matches(g: any, q: string): boolean
 		if N.cat ~= "Semua" and g.cat ~= N.cat then return false end
+		if N.rarFilter ~= "Semua" then
+			local found = false
+			for _, e in ipairs(g.list) do
+				if (e.rarity or "Unknown") == N.rarFilter then found = true break end
+			end
+			if not found then return false end
+		end
 		if q == "" then return true end
 		if string.find(g.lower, q, 1, true) then return true end
 		local al = N.alias[g.name]
@@ -3734,6 +4205,10 @@ do
 	N.refreshRows = function()
 		npcRefreshList()
 	end
+
+	-- Expose bridge untuk DATA RARITY yang dideklarasikan setelah blok NPC selesai.
+	-- Tanpa ini, listener database tidak tahu cara memperbarui NPC yang sudah ter-scan.
+	settings.npcRarityState = N
 
 	npcRefreshList = function()
 		if unloaded then return end
@@ -3928,9 +4403,90 @@ do
 		end)
 	end
 
+	-- [FIX] Sinkronisasi berkala untuk NPC/hewan yang baru spawn:
+	--  * nama model diganti SESUDAH spawn (mis. "Model" -> "Deer") -> pindahkan ke grup yang benar
+	--  * part root yang dipilih saat spawn ternyata sementara / dihapus -> cari root yang baru
+	--  * model sudah keluar dari workspace -> bersihkan
+	-- (disimpan sebagai field N agar tidak menambah variabel local)
+	N.sync = function()
+		local drop: { any } = {}
+		local readd: { any } = {}
+		for m, e in pairs(N.byModel) do
+			if not e.stone then
+				if not m:IsDescendantOf(workspace) then
+					drop[#drop + 1] = e
+				elseif m.Name ~= e.name then
+					readd[#readd + 1] = e
+				else
+					local r = e.root
+					if not r or not r.Parent or not r:IsDescendantOf(m) then
+						local nr = npcRootOf(m :: Model)
+						if nr then e.root = nr end
+					elseif r.Name ~= "HumanoidRootPart" then
+						local hrp = m:FindFirstChild("HumanoidRootPart")
+						if hrp and hrp:IsA("BasePart") then e.root = hrp end
+					end
+				end
+			end
+		end
+		for _, e in ipairs(drop) do
+			npcRemove(e)
+		end
+		for _, e in ipairs(readd) do
+			local inst = e.inst
+			npcRemove(e)
+			if inst and inst.Parent then
+				npcAdd(inst, 0)
+			end
+		end
+	end
+
+	-- [FIX] Jaring pengaman: event DescendantAdded kadang terlewat / terlalu dini untuk NPC yang baru
+	-- spawn. Tiap 5 detik workspace dipindai ringan (bertahap, tanpa freeze) dan yang belum tercatat
+	-- didaftarkan. Hanya jalan bila Auto scan aktif dan ada jenis NPC yang dicentang.
+	N.discover = function()
+		if N.discovering or N.scanning or unloaded then return end
+		N.discovering = true
+		pcall(function()
+			local desc = workspace:GetDescendants()
+			local t0 = os.clock()
+			for i = 1, #desc do
+				local inst = desc[i]
+				if NPC_CLASS[inst.ClassName] then
+					local m = inst.Parent
+					if m and m:IsA("Model") and not N.byModel[m] and npcRootOf(m :: Model) then
+						npcAdd(inst, 0)
+					end
+				end
+				if i % 400 == 0 and os.clock() - t0 > 0.004 then
+					RunService.Heartbeat:Wait()
+					if unloaded then return end
+					t0 = os.clock()
+				end
+			end
+		end)
+		N.discovering = false
+	end
+
 	-- ---------- loop ----------
 	track(RunService.Heartbeat:Connect(function(dt: number)
 		if unloaded then return end
+
+		N.acc4 = (N.acc4 or 0) + dt
+		if N.acc4 >= 5 then
+			N.acc4 = 0
+			if N.live and next(N.sel) ~= nil then
+				task.spawn(N.discover)
+			end
+		end
+
+		N.acc3 = (N.acc3 or 0) + dt
+		if N.acc3 >= 1.0 then
+			N.acc3 = 0
+			if next(N.byModel) ~= nil then
+				pcall(N.sync)
+			end
+		end
 
 		N.acc += dt
 		if N.acc >= N.interval then
@@ -4690,6 +5246,7 @@ xpcall(function()
 			end
 		end
 		numName = nm
+		api.tierNames = nm -- dipakai NPC resolver untuk atribut Tier numerik
 		do
 			local ks = {}
 			for n in pairs(nm) do ks[#ks + 1] = n end
@@ -4903,6 +5460,16 @@ xpcall(function()
 	end
 
 	settings.rarityApi = api
+	-- Saat database rarity selesai dimuat, cocokkan ulang NPC yang sudah terdeteksi.
+	local npcRarityState = settings.npcRarityState
+	if npcRarityState and npcRarityState.refreshRarity then
+		api.listeners[#api.listeners + 1] = function()
+			if unloaded then return end
+			pcall(npcRarityState.refreshRarity)
+			if npcRarityState.refreshRarityDropdown then pcall(npcRarityState.refreshRarityDropdown) end
+			if npcRarityState.refreshRows then pcall(npcRarityState.refreshRows) end
+		end
+	end
 
 	-- AUTO: baca data rarity sendiri begitu script jalan (profil dulu, kalau tidak ada baru baca modul game).
 	-- Kalau gagal, coba sekali lagi 20 detik kemudian (sebagian game mengisi ReplicatedStorage belakangan).
@@ -5038,9 +5605,9 @@ local function smallButton(parent: Instance, txt: string, size: UDim2, layoutOrd
 end
 
 do -- Item ESP dibungkus agar local-nya tidak menghabiskan jatah 200 local
-local selectAllBtn = smallButton(actionRow, "Pilih hasil", UDim2.new(0.25, -5, 1, 0), 1)
-local clearSelBtn = smallButton(actionRow, "Kosongkan", UDim2.new(0.25, -5, 1, 0), 2)
-local dotsBtn = smallButton(actionRow, "Titik: ON", UDim2.new(0.25, -5, 1, 0), 3)
+local selectAllBtn = smallButton(actionRow, "Pilih hasil", UDim2.new(0.2, -5, 1, 0), 1)
+local clearSelBtn = smallButton(actionRow, "Kosongkan", UDim2.new(0.2, -5, 1, 0), 2)
+local dotsBtn = smallButton(actionRow, "Titik: ON", UDim2.new(0.2, -5, 1, 0), 3)
 selectAllBtn.TextSize = 10
 clearSelBtn.TextSize = 10
 dotsBtn.TextSize = 10
@@ -5113,7 +5680,7 @@ local CLASS_CAT: { [string]: string } = {
 	ClickDetector = "Klik",
 	Tool = "Tool",
 }
-local PRI: { [string]: number } = { Prompt = 4, Klik = 3, Tool = 2, Sentuh = 1 }
+local PRI: { [string]: number } = { Prompt = 4, Klik = 3, Tool = 2, Sentuh = 1, Nama = 0 }
 
 -- Nama part yang terlalu umum -> pakai nama induknya
 local GENERIC: { [string]: boolean } = {
@@ -5122,6 +5689,177 @@ local GENERIC: { [string]: boolean } = {
 	Mesh = true, Primary = true, PrimaryPart = true, Hit = true, Trigger = true,
 	Collider = true, Prompt = true, Interact = true,
 }
+
+-- ---------- [SCAN+] DETEKSI BERDASAR NAMA ----------
+-- Banyak game (rumah/horor/dalang) menaruh kunci, linggis, senter, dll sebagai Model biasa
+-- tanpa ProximityPrompt/ClickDetector/Tool, jadi scan lama tidak melihatnya.
+-- Di sini nama Model/Part dicocokkan dengan kamus kata (utuh per kata, bukan potongan: "Monkey" tidak dianggap "key").
+local NM: any = { cache = {}, size = 14 }
+NM.key = {
+	key = true, keys = true, keycard = true, kunci = true, padlock = true, gembok = true,
+	lockpick = true, passkey = true, kuncinya = true,
+}
+NM.tool = {
+	crowbar = true, linggis = true, pickaxe = true, hammer = true, palu = true, axe = true, kapak = true,
+	screwdriver = true, obeng = true, wrench = true, pliers = true, tang = true, shovel = true, sekop = true,
+	flashlight = true, senter = true, torch = true, lantern = true, lentera = true, knife = true, pisau = true,
+	saw = true, gergaji = true, scissors = true, gunting = true, bolt = true, cutter = true, lighter = true, korek = true,
+	crowbars = true, machete = true, parang = true, golok = true, sickle = true, sabit = true,
+	rod = true, pancing = true, joran = true, net = true, jaring = true, bait = true, umpan = true,
+}
+NM.misc = {
+	battery = true, baterai = true, fuse = true, sekring = true, medkit = true, bandage = true, perban = true,
+	rope = true, tali = true, keypad = false,
+	bag = true, backpack = true, tas = true, ransel = true,
+}
+NM.titles = { key = "🔑 Kunci & Akses", tool = "🛠 Alat & Senjata", misc = "🎒 Perlengkapan" }
+NM.PFX = "📁 "
+NM.other = "📦 Item Lainnya"
+NM.many = "🧱 Banyak / Dekorasi"
+NM.custom = {}
+NM.ccache = {}
+do
+	local ig = settings.itemGroups
+	if type(ig) == "table" then
+		for title, words in pairs(ig) do
+			if type(title) == "string" and type(words) == "table" then
+				for _, w in ipairs(words) do
+					if type(w) == "string" and w ~= "" then
+						local lw = string.lower(w)
+						NM.custom[lw] = NM.PFX .. title
+						NM.misc[lw] = true -- ikut terdeteksi lewat nama
+					end
+				end
+			end
+		end
+	end
+end
+-- nama folder yang terlalu umum untuk dijadikan judul grup
+NM.skipFolder = {
+	map = true, world = true, workspace = true, items = true, item = true, loot = true, objects = true, object = true,
+	folder = true, model = true, models = true, game = true, assets = true, spawns = true, spawn = true, spawned = true,
+	pickups = true, pickup = true, drops = true, drop = true, debris = true, ignore = true, level = true, lobby = true,
+	interactables = true, interactable = true, props = true, prop = true, decor = true, environment = true,
+	structures = true, buildings = true, effects = true, vfx = true, camera = true, terrain = true,
+}
+-- kata yang berarti BUKAN barang yang bisa diambil (pintu, ruangan, lubang kunci, dll)
+NM.block = {
+	door = true, pintu = true, gate = true, gerbang = true, room = true, ruang = true, ruangan = true,
+	shop = true, store = true, toko = true, cabinet = true, lemari = true, safe = true, brankas = true,
+	hole = true, keyhole = true, slot = true, holder = true, rack = true, spawn = true, spawner = true,
+	zone = true, area = true, trigger = true, region = true, sign = true, poster = true, lock = true,
+}
+for _, w in ipairs((settings.itemWords :: any) or {}) do
+	if type(w) == "string" and w ~= "" then NM.misc[string.lower(w)] = true end
+end
+
+function NM.tokens(n: string): { string }
+	local spaced = string.gsub(n, "(%l)(%u)", "%1 %2")
+	spaced = string.lower(spaced)
+	local t = {}
+	for w in string.gmatch(spaced, "%a+") do t[#t + 1] = w end
+	return t
+end
+
+-- "key" | "tool" | "misc" | false
+function NM.customTitle(n: string): string?
+	if next(NM.custom) == nil then return nil end
+	local c = NM.ccache[n]
+	if c ~= nil then return c or nil end
+	local res: any = false
+	for _, w in ipairs(NM.tokens(n)) do
+		if NM.custom[w] then res = NM.custom[w]; break end
+	end
+	if not res then
+		local compact = string.lower((string.gsub(n, "[^%a]", "")))
+		if NM.custom[compact] then res = NM.custom[compact] end
+	end
+	NM.ccache[n] = res
+	return res or nil
+end
+
+function NM.kind(n: string): any
+	local c = NM.cache[n]
+	if c ~= nil then return c end
+	local res: any = false
+	local toks = NM.tokens(n)
+	local blocked = false
+	for _, w in ipairs(toks) do
+		if NM.block[w] then blocked = true; break end
+	end
+	if not blocked then
+		local compact = string.lower((string.gsub(n, "[^%a]", "")))
+		local cand = { compact }
+		for _, w in ipairs(toks) do
+			cand[#cand + 1] = w
+			if #w > 3 and string.sub(w, -1) == "s" then cand[#cand + 1] = string.sub(w, 1, -2) end
+		end
+		for _, w in ipairs(cand) do
+			if NM.key[w] then res = "key"; break end
+		end
+		if not res then
+			for _, w in ipairs(cand) do
+				if NM.tool[w] then res = "tool"; break end
+			end
+		end
+		if not res then
+			for _, w in ipairs(cand) do
+				if NM.misc[w] then res = "misc"; break end
+			end
+		end
+	end
+	NM.cache[n] = res
+	return res
+end
+
+-- Judul grup otomatis dari FOLDER tempat item berada di workspace (mis. Workspace.Fish.Salmon -> "Fish").
+-- Berlaku untuk game apa pun; nama folder yang terlalu umum / berangka (Zone1, Spawn_3) dilewati.
+function NM.container(part: Instance): string?
+	local cur: Instance? = part.Parent
+	for _ = 1, 8 do
+		if not cur or cur == (workspace :: Instance) then return nil end
+		if cur:IsA("Folder") then
+			local nm = cur.Name
+			if #nm >= 3 and not string.find(nm, "%d") then
+				local generic = false
+				for _, w in ipairs(NM.tokens(nm)) do
+					if NM.skipFolder[w] then generic = true; break end
+				end
+				if not generic then
+					local clean = string.gsub(nm, "[_%-]+", " ")
+					local al = settings.groupAlias
+					if type(al) == "table" and type(al[nm]) == "string" then clean = al[nm] end
+					clean = string.match(clean, "^%s*(.-)%s*$") or clean
+					if clean ~= "" then return NM.PFX .. string.sub(clean, 1, 24) end
+				end
+			end
+		end
+		cur = cur.Parent
+	end
+	return nil
+end
+
+local function tooBig(inst: Instance): boolean
+	local ok, sz = pcall(function()
+		if inst:IsA("Model") then return (inst :: Model):GetExtentsSize() end
+		return (inst :: BasePart).Size
+	end)
+	if not ok or not sz then return false end
+	return math.max(sz.X, sz.Y, sz.Z) > NM.size
+end
+
+-- kategori kandidat: kelas pemicu biasa, atau "Nama" bila namanya cocok kamus (Model / Part lepas)
+local function candidateCat(inst: Instance): string?
+	local c = CLASS_CAT[inst.ClassName]
+	if c then return c end
+	if settings.nameDetect == false then return nil end
+	local isModel = inst:IsA("Model")
+	if not (isModel or inst:IsA("BasePart")) then return nil end
+	if not NM.kind(inst.Name) then return nil end
+	local p = inst.Parent
+	if p and p:IsA("Model") and NM.kind(p.Name) then return nil end -- induknya sudah mewakili
+	return "Nama"
+end
 
 -- ---------- data ----------
 local groups: { [string]: any } = {}     -- nama -> { name, lower, cats, list }  (hanya yang SEDANG ada di map)
@@ -5224,6 +5962,38 @@ local function mushOk(name: string): boolean
 	local e1 = g and g.list[1]
 	if e1 then return instMush(e1) ~= false end
 	return rarityOf(name) ~= nil
+end
+
+-- [SCAN+] GRUP DAFTAR (universal): judul grup dibuat otomatis dari data game itu sendiri, bukan tema tertentu.
+--   1) folder tempat item berada di workspace (Fish / Rods / Bags / ... apa pun namanya di game itu)
+--   2) kata kunci umum: kunci, alat/senjata, perlengkapan
+--   3) sisanya -> "Item Lainnya"
+local GRP: any = {
+	rank = {}, frames = {}, ver = -1, rdy = false,
+	sel = {}, selN = 0, open = {}, openNow = {}, forced = false,
+	manyCand = {}, counts = {}, list = {},
+	th = (tonumber(settings.manyThreshold) or 60) > 0 and (tonumber(settings.manyThreshold) or 60) or math.huge,
+	autoOpenMax = 30,
+}
+function GRP.of(name: string): string
+	local ct = NM.customTitle(name)
+	if ct then return ct end
+	local k = NM.kind(name)
+	if k then return NM.titles[k] end
+	local cg = catalog[name]
+	if cg and type(cg.grp) == "string" then return cg.grp end
+	if cg and cg.cats and cg.cats.Tool then return NM.titles.tool end
+	local g = groups[name]
+	if g and #g.list >= GRP.th and itemSel[name] ~= true then return NM.many end
+	return NM.other
+end
+function GRP.tier(t: string): number
+	if string.sub(t, 1, #NM.PFX) == NM.PFX then return 1 end
+	if t == NM.titles.key then return 2 end
+	if t == NM.titles.tool then return 3 end
+	if t == NM.titles.misc then return 4 end
+	if t == NM.many then return 6 end
+	return 5
 end
 
 local function rarityColor(name: string): Color3?
@@ -5436,6 +6206,11 @@ local function addEntry(inst: Instance, cat: string, part: BasePart, name: strin
 		cg.cats[cat] = true
 		persistDirty = true
 	end
+	if cg.grp == nil then
+		local gt = NM.container(part)
+		cg.grp = gt or false
+		if gt then orderDirty = true; persistDirty = true end
+	end
 	local g = groups[name]
 	if not g then
 		g = { name = name, lower = string.lower(name), cats = {}, list = {} }
@@ -5485,6 +6260,10 @@ end
 -- Naik dari pemicu sampai ketemu BasePart/Model. Menangani prompt di dalam
 -- Attachment, Folder, dll yang dulu dilewati begitu saja.
 local function resolve(inst: Instance, cat: string): (BasePart?, Instance?)
+	if cat == "Nama" then
+		if inst:IsA("BasePart") then return inst :: BasePart, inst end
+		return firstPart(inst), inst
+	end
 	if cat == "Tool" then
 		local h = inst:FindFirstChild("Handle")
 		if h and h:IsA("BasePart") then return h :: BasePart, inst end
@@ -5515,7 +6294,7 @@ end
 local function tryRegister(inst: Instance, tries: number)
 	if byTrig[inst] then return end
 	if not inst:IsDescendantOf(workspace) then return end
-	local cat = CLASS_CAT[inst.ClassName]
+	local cat = candidateCat(inst)
 	if not cat then return end
 	if #all >= MAX_ENTRIES then return end
 
@@ -5528,6 +6307,13 @@ local function tryRegister(inst: Instance, tries: number)
 		return
 	end
 	if inCharacter(anchor) then return end
+
+	if cat == "Nama" then
+		-- sudah punya Prompt/Klik sendiri -> biar pemicu aslinya yang mendaftar (hindari ganda)
+		if inst:FindFirstChildWhichIsA("ProximityPrompt", true) or inst:FindFirstChildWhichIsA("ClickDetector", true) then return end
+		if inst:FindFirstChildOfClass("Humanoid") then return end
+		if tooBig(inst) then return end
+	end
 
 	if cat == "Sentuh" then
 		if part.CanTouch == false then return end
@@ -5554,7 +6340,7 @@ local function tryRegister(inst: Instance, tries: number)
 	local name: string
 	if cat == "Prompt" and (inst :: ProximityPrompt).ObjectText ~= "" then
 		name = (inst :: ProximityPrompt).ObjectText
-	elseif cat == "Tool" then
+	elseif cat == "Tool" or cat == "Nama" then
 		name = inst.Name
 	else
 		name = baseName(anchor)
@@ -5610,7 +6396,7 @@ end
 local function startLive()
 	if liveAdd then return end
 	liveAdd = track(workspace.DescendantAdded:Connect(function(inst)
-		if CLASS_CAT[inst.ClassName] then
+		if candidateCat(inst) then
 			enqueue(inst, 0)
 		end
 	end))
@@ -5691,6 +6477,14 @@ local function groupMatches(g: any, q: string): boolean
 			local r = rarityOf(g.name)
 			if not (r and rarSel[r]) then return false end
 		end
+	end
+	-- filter dropdown Grup (pencarian menembus semua grup; tab Terpilih menampilkan semua yang dicentang)
+	if GRP.selN > 0 and not hasQuery and not (filterMode == "Terpilih" and itemSel[g.name] == true) then
+		if not GRP.sel[GRP.rank[g.name] or NM.other] then return false end
+	end
+	if GRP.selN == 0 and not hasQuery and filterMode ~= "Terpilih" and settings.groupHideMany ~= false
+		and GRP.rank[g.name] == NM.many then
+		return false
 	end
 	local fm = filterMode
 	if fm == "Semua" then
@@ -5970,7 +6764,7 @@ local function buildPending(maxN: number)
 			local r = rows[order[i]]
 			if r and r.order ~= i then
 				r.order = i
-				r.btn.LayoutOrder = i
+				r.btn.LayoutOrder = i * 2
 			end
 		end
 		layoutDirty = false
@@ -5979,18 +6773,64 @@ end
 
 local function rebuildOrder()
 	table.clear(order)
+	local rk, cnt = {}, {}
+	GRP.manyCand = {}
 	for name in pairs(catalog) do
 		order[#order + 1] = name
+		local t = GRP.of(name)
+		rk[name] = t
+		cnt[t] = (cnt[t] or 0) + 1
+		local g = groups[name]
+		GRP.manyCand[name] = g ~= nil and #g.list >= GRP.th
+	end
+	-- grup folder yang isinya cuma 1 jenis dilebur ke "Item Lainnya" supaya header tidak kebanyakan
+	for name, t in pairs(rk) do
+		if cnt[t] == 1 and GRP.tier(t) == 1 then
+			rk[name] = NM.other
+			cnt[t] = nil
+			cnt[NM.other] = (cnt[NM.other] or 0) + 1
+		end
 	end
 	table.sort(order, function(a, b)
 		local la, lb = catalog[a].lower, catalog[b].lower
 		if la ~= lb then return la < lb end
 		return a < b
 	end)
+	GRP.rank = rk
+	GRP.counts = cnt
+	local list = {}
+	for t in pairs(cnt) do list[#list + 1] = t end
+	table.sort(list, function(a, b)
+		local ta, tb = GRP.tier(a), GRP.tier(b)
+		if ta ~= tb then return ta < tb end
+		return a < b
+	end)
+	GRP.list = list
+	-- buang pilihan grup yang sudah tidak ada (mis. pindah game)
+	local n = 0
+	for t in pairs(GRP.sel) do
+		if cnt[t] then n += 1 else GRP.sel[t] = nil end
+	end
+	GRP.selN = n
 	orderDirty = false
+	if GRP.menuRefresh then GRP.menuRefresh() end
 end
 
 local function flushUI()
+	do
+		local rapi = settings.rarityApi
+		local ver = rapi and rapi.version or 0
+		local rdy = (rapi and rapi.ready) == true
+		if GRP.ver ~= ver or GRP.rdy ~= rdy then
+			GRP.ver, GRP.rdy = ver, rdy
+			orderDirty = true -- data jamur baru siap -> kelompok diurut ulang
+		end
+		for name in pairs(dirtyNames) do
+			local g = groups[name]
+			local want = g ~= nil and #g.list >= GRP.th
+			if want ~= (GRP.manyCand[name] == true) then orderDirty = true; break end
+		end
+	end
 	if orderDirty then
 		rebuildOrder()
 		layoutDirty = true
@@ -6119,7 +6959,7 @@ local function scanItems()
 		local t0 = os.clock()
 		for i = 1, #desc do
 			local inst = desc[i]
-			if CLASS_CAT[inst.ClassName] then
+			if candidateCat(inst) then
 				enqueue(inst, 0)
 			end
 			if i % 400 == 0 and os.clock() - t0 > SCAN_BUDGET then
@@ -6176,6 +7016,7 @@ local function onFilterChanged()
 	buildPending(ROWS_PER_FLUSH)
 	refreshStatus()
 end
+GRP.refresh = onFilterChanged
 
 local function setChip(mode: string)
 	filterMode = mode
@@ -6272,6 +7113,117 @@ dotsBtn.MouseButton1Click:Connect(function()
 	end
 end)
 
+-- ---------- dropdown GRUP (universal): isinya otomatis mengikuti game yang dimainkan ----------
+do
+	local grpBtn = smallButton(actionRow, "Grup ▼", UDim2.new(0.2, -5, 1, 0), 4)
+	grpBtn.TextSize = 10
+	local ROW_H, GAP = 22, 2
+	local PANEL_MAX_H = 8 + 6 * ROW_H + 5 * GAP -- maksimal 6 baris terlihat, sisanya di-scroll
+	local panel = new("ScrollingFrame", {
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, -14, 0, 158),
+		Size = UDim2.fromOffset(190, 40),
+		CanvasSize = UDim2.new(),
+		AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		ScrollBarThickness = 4,
+		ScrollBarImageColor3 = T.accent,
+		ScrollingDirection = Enum.ScrollingDirection.Y,
+		ElasticBehavior = Enum.ElasticBehavior.Never,
+		BackgroundColor3 = T.card,
+		BorderSizePixel = 0,
+		Active = true,
+		Visible = false,
+		ZIndex = 30,
+	}, scannerCard)
+	round(panel, 8)
+	stroke(panel, T.stroke, 1, 0.2)
+	new("UIListLayout", { Padding = UDim.new(0, GAP), SortOrder = Enum.SortOrder.LayoutOrder }, panel)
+	new("UIPadding", {
+		PaddingTop = UDim.new(0, 4), PaddingBottom = UDim.new(0, 4),
+		PaddingLeft = UDim.new(0, 4), PaddingRight = UDim.new(0, 4),
+	}, panel)
+	GRP.panel = panel
+
+	local btns: { any } = {}
+	local items: { string } = {}
+	local refreshMenu
+	refreshMenu = function()
+		items = { "Semua" }
+		for _, t in ipairs(GRP.list) do items[#items + 1] = t end
+		for i = 1, #items do
+			local b = btns[i]
+			if not b then
+				b = new("TextButton", {
+					LayoutOrder = i,
+					Size = UDim2.new(1, 0, 0, ROW_H),
+					BackgroundColor3 = T.bg,
+					Text = "",
+					TextColor3 = T.text,
+					Font = Enum.Font.GothamMedium,
+					TextSize = 11,
+					TextXAlignment = Enum.TextXAlignment.Left,
+					TextTruncate = Enum.TextTruncate.AtEnd,
+					AutoButtonColor = false,
+					BorderSizePixel = 0,
+					ZIndex = 31,
+				}, panel)
+				round(b, 6)
+				new("UIPadding", { PaddingLeft = UDim.new(0, 8) }, b)
+				btns[i] = b
+				b.MouseButton1Click:Connect(function()
+					local n = items[i]
+					if not n then return end
+					if n == "Semua" then
+						table.clear(GRP.sel)
+						GRP.selN = 0
+						panel.Visible = false
+					elseif GRP.sel[n] then
+						GRP.sel[n] = nil
+						GRP.selN -= 1
+					else
+						GRP.sel[n] = true
+						GRP.selN += 1
+					end
+					refreshMenu()
+					onFilterChanged()
+				end)
+			end
+			local n = items[i]
+			local chk = (i == 1 and GRP.selN == 0) or GRP.sel[n] == true
+			local base = i == 1 and "Semua" or (n .. "  (" .. tostring(GRP.counts[n] or 0) .. ")")
+			b.Text = base .. (chk and "   ✓" or "")
+			b.BackgroundColor3 = chk and T.cardSel or T.bg
+			b.Visible = true
+		end
+		for i = #items + 1, #btns do btns[i].Visible = false end
+		panel.Size = UDim2.fromOffset(190, math.min(PANEL_MAX_H, 8 + #items * (ROW_H + GAP)))
+		local lb = "Grup"
+		if GRP.selN == 1 then lb = "1 grup" elseif GRP.selN > 1 then lb = GRP.selN .. " grup" end
+		grpBtn.Text = lb .. (panel.Visible and " ▲" or " ▼")
+		grpBtn.BackgroundColor3 = GRP.selN > 0 and T.accent or T.bg
+		grpBtn.TextColor3 = GRP.selN > 0 and WHITE or T.sub
+	end
+	GRP.menuRefresh = refreshMenu
+
+	-- roda mouse di atas panel hanya menggulir panel itu sendiri
+	local function lockBehind(lock: boolean)
+		lootScroll.ScrollingEnabled = not lock
+		pages.ESP.ScrollingEnabled = not lock
+	end
+	panel.MouseEnter:Connect(function() lockBehind(true) end)
+	panel.MouseLeave:Connect(function() lockBehind(false) end)
+	panel:GetPropertyChangedSignal("Visible"):Connect(function()
+		if not panel.Visible then lockBehind(false) end
+	end)
+
+	grpBtn.MouseButton1Click:Connect(function()
+		panel.Visible = not panel.Visible
+		if panel.Visible and GRP.rarPanel then GRP.rarPanel.Visible = false end
+		refreshMenu()
+	end)
+	refreshMenu()
+end
+
 -- ---------- dropdown RARITY: filter daftar; warna label & titik ikut rarity ----------
 do
 	local api = settings.rarityApi
@@ -6287,7 +7239,7 @@ do
 		end
 		loadRN()
 
-		local rarBtn = smallButton(actionRow, "Rarity ▼", UDim2.new(0.25, -5, 1, 0), 4)
+		local rarBtn = smallButton(actionRow, "Rarity ▼", UDim2.new(0.2, -5, 1, 0), 5)
 		rarBtn.TextSize = 10
 
 		local ROW_H, GAP = 22, 2
@@ -6312,6 +7264,7 @@ do
 		round(panel, 8)
 		stroke(panel, T.stroke, 1, 0.2)
 
+		GRP.rarPanel = panel
 		local rbtn = {}
 		for i = 1, MAXR + 1 do
 			local b = new("TextButton", {
@@ -6429,6 +7382,10 @@ do
 
 		rarBtn.MouseButton1Click:Connect(function()
 			panel.Visible = not panel.Visible
+			if panel.Visible and GRP.panel and GRP.panel.Visible then
+				GRP.panel.Visible = false
+				if GRP.menuRefresh then GRP.menuRefresh() end
+			end
 			if panel.Visible then api.ensure() end
 			refreshRar()
 		end)
@@ -7077,7 +8034,7 @@ local function saveCatalog()
 	for _, cg in pairs(catalog) do
 		local cats = {}
 		for c in pairs(cg.cats) do cats[#cats + 1] = c end
-		names[#names + 1] = { n = cg.name, c = cats }
+		names[#names + 1] = { n = cg.name, c = cats, g = type(cg.grp) == "string" and cg.grp or nil }
 	end
 	local sel = {}
 	for nm, v in pairs(itemSel) do
@@ -7107,7 +8064,7 @@ do
 						if c ~= "Sentuh" then hasOther = true end
 					end
 					if next(cats) == nil or hasOther then
-						catalog[it.n] = { name = it.n, lower = string.lower(it.n), cats = cats }
+						catalog[it.n] = { name = it.n, lower = string.lower(it.n), cats = cats, grp = type(it.g) == "string" and it.g or nil }
 					end
 				end
 			end
@@ -7311,9 +8268,7 @@ runScanner()
 
 end -- tutup do (Item ESP v2)
 
-sectionLabel(teleportPage, 6, "Waypoint & Free Cam")
-
-addSliderCard(teleportPage, 90, "Free Cam", "WASD + E/Q, Shift cepat, klik kanan = lihat", "freecam", 5, 600, 1000)
+sectionLabel(teleportPage, 6, "Waypoint")
 
 local topCard = makeCard(teleportPage, 112, 7)
 text(topCard, {
@@ -7559,7 +8514,7 @@ end
 local keyConflictUI: any = {
 	open = false,
 	titles = {},
-	order = { "toggleKey", "saveKey", "tpKey", "cycleKey", "floatUpKey", "floatDownKey", "followKey", "autoCutKey" },
+	order = { "toggleKey", "saveKey", "tpKey", "cycleKey", "floatUpKey", "floatDownKey", "followKey", "autoCutKey", "recordMiniKey" },
 }
 do
 	local ui = keyConflictUI
@@ -7744,7 +8699,10 @@ addKeyRow(4, "Tombol Ganti Waypoint", "Pindah ke waypoint berikutnya. Backspace 
 addKeyRow(5, "Float: Naik", "Tahan untuk naik saat Float aktif. Backspace untuk mengosongkan.", "floatUpKey", true)
 addKeyRow(6, "Float: Turun", "Tahan untuk turun saat Float aktif. Backspace untuk mengosongkan.", "floatDownKey", true)
 addKeyRow(7, "Follow: Mulai / Stop", "Mulai ikuti (target terakhir / nama di kotak / teman terdekat) atau berhenti. Backspace untuk mengosongkan.", "followKey", true)
-addKeyRow(8, "Auto Cut: ON / OFF", "Nyalakan atau matikan Auto Cut (Mini Game). Belum diatur = kosong. Backspace untuk mengosongkan.", "autoCutKey", true)
+if settings.miniGameOk then
+	addKeyRow(8, "Auto Cut: ON / OFF", "Nyalakan atau matikan Auto Cut (Mini Game). Belum diatur = kosong. Backspace untuk mengosongkan.", "autoCutKey", true)
+end
+addKeyRow(9, "Rekam Minigame: ON / OFF", "Mulai atau hentikan perekaman minigame. Bisa diganti sesuai tombol pilihanmu.", "recordMiniKey", true)
 refreshKeyUI()
 
 local sizeCard = makeCard(settingsPage, 78, 9)
@@ -7794,15 +8752,20 @@ for i, preset in ipairs({
 	end)
 end
 
-local offAllBtn = makeButton(settingsPage, 10, "Matikan Semua Fitur", T.accent, 40)
+-- Anti-AFK (aktif sejak awal; sebelumnya di tab Visual)
+sectionLabel(settingsPage, 200, "Utilitas")
+addToggleCard(settingsPage, 201, "Anti-AFK", "Mencegah kick karena diam 20 menit. Aktif sejak awal.", "antiAfk")
+switches.antiAfk.Set(true)
+
+local offAllBtn = makeButton(settingsPage, 300, "Matikan Semua Fitur", T.accent, 40)
 hover(offAllBtn, T.accent)
 offAllBtn.MouseButton1Click:Connect(function()
 	disableAllFeatures()
 end)
 
-local unloadBtn = makeButton(settingsPage, 11, "Unload & Bersihkan Semua", T.off, 40)
+local unloadBtn = makeButton(settingsPage, 301, "Unload & Bersihkan Semua", T.off, 40)
 text(settingsPage, {
-	LayoutOrder = 12,
+	LayoutOrder = 302,
 	Text = "Menghapus panel, mematikan semua fitur, mengembalikan speed/jump ke semula, menghapus lantai float dan ESP, dan memutus semua koneksi script. Waypoint juga ikut hilang.",
 	TextSize = 11,
 	TextColor3 = T.sub,
@@ -7816,7 +8779,7 @@ text(settingsPage, {
 -- =====================================================
 do
 local MAX_SLOTS = 10
-local KEY_NAMES = { "toggleKey", "saveKey", "tpKey", "cycleKey", "floatUpKey", "floatDownKey", "followKey", "autoCutKey" }
+local KEY_NAMES = { "toggleKey", "saveKey", "tpKey", "cycleKey", "floatUpKey", "floatDownKey", "followKey", "autoCutKey", "recordMiniKey" }
 
 local slots: { { name: string, data: any } } = {}
 local remote: RemoteFunction? = nil
@@ -7934,7 +8897,8 @@ local function summarize(d: any): string
 	return s
 end
 
-local cfgTop = makeCard(configPage, 168, 1)
+sectionLabel(settingsPage, 20, "Config")
+local cfgTop = makeCard(configPage, 168, 21)
 text(cfgTop, {
 	Text = "Simpan Konfigurasi",
 	Font = Enum.Font.GothamBold,
@@ -7999,7 +8963,7 @@ round(saveNewBtn, 10)
 hover(saveNewBtn, T.accent)
 
 local cfgEmpty = text(configPage, {
-	LayoutOrder = 5,
+	LayoutOrder = 22,
 	Text = "Belum ada save. Atur fitur sesukamu, lalu tekan \"Simpan Konfigurasi Sekarang\".",
 	TextSize = 12,
 	TextColor3 = T.sub,
@@ -8012,7 +8976,7 @@ local slotRows: { any } = {}
 
 local function buildSlotRow(i: number, slot: { name: string, data: any })
 	local row = new("Frame", {
-		LayoutOrder = 10 + i,
+		LayoutOrder = 30 + i,
 		Size = UDim2.new(1, 0, 0, 64),
 		BackgroundColor3 = T.card,
 		BorderSizePixel = 0,
@@ -8141,7 +9105,7 @@ end
 rebuildSlots()
 
 -- =====================================================
--- GUI: HALAMAN MINI GAME (Auto Cut jamur)
+-- GUI: HALAMAN MINI GAME (Auto Cut + Auto Minigame)
 -- Dibungkus fungsi sendiri supaya local-nya TIDAK menghabiskan jatah 200 local script utama.
 -- Membaca MainUI.Harvest.Bar (Marker + Zone.Perfect), lalu meniru tombol Space saat marker
 -- diperkirakan tepat di tengah zona Perfect. Tidak memanggil remote, tidak mengubah data game.
@@ -8216,9 +9180,8 @@ do
 
 		-- ---------- halaman (satu kartu ringkas: toggle + LEAD + status) ----------
 		local page = pages["Mini Game"]
-		sectionLabel(page, 0, "Auto Mini Game")
 
-		local card = makeCard(page, 112, 1)
+		local card = makeCard(page, 112, 2)
 		text(card, {
 			Text = "Auto Cut (Jamur)",
 			Font = Enum.Font.GothamBold,
@@ -8423,40 +9386,117 @@ do
 			end
 		end))
 	end
-	buildMiniGame()
-end
+	local function buildUniversalAuto()
+		local VIM: any = nil
+		pcall(function() VIM = game:GetService("VirtualInputManager") end)
 
--- =====================================================
--- GUI: SCAN MINI GAME (perekam angka minigame, kartu di bawah Auto Cut)
--- Hanya MEMBACA properti GUI (posisi, ukuran, warna, teks), tombol yang ditekan, dan RemoteEvent
--- server->client. Tidak ada hook remote. Aktif HANYA saat Rekam ON.
--- Dibungkus fungsi sendiri supaya tidak menghabiskan jatah 200 local.
--- =====================================================
-do
-	local function buildScanner()
-		local MAX_TRACK, MAX_SERIES, MAX_EVENTS, MAX_TEXT, SAMPLE_DT = 5000, 2000, 400, 3000, 0.05
-		local EXCLUDE: any = {
-			UniversalUrbee = true, ControlPanel = true, UU_ITEMS = true, UU_NPC = true, UU_RARITY = true, UU_ZONE = true,
-			R4MEN_AutoCut = true, R4MEN_Rec = true, R4MEN_Scanner = true,
-		}
-		EXCLUDE[gui.Name] = true
-		local S: any = {
-			rec = false, t0 = 0, tracks = {}, count = 0, textCount = 0,
-			events = {}, conns = {}, acc = 0, lastKey = nil, lastT = 0, textT = {},
+		local A: any = {
+			pins = {}, halfWidth = 22, lastAngle = nil, lastT = 0,
+			speed = 0, direction = 0, lastAttempt = {},
+			lastUi = 0, wasActive = false, remoteReady = false,
+			msg = "Memindai minigame...",
 		}
 
-		local function now() return os.clock() - S.t0 end
+		local page = pages["Mini Game"]
+		local card = makeCard(page, 112, 1)
+		text(card, {
+			Text = "Auto Minigame",
+			Font = Enum.Font.GothamBold,
+			TextSize = 14,
+			Position = UDim2.fromOffset(14, 9),
+			Size = UDim2.new(1, -82, 0, 20),
+		})
+		text(card, {
+			Text = "Deteksi jenis minigame otomatis • Lockpick dan Safe Dial.",
+			TextSize = 11,
+			TextColor3 = T.sub,
+			TextWrapped = true,
+			TextYAlignment = Enum.TextYAlignment.Top,
+			Position = UDim2.fromOffset(14, 32),
+			Size = UDim2.new(1, -28, 0, 28),
+		})
+		local sLbl = text(card, {
+			Text = A.msg,
+			TextSize = 10,
+			TextColor3 = T.sub,
+			TextWrapped = true,
+			TextYAlignment = Enum.TextYAlignment.Top,
+			Position = UDim2.fromOffset(14, 68),
+			Size = UDim2.new(1, -28, 0, 32),
+		})
 
-		local function addEvent(kind: string, txt: string)
-			if #S.events >= MAX_EVENTS then return end
-			local key = kind .. txt
-			local t = os.clock()
-			if key == S.lastKey and t - S.lastT < 0.05 then return end
-			S.lastKey, S.lastT = key, t
-			S.events[#S.events + 1] = string.format("[%7.2f] %s %s", now(), kind, txt)
+		local function setStatus(s: string)
+			A.msg = s
+			if not unloaded and sLbl.Parent then sLbl.Text = s end
 		end
 
-		local function shown(inst: Instance): boolean
+		local function captureLockpick(value: any, depth: number): any
+			if type(value) ~= "table" or depth > 4 then return nil end
+			if value.kind == "Lockpick" and type(value.puzzle) == "table" then
+				return value
+			end
+			for _, child in pairs(value) do
+				if type(child) == "table" then
+					local found = captureLockpick(child, depth + 1)
+					if found then return found end
+				end
+			end
+			return nil
+		end
+
+		local function acceptStart(...)
+			local payload = nil
+			for i = 1, select("#", ...) do
+				payload = captureLockpick(select(i, ...), 0)
+				if payload then break end
+			end
+			if not payload then return end
+
+			local puzzle = payload.puzzle
+			local pins = puzzle and puzzle.pins
+			if type(pins) ~= "table" then return end
+			local parsed = {}
+			for key, pin in pairs(pins) do
+				local index = tonumber(key)
+				if type(pin) == "table" and index
+					and type(pin.sweet) == "number"
+					and type(pin.speed) == "number"
+					and type(pin.dir) == "number" then
+					parsed[#parsed + 1] = {
+						index = index,
+						sweet = pin.sweet % 360,
+						speed = math.abs(pin.speed),
+						dir = pin.dir >= 0 and 1 or -1,
+					}
+				end
+			end
+			table.sort(parsed, function(a, b) return a.index < b.index end)
+			if #parsed == 0 then return end
+
+			A.pins = parsed
+			A.halfWidth = math.clamp(tonumber(puzzle.halfWidth) or 22, 1, 90)
+			A.lastAngle, A.lastT = nil, 0
+			A.speed, A.direction = 0, 0
+			table.clear(A.lastAttempt)
+			setStatus(string.format("Lockpick terbaca: %d pin • target siap", #parsed))
+		end
+
+		local function hookStartRemote(inst: Instance)
+			if A.remoteReady or not inst:IsA("RemoteEvent") or inst.Name ~= "MinigameStart" then return end
+			A.remoteReady = true
+			track(inst.OnClientEvent:Connect(function(...)
+				acceptStart(...)
+			end))
+			setStatus("Detektor siap • menunggu Lockpick / Safe Dial")
+		end
+
+		local existingRemote = ReplicatedStorage:FindFirstChild("MinigameStart", true)
+		if existingRemote then hookStartRemote(existingRemote) end
+		track(ReplicatedStorage.DescendantAdded:Connect(function(inst)
+			if inst.Name == "MinigameStart" then hookStartRemote(inst) end
+		end))
+
+		local function isVisible(inst: Instance): boolean
 			local cur: Instance? = inst
 			while cur and cur ~= playerGui do
 				if cur:IsA("GuiObject") and not cur.Visible then return false end
@@ -8466,333 +9506,1635 @@ do
 			return cur == playerGui
 		end
 
-		local function rootName(inst: Instance): string
-			local c: Instance? = inst
-			while c and c.Parent ~= playerGui do c = c.Parent end
-			return c and c.Name or ""
-		end
-
-		local function ser(v: any, depth: number): string
-			local ty = typeof(v)
-			if ty == "string" then
-				return '"' .. string.sub(v, 1, 60) .. '"'
-			elseif ty == "table" then
-				if depth >= 2 then return "{...}" end
-				local parts, n = {}, 0
-				for k, x in pairs(v) do
-					n += 1
-					if n > 8 then parts[#parts + 1] = "..." break end
-					parts[#parts + 1] = tostring(k) .. "=" .. ser(x, depth + 1)
-				end
-				return "{" .. table.concat(parts, ", ") .. "}"
-			elseif ty == "Instance" then
-				local ok, nm = pcall(function() return v:GetFullName() end)
-				return ok and nm or "Instance"
-			end
-			return tostring(v)
-		end
-
-		local function consider(inst: Instance)
-			if S.tracks[inst] or S.count >= MAX_TRACK then return end
-			if not inst:IsDescendantOf(playerGui) then return end
-			if EXCLUDE[rootName(inst)] then return end
-			local i: any = inst
-			if inst:IsA("Frame") or inst:IsA("ImageLabel") or inst:IsA("ImageButton") then
-				S.count += 1
-				S.tracks[inst] = {
-					path = inst:GetFullName(),
-					color = i.BackgroundColor3:ToHex(),
-					series = {}, last = "", changedAt = -10,
-				}
-			elseif (inst:IsA("TextLabel") or inst:IsA("TextButton")) and S.textCount < MAX_TEXT then
-				S.textCount += 1
-				S.conns[#S.conns + 1] = i:GetPropertyChangedSignal("Text"):Connect(function()
-					if S.rec and i.Text ~= "" and shown(i) then
-						local t = os.clock()
-						if t - (S.textT[inst] or 0) < 0.25 then return end -- timer/teks cepat: tidak membanjiri
-						S.textT[inst] = t
-						addEvent("TEKS", i.Name .. ": '" .. string.sub(i.Text, 1, 60) .. "'")
-					end
+		local function sendSpace()
+			local down = false
+			if VIM then
+				down = pcall(function()
+					VIM:SendKeyEvent(true, Enum.KeyCode.Space, false, game)
 				end)
 			end
-		end
-
-		local function sample()
-			local t = now()
-			for inst, tr in pairs(S.tracks) do
-				if inst.Parent ~= nil and shown(inst) then
-					local p, sz = (inst :: any).AbsolutePosition, (inst :: any).AbsoluteSize
-					local key = string.format("%.0f,%.0f,%.0f,%.0f", p.X, p.Y, sz.X, sz.Y)
-					if key ~= tr.last and #tr.series < MAX_SERIES then
-						tr.last = key
-						tr.changedAt = t
-						tr.series[#tr.series + 1] = { t, p.X, p.Y, sz.X, sz.Y }
-					end
-				end
+			if not down and keypress and keyrelease then pcall(keypress, 0x20) end
+			task.wait(0.10)
+			if VIM and down then
+				pcall(function() VIM:SendKeyEvent(false, Enum.KeyCode.Space, false, game) end)
+			elseif not down and keyrelease then
+				pcall(keyrelease, 0x20)
 			end
 		end
 
-		local function buildReport(): string
-			local L = {}
-			local function add(s: string) L[#L + 1] = s end
-
-			add("== R4MEN SCAN MINI GAME ==")
-			add("GameId: " .. tostring(game.GameId) .. " | PlaceId: " .. tostring(game.PlaceId))
-			add(string.format("Durasi rekam: %.1f detik | objek dipantau: %d", now(), S.count))
-
-			local moving, still = {}, {}
-			for _, tr in pairs(S.tracks) do
-				local n = #tr.series
-				if n >= 1 then
-					local function rng(idx: number)
-						local mn, mx = math.huge, -math.huge
-						for _, s in ipairs(tr.series) do
-							if s[idx] < mn then mn = s[idx] end
-							if s[idx] > mx then mx = s[idx] end
-						end
-						return mn, mx
-					end
-					local xmin, xmax = rng(2)
-					local ymin, ymax = rng(3)
-					local wmin, wmax = rng(4)
-					local info: any = { tr = tr, n = n, xmin = xmin, xmax = xmax, wmin = wmin, wmax = wmax, ymin = ymin, ymax = ymax }
-					if n >= 3 then
-						local dist, active, rev, lastSign = 0, 0, 0, 0
-						for i = 2, n do
-							local a, b = tr.series[i - 1], tr.series[i]
-							local dx, dt = b[2] - a[2], b[1] - a[1]
-							if dt > 0 and dt <= 0.3 then
-								dist += math.abs(dx)
-								active += dt
-							end
-							local sg = (dx > 0 and 1) or (dx < 0 and -1) or 0
-							if sg ~= 0 then
-								if lastSign ~= 0 and sg ~= lastSign then rev += 1 end
-								lastSign = sg
-							end
-						end
-						info.speed = active > 0 and dist / active or 0
-						info.rev = rev
-						moving[#moving + 1] = info
-					else
-						still[#still + 1] = info
-					end
-				end
-			end
-			table.sort(moving, function(a, b) return a.n > b.n end)
-
-			add("")
-			add("## OBJEK BERGERAK / BERUBAH (kandidat penanda & zona)")
-			if #moving == 0 then add("(tidak ada)") end
-			for i, m in ipairs(moving) do
-				if i > 25 then add("... (" .. (#moving - 25) .. " lagi)") break end
-				add(string.format("- %s | warna #%s | %d sampel", m.tr.path, m.tr.color, m.n))
-				add(string.format("    X: %.0f..%.0f | Y: %.0f..%.0f | lebar: %.0f..%.0f | kecepatan: %.0f px/dtk | balik arah: %d",
-					m.xmin, m.xmax, m.ymin, m.ymax, m.wmin, m.wmax, m.speed or 0, m.rev or 0))
-				if i <= 4 then
-					local parts = {}
-					for k = 1, math.min(10, m.n) do
-						local s = m.tr.series[k]
-						parts[#parts + 1] = string.format("t%.2f:x%.0f/w%.0f", s[1], s[2], s[4])
-					end
-					add("    awal: " .. table.concat(parts, "  "))
-				end
-			end
-
-			table.sort(still, function(a, b) return a.wmax > b.wmax end)
-			add("")
-			add("## OBJEK DIAM (bar / zona statis, yang terbesar)")
-			local shownStill = 0
-			for _, m in ipairs(still) do
-				if m.wmax >= 15 then
-					shownStill += 1
-					if shownStill > 15 then break end
-					local s = m.tr.series[#m.tr.series]
-					add(string.format("- %s | warna #%s | X %.0f Y %.0f lebar %.0f tinggi %.0f", m.tr.path, m.tr.color, s[2], s[3], s[4], s[5]))
-				end
-			end
-			if shownStill == 0 then add("(tidak ada)") end
-
-			-- tebakan kasar penanda (bergerak cepat, bolak-balik) supaya mudah dicek
-			local best: any = nil
-			for _, m in ipairs(moving) do
-				if (m.rev or 0) >= 1 and (m.speed or 0) > 30 and (not best or m.speed > best.speed) then best = m end
-			end
-			add("")
-			add("## TEBAKAN KASAR (perlu dicek)")
-			if best then
-				add("penanda: " .. best.tr.path .. string.format(" (%.0f px/dtk)", best.speed))
+		switches.autoMinigame = makeSwitch(card, UDim2.new(1, -14, 0, 25), false, function(on)
+			state.autoMinigame = on
+			A.lastAngle, A.lastT = nil, 0
+			if on then
+				setStatus(#A.pins > 0 and "Aktif • modul Lockpick siap" or "Aktif • memindai Lockpick / Safe Dial")
+				toast("Auto Minigame: ON")
 			else
-				add("penanda: (tidak jelas)")
+				setStatus("Dimatikan.")
+				toast("Auto Minigame: OFF")
 			end
+			refreshActive()
+		end, cardGlow(card))
 
-			add("")
-			add("## KEJADIAN (teks, tombol, remote)")
-			if #S.events == 0 then add("(tidak ada)") end
-			for _, e in ipairs(S.events) do add(e) end
-
-			return table.concat(L, "\n")
-		end
-
-		local function stopRec()
-			S.rec = false
-			for _, c in ipairs(S.conns) do pcall(function() c:Disconnect() end) end
-			table.clear(S.conns)
-		end
-
-		local function startRec()
-			stopRec()
-			table.clear(S.tracks)
-			table.clear(S.events)
-			table.clear(S.textT)
-			S.count, S.textCount = 0, 0
-			S.t0 = os.clock()
-			S.acc = 0
-			S.rec = true
-
-			for _, d in ipairs(playerGui:GetDescendants()) do consider(d) end
-
-			S.conns[#S.conns + 1] = playerGui.DescendantAdded:Connect(function(d)
-				task.defer(function()
-					if not S.rec then return end
-					consider(d)
-					if d.Parent == playerGui and not EXCLUDE[d.Name] then
-						addEvent("GUI BARU", d.Name)
-					end
-				end)
-			end)
-
-			S.conns[#S.conns + 1] = UIS.InputBegan:Connect(function(input)
-				if not S.rec then return end
-				local label: string? = nil
-				if input.UserInputType == Enum.UserInputType.MouseButton1 then label = "Klik"
-				elseif input.UserInputType == Enum.UserInputType.Touch then label = "Tap"
-				elseif input.UserInputType == Enum.UserInputType.Keyboard then label = input.KeyCode.Name end
-				if not label then return end
-				sample()
-				local parts, t = {}, now()
-				for _, tr in pairs(S.tracks) do
-					if t - tr.changedAt < 1 and #tr.series >= 3 then
-						local s = tr.series[#tr.series]
-						parts[#parts + 1] = string.format("%s x%.0f w%.0f", string.match(tr.path, "([^%.]+)$") or tr.path, s[2], s[4])
+		track(RunService.RenderStepped:Connect(function()
+			if unloaded or not state.autoMinigame then return end
+			local gui = playerGui:FindFirstChild("MinigameGui")
+			-- Fallback lintas game: cari ScreenGui lain yang bernama minigame/puzzle
+			-- atau memiliki node Lockpick/SafeDial di dalam hierarkinya.
+			if not gui then
+				for _, candidate in ipairs(playerGui:GetChildren()) do
+					if candidate:IsA("ScreenGui") then
+						local lowerName = string.lower(candidate.Name)
+						if string.find(lowerName, "minigame", 1, true)
+							or string.find(lowerName, "puzzle", 1, true)
+						or candidate:FindFirstChild("Lockpick", true)
+						or candidate:FindFirstChild("SafeDial", true) then
+							gui = candidate
+							break
+						end
 					end
 				end
-				addEvent("TEKAN " .. label, "posisi: " .. (#parts > 0 and table.concat(parts, " | ") or "(tidak ada objek bergerak)"))
-			end)
-
-			-- server -> client (hanya mendengarkan; tidak ada hook)
-			for _, d in ipairs(ReplicatedStorage:GetDescendants()) do
-				if d:IsA("RemoteEvent") then
-					S.conns[#S.conns + 1] = d.OnClientEvent:Connect(function(...)
-						if not S.rec then return end
-						local args = table.pack(...)
-						local parts = {}
-						for i = 1, math.min(args.n, 6) do parts[#parts + 1] = ser(args[i], 0) end
-						addEvent("SERVER->CLIENT", d.Name .. "(" .. table.concat(parts, ", ") .. ")")
-					end)
-				end
 			end
-		end
+			local lockpick = gui and gui:FindFirstChild("Lockpick", true)
+			local lock = lockpick and lockpick:FindFirstChild("Lock", true)
+			local pick = lock and lock:FindFirstChild("Pick", true)
+			local pickImage = pick and pick:FindFirstChild("lockpick_pick", true)
+			local safeDial = gui and gui:FindFirstChild("SafeDial", true)
 
-		-- ---------- kartu UI ----------
-		local page = pages["Mini Game"]
-		sectionLabel(page, 2, "Scan Mini Game")
-		local card = makeCard(page, 144, 3)
-		text(card, {
-			Text = "Perekam Minigame",
-			Font = Enum.Font.GothamBold,
-			TextSize = 14,
-			Position = UDim2.fromOffset(14, 10),
-			Size = UDim2.new(1, -28, 0, 18),
-		})
-		text(card, {
-			Text = "Rekam beberapa putaran, salin, lalu kirim hasilnya ke chat. Matikan Auto Cut dulu.",
-			TextSize = 11,
-			TextColor3 = T.sub,
-			TextWrapped = true,
-			TextYAlignment = Enum.TextYAlignment.Top,
-			Position = UDim2.fromOffset(14, 30),
-			Size = UDim2.new(1, -28, 0, 28),
-		})
-
-		local recBtn = makeButton(card, 0, "Rekam: OFF", T.accent, 28)
-		recBtn.Size = UDim2.new(1, -28, 0, 28)
-		recBtn.Position = UDim2.fromOffset(14, 62)
-		hover(recBtn, T.accent)
-
-		local copyBtn = makeButton(card, 0, "Salin hasil", T.accent2, 28)
-		copyBtn.Size = UDim2.new(0.5, -18, 0, 28)
-		copyBtn.Position = UDim2.fromOffset(14, 96)
-		hover(copyBtn, T.accent2)
-
-		local clearBtn = makeButton(card, 0, "Hapus", T.off, 28)
-		clearBtn.AnchorPoint = Vector2.new(1, 0)
-		clearBtn.Size = UDim2.new(0.5, -18, 0, 28)
-		clearBtn.Position = UDim2.new(1, -14, 0, 96)
-		hover(clearBtn, T.off)
-
-		local sLbl = text(card, {
-			Text = "Siap. Tekan Rekam lalu main minigame.",
-			TextSize = 10,
-			TextColor3 = T.sub,
-			TextTruncate = Enum.TextTruncate.AtEnd,
-			Position = UDim2.fromOffset(14, 128),
-			Size = UDim2.new(1, -28, 0, 12),
-		})
-
-		local function recOffUi()
-			recBtn.Text = "Rekam: OFF"
-			tween(recBtn, { BackgroundColor3 = T.accent }, 0.15)
-		end
-
-		recBtn.MouseButton1Click:Connect(function()
-			if not S.rec then
-				if state.autoCut then toast("Auto Cut sedang ON: tekanan Space-nya ikut terekam") end
-				startRec()
-				recBtn.Text = "Rekam: ON"
-				tween(recBtn, { BackgroundColor3 = T.good }, 0.15)
-				sLbl.Text = "Merekam... mainkan minigame beberapa putaran."
-			else
-				stopRec()
-				recOffUi()
-				sLbl.Text = string.format("Selesai: %d objek, %d kejadian. Tekan Salin.", S.count, #S.events)
-			end
-		end)
-
-		copyBtn.MouseButton1Click:Connect(function()
-			if S.rec then stopRec(); recOffUi() end
-			if S.count == 0 and #S.events == 0 then
-				sLbl.Text = "Belum ada data."
+			if not (gui and isVisible(gui)) then
+				if A.wasActive then setStatus("Minigame ditutup • menunggu sesi berikutnya") end
+				A.wasActive = false
+				A.lastAngle, A.lastT, A.speed, A.direction = nil, 0, 0, 0
 				return
 			end
-			local report = buildReport()
-			local clip = setclipboard or toclipboard
-			local copied = clip and pcall(clip, report)
-			if writefile then pcall(writefile, settings.path("scan_" .. tostring(game.GameId) .. ".txt"), report) end
-			sLbl.Text = copied and "Disalin ke clipboard (+ file scan_*.txt)" or "Tidak bisa salin; lihat file scan_*.txt di folder R4MEN"
-			toast(copied and "Hasil scan disalin" or "Executor tidak bisa menyalin; lihat file scan")
-		end)
+			A.wasActive = true
 
-		clearBtn.MouseButton1Click:Connect(function()
-			table.clear(S.tracks); table.clear(S.events)
-			S.count = 0
-			sLbl.Text = "Data dihapus."
-		end)
+			-- Klasifikasi visual berdasar struktur UI. Safe Dial berbeda dari Lockpick:
+			-- rekaman menunjukkan Rotor.Number + ContactPulse + panel Readout.
+			-- Belum ada bukti cukup untuk menebak kombinasi/arah/jeda tombol yang benar,
+			-- jadi modul hanya mengenali dan melaporkan Safe Dial, bukan menekan A/D secara acak.
+			if safeDial and isVisible(safeDial) then
+				local dial = safeDial:FindFirstChild("Dial")
+				local rotor = dial and dial:FindFirstChild("Rotor")
+				local number = rotor and rotor:FindFirstChild("Number")
+				local pulse = dial and dial:FindFirstChild("ContactPulse")
+				local panel = safeDial:FindFirstChild("Panel")
+				local readoutRow = panel and panel:FindFirstChild("ReadoutRow")
+				local readout = readoutRow and readoutRow:FindFirstChild("Readout")
+				if number and pulse and readout and readout:IsA("TextLabel") then
+					local txt = tostring(readout.Text or "Safe Dial")
+					if os.clock() - A.lastUi > 0.35 then
+						A.lastUi = os.clock()
+						setStatus("Safe Dial terdeteksi • " .. txt .. " • pola auto belum tervalidasi")
+					end
+				else
+					if os.clock() - A.lastUi > 0.35 then
+						A.lastUi = os.clock()
+						setStatus("Safe Dial terdeteksi • menunggu struktur rotor lengkap")
+					end
+				end
+				return
+			end
 
-		-- pembacaan posisi: satu koneksi, ikut dibersihkan unload lewat track
-		track(RunService.Heartbeat:Connect(function(dt)
-			if not S.rec or unloaded then return end
-			S.acc += dt
-			if S.acc >= SAMPLE_DT then
-				S.acc = 0
-				sample()
+			if not (pick and pickImage) then
+				if os.clock() - A.lastUi > 0.35 then
+					A.lastUi = os.clock()
+					setStatus("Minigame terdeteksi • jenis belum didukung")
+				end
+				return
+			end
+
+			if #A.pins == 0 then
+				if os.clock() - A.lastUi > 0.2 then
+					A.lastUi = os.clock()
+					setStatus("Lockpick terdeteksi • menunggu data MinigameStart")
+				end
+				return
+			end
+
+			local now = os.clock()
+			-- Sudut needle = rotasi Frame Pick + offset rotasi ImageLabel lockpick_pick.
+			local angle = (pick.Rotation + pickImage.Rotation) % 360
+			if A.lastAngle ~= nil and A.lastT > 0 then
+				local dt = now - A.lastT
+				if dt > 0 and dt < 0.25 then
+					local delta = angle - A.lastAngle
+					if delta > 180 then delta -= 360 end
+					if delta < -180 then delta += 360 end
+					local velocity = delta / dt
+					if math.abs(velocity) > 35 then
+						local measured = math.abs(velocity)
+						A.speed = A.speed == 0 and measured or (A.speed * 0.55 + measured * 0.45)
+						A.direction = velocity >= 0 and 1 or -1
+					end
+				end
+			end
+			A.lastAngle, A.lastT = angle, now
+
+			if A.speed < 35 or A.direction == 0 then
+				if now - A.lastUi > 0.15 then
+					A.lastUi = now
+					setStatus("Lockpick aktif • membaca arah dan kecepatan...")
+				end
+				return
+			end
+
+			-- Pilih pin dari kombinasi speed + direction yang sedang terbaca.
+			local activePin, bestDiff = nil, math.huge
+			for _, pin in ipairs(A.pins) do
+				if pin.dir == A.direction then
+					local diff = math.abs(A.speed - pin.speed)
+					if diff < bestDiff then activePin, bestDiff = pin, diff end
+				end
+			end
+			if not activePin or bestDiff > math.max(38, activePin.speed * 0.25) then
+				if now - A.lastUi > 0.15 then
+					A.lastUi = now
+					setStatus(string.format("Membaca gerakan pick • %.0f°/dtk", A.speed))
+				end
+				return
+			end
+
+			local signedDiff = (activePin.sweet - angle + 540) % 360 - 180
+			local gate = math.min(A.halfWidth * 0.5, 10)
+			if now - A.lastUi > 0.10 then
+				A.lastUi = now
+				setStatus(string.format("Pin %d/%d • sudut %.1f° • target %.1f° • selisih %+.1f°",
+					activePin.index, #A.pins, angle, activePin.sweet, signedDiff))
+			end
+
+			-- Satu percobaan per lintasan; bila gagal, boleh mencoba lagi pada putaran berikutnya.
+			local lastTry = A.lastAttempt[activePin.index] or 0
+			if math.abs(signedDiff) <= gate and now - lastTry > 1.5 then
+				A.lastAttempt[activePin.index] = now
+				task.spawn(sendSpace)
+				setStatus(string.format("Pin %d • Space dikirim pada sweet window", activePin.index))
 			end
 		end))
-
-		-- koneksi rekaman diputus saat GUI dihancurkan (Unload)
-		gui.Destroying:Connect(function() stopRec() end)
 	end
-	buildScanner()
+
+	-- Auto Minigame (Lockpick / Safe Dial) hanya dibuat di game yang GameId-nya ada di
+	-- settings.autoMiniGameIds. Di game lain kartunya tidak ada (Rekam Minigame tetap ada).
+	if settings.autoMiniOk then
+		sectionLabel(pages["Mini Game"], 0, "Auto Mini Game")
+		buildUniversalAuto()
+	end
+	if settings.miniGameOk then
+		buildMiniGame()
+	end
+end
+
+-- =====================================================
+-- GUI: CATUR (Mini Game)
+--  * Tanpa jendela: script membaca papan in-game PlayerGui["2DBoard"].Main (Board = kotak a1..h8,
+--    Pieces = bidak "White_Pawn", "Black_Knight", dst). Kotak & bidak dicocokkan lewat posisi layar.
+--  * Mesin: aturan lengkap + AI minimax alpha-beta di makeEngine() (murni, tanpa API Roblox).
+--  * Langkah musuh = kotak oranye; SARAN balasanmu = kotak + panah hijau di atas papan game;
+--    bidakmu yang terancam = titik merah. Sisi milikmu = sisi yang rajanya di bawah layar.
+-- Dibungkus do ... end + fungsi supaya tidak menghabiskan jatah 200 local script utama.
+-- =====================================================
+do
+local function makeEngine()
+	local CH = {}
+	local abs = math.abs
+	local tclone = table.clone or function(t)
+		local n = {}
+		for i = 1, #t do n[i] = t[i] end
+		return n
+	end
+	local wait = (task and task.wait) or function() end
+
+	-- Kode bidak: 1 Pion, 2 Kuda, 3 Gajah, 4 Benteng, 5 Menteri, 6 Raja. Putih positif, hitam negatif.
+	-- Kotak 1..64: sq = rank*8 + file + 1 (a1 = 1, h1 = 8, a8 = 57, h8 = 64).
+	local VAL = { 100, 320, 330, 500, 900, 0 }
+	CH.NAMES = { "Pion", "Kuda", "Gajah", "Benteng", "Menteri", "Raja" }
+	local INF, MATE = 1000000, 100000
+	CH.MATE = MATE
+
+	local FILE, RANK = {}, {}
+	for s = 1, 64 do
+		FILE[s] = (s - 1) % 8
+		RANK[s] = (s - 1) // 8
+	end
+	CH.FILE, CH.RANK = FILE, RANK
+
+	local function build(dirs, slide)
+		local out = {}
+		for s = 1, 64 do
+			local lists = {}
+			for _, d in ipairs(dirs) do
+				local ray = {}
+				local nf, nr = FILE[s] + d[1], RANK[s] + d[2]
+				while nf >= 0 and nf <= 7 and nr >= 0 and nr <= 7 do
+					ray[#ray + 1] = nr * 8 + nf + 1
+					if not slide then break end
+					nf, nr = nf + d[1], nr + d[2]
+				end
+				if #ray > 0 then lists[#lists + 1] = ray end
+			end
+			out[s] = lists
+		end
+		return out
+	end
+	local KNR = build({ { 1, 2 }, { 2, 1 }, { 2, -1 }, { 1, -2 }, { -1, -2 }, { -2, -1 }, { -2, 1 }, { -1, 2 } }, false)
+	local KGR = build({ { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 }, { 1, 1 }, { 1, -1 }, { -1, 1 }, { -1, -1 } }, false)
+	local BR = build({ { 1, 1 }, { 1, -1 }, { -1, 1 }, { -1, -1 } }, true)
+	local RR = build({ { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }, true)
+
+	-- Tabel nilai posisi (sudut pandang putih, baris pertama = rank 8)
+	local PST = {
+		{ 0, 0, 0, 0, 0, 0, 0, 0, 50, 50, 50, 50, 50, 50, 50, 50, 10, 10, 20, 30, 30, 20, 10, 10, 5, 5, 10, 25, 25, 10, 5, 5,
+			0, 0, 0, 20, 20, 0, 0, 0, 5, -5, -10, 0, 0, -10, -5, 5, 5, 10, 10, -20, -20, 10, 10, 5, 0, 0, 0, 0, 0, 0, 0, 0 },
+		{ -50, -40, -30, -30, -30, -30, -40, -50, -40, -20, 0, 0, 0, 0, -20, -40, -30, 0, 10, 15, 15, 10, 0, -30, -30, 5, 15, 20, 20, 15, 5, -30,
+			-30, 0, 15, 20, 20, 15, 0, -30, -30, 5, 10, 15, 15, 10, 5, -30, -40, -20, 0, 5, 5, 0, -20, -40, -50, -40, -30, -30, -30, -30, -40, -50 },
+		{ -20, -10, -10, -10, -10, -10, -10, -20, -10, 0, 0, 0, 0, 0, 0, -10, -10, 0, 5, 10, 10, 5, 0, -10, -10, 5, 5, 10, 10, 5, 5, -10,
+			-10, 0, 10, 10, 10, 10, 0, -10, -10, 10, 10, 10, 10, 10, 10, -10, -10, 5, 0, 0, 0, 0, 5, -10, -20, -10, -10, -10, -10, -10, -10, -20 },
+		{ 0, 0, 0, 0, 0, 0, 0, 0, 5, 10, 10, 10, 10, 10, 10, 5, -5, 0, 0, 0, 0, 0, 0, -5, -5, 0, 0, 0, 0, 0, 0, -5,
+			-5, 0, 0, 0, 0, 0, 0, -5, -5, 0, 0, 0, 0, 0, 0, -5, -5, 0, 0, 0, 0, 0, 0, -5, 0, 0, 0, 5, 5, 0, 0, 0 },
+		{ -20, -10, -10, -5, -5, -10, -10, -20, -10, 0, 0, 0, 0, 0, 0, -10, -10, 0, 5, 5, 5, 5, 0, -10, -5, 0, 5, 5, 5, 5, 0, -5,
+			0, 0, 5, 5, 5, 5, 0, -5, -10, 5, 5, 5, 5, 5, 0, -10, -10, 0, 5, 0, 0, 0, 0, -10, -20, -10, -10, -5, -5, -10, -10, -20 },
+		{ -30, -40, -40, -50, -50, -40, -40, -30, -30, -40, -40, -50, -50, -40, -40, -30, -30, -40, -40, -50, -50, -40, -40, -30, -30, -40, -40, -50, -50, -40, -40, -30,
+			-20, -30, -30, -40, -40, -30, -30, -20, -10, -20, -20, -20, -20, -20, -20, -10, 20, 20, 0, 0, 0, 0, 20, 20, 20, 30, 10, 0, 0, 10, 30, 20 },
+	}
+	local KEG = { -50, -40, -30, -20, -20, -30, -40, -50, -30, -20, -10, 0, 0, -10, -20, -30, -30, -10, 20, 30, 30, 20, -10, -30, -30, -10, 30, 40, 40, 30, -10, -30,
+		-30, -10, 30, 40, 40, 30, -10, -30, -30, -10, 20, 30, 30, 20, -10, -30, -30, -30, 0, 0, 0, 0, -30, -30, -50, -30, -30, -30, -30, -30, -30, -50 }
+
+	-- Hak rokade: 1 = putih sisi raja, 2 = putih sisi menteri, 4 = hitam sisi raja, 8 = hitam sisi menteri
+	local CLRBITS = { [1] = { 2 }, [5] = { 1, 2 }, [8] = { 1 }, [57] = { 8 }, [61] = { 4, 8 }, [64] = { 4 } }
+	local function hasBit(r, m) return (r // m) % 2 == 1 end
+	local function clearRights(r, s)
+		local l = CLRBITS[s]
+		if l then
+			for i = 1, #l do
+				local m = l[i]
+				if (r // m) % 2 == 1 then r = r - m end
+			end
+		end
+		return r
+	end
+
+	-- Apakah kotak s diserang oleh warna `by`?
+	local function attacked(b, s, by)
+		local f, r = FILE[s], RANK[s]
+		local pr = r - by
+		if pr >= 0 and pr <= 7 then
+			if f > 0 and b[pr * 8 + f] == by then return true end
+			if f < 7 and b[pr * 8 + f + 2] == by then return true end
+		end
+		local n, k, bi, ro, q = 2 * by, 6 * by, 3 * by, 4 * by, 5 * by
+		local rays = KNR[s]
+		for i = 1, #rays do
+			if b[rays[i][1]] == n then return true end
+		end
+		rays = KGR[s]
+		for i = 1, #rays do
+			if b[rays[i][1]] == k then return true end
+		end
+		rays = BR[s]
+		for i = 1, #rays do
+			local ray = rays[i]
+			for j = 1, #ray do
+				local p = b[ray[j]]
+				if p ~= 0 then
+					if p == bi or p == q then return true end
+					break
+				end
+			end
+		end
+		rays = RR[s]
+		for i = 1, #rays do
+			local ray = rays[i]
+			for j = 1, #ray do
+				local p = b[ray[j]]
+				if p ~= 0 then
+					if p == ro or p == q then return true end
+					break
+				end
+			end
+		end
+		return false
+	end
+	CH.attacked = attacked
+
+	-- Nilai bidak penyerang TERENDAH yang menyerang kotak s (nil bila tidak ada)
+	local function lowAtt(b, s, by)
+		local best = nil
+		local function upd(v)
+			if not best or v < best then best = v end
+		end
+		local f, r = FILE[s], RANK[s]
+		local pr = r - by
+		if pr >= 0 and pr <= 7 then
+			if f > 0 and b[pr * 8 + f] == by then upd(100) end
+			if f < 7 and b[pr * 8 + f + 2] == by then upd(100) end
+		end
+		for _, ray in ipairs(KNR[s]) do
+			if b[ray[1]] == 2 * by then upd(320) end
+		end
+		for _, ray in ipairs(KGR[s]) do
+			if b[ray[1]] == 6 * by then upd(20000) end
+		end
+		for _, ray in ipairs(BR[s]) do
+			for j = 1, #ray do
+				local p = b[ray[j]]
+				if p ~= 0 then
+					if p == 3 * by then upd(330) elseif p == 5 * by then upd(900) end
+					break
+				end
+			end
+		end
+		for _, ray in ipairs(RR[s]) do
+			for j = 1, #ray do
+				local p = b[ray[j]]
+				if p ~= 0 then
+					if p == 4 * by then upd(500) elseif p == 5 * by then upd(900) end
+					break
+				end
+			end
+		end
+		return best
+	end
+
+	-- Bidak `color` yang terancam: diserang lawan dan (tidak dilindungi ATAU diserang bidak lebih murah)
+	function CH.threatened(pos, color)
+		local out = {}
+		local b = pos.b
+		for s = 1, 64 do
+			local pc = b[s]
+			if pc ~= 0 and pc * color > 0 and abs(pc) ~= 6 then
+				local la = lowAtt(b, s, -color)
+				if la then
+					local val = VAL[abs(pc)]
+					local def = lowAtt(b, s, color)
+					if not def or la < val then out[#out + 1] = s end
+				end
+			end
+		end
+		return out
+	end
+
+	-- Bangkitkan langkah pseudo-legal (belum dicek raja sendiri skak atau tidak)
+	local function gen(pos, capsOnly)
+		local b, turn = pos.b, pos.turn
+		local out, n = {}, 0
+		for s = 1, 64 do
+			local pc = b[s]
+			if pc ~= 0 and pc * turn > 0 then
+				local t = pc * turn
+				if t == 1 then
+					local f, r = FILE[s], RANK[s]
+					local nr = r + turn
+					local promo = (nr == 7 or nr == 0)
+					for df = -1, 1, 2 do
+						local nf = f + df
+						if nf >= 0 and nf <= 7 then
+							local ts = nr * 8 + nf + 1
+							local tp = b[ts]
+							if tp ~= 0 and tp * turn < 0 then
+								if promo then
+									for _, pp in ipairs({ 5, 4, 3, 2 }) do
+										n = n + 1
+										out[n] = { f = s, t = ts, p = pp }
+									end
+								else
+									n = n + 1
+									out[n] = { f = s, t = ts }
+								end
+							elseif tp == 0 and ts == pos.ep then
+								n = n + 1
+								out[n] = { f = s, t = ts, fl = 2 }
+							end
+						end
+					end
+					local ts = nr * 8 + f + 1
+					if b[ts] == 0 then
+						if promo then
+							if capsOnly then
+								n = n + 1
+								out[n] = { f = s, t = ts, p = 5 }
+							else
+								for _, pp in ipairs({ 5, 4, 3, 2 }) do
+									n = n + 1
+									out[n] = { f = s, t = ts, p = pp }
+								end
+							end
+						elseif not capsOnly then
+							n = n + 1
+							out[n] = { f = s, t = ts }
+							local startR = (turn == 1) and 1 or 6
+							if r == startR then
+								local ts2 = (r + 2 * turn) * 8 + f + 1
+								if b[ts2] == 0 then
+									n = n + 1
+									out[n] = { f = s, t = ts2, fl = 1 }
+								end
+							end
+						end
+					end
+				elseif t == 2 or t == 6 then
+					local rays = (t == 2) and KNR[s] or KGR[s]
+					for i = 1, #rays do
+						local ts = rays[i][1]
+						local tp = b[ts]
+						if tp == 0 then
+							if not capsOnly then
+								n = n + 1
+								out[n] = { f = s, t = ts }
+							end
+						elseif tp * turn < 0 then
+							n = n + 1
+							out[n] = { f = s, t = ts }
+						end
+					end
+					if t == 6 and not capsOnly then
+						local home = (turn == 1) and 5 or 61
+						if s == home then
+							local kb, qb = (turn == 1) and 1 or 4, (turn == 1) and 2 or 8
+							local opp = -turn
+							if hasBit(pos.cr, kb) and b[home + 1] == 0 and b[home + 2] == 0 and b[home + 3] == 4 * turn
+								and not attacked(b, home, opp) and not attacked(b, home + 1, opp) and not attacked(b, home + 2, opp) then
+								n = n + 1
+								out[n] = { f = home, t = home + 2, fl = 3 }
+							end
+							if hasBit(pos.cr, qb) and b[home - 1] == 0 and b[home - 2] == 0 and b[home - 3] == 0 and b[home - 4] == 4 * turn
+								and not attacked(b, home, opp) and not attacked(b, home - 1, opp) and not attacked(b, home - 2, opp) then
+								n = n + 1
+								out[n] = { f = home, t = home - 2, fl = 4 }
+							end
+						end
+					end
+				else
+					local sets
+					if t == 3 then sets = { BR[s] } elseif t == 4 then sets = { RR[s] } else sets = { BR[s], RR[s] } end
+					for si = 1, #sets do
+						local rays = sets[si]
+						for i = 1, #rays do
+							local ray = rays[i]
+							for j = 1, #ray do
+								local ts = ray[j]
+								local tp = b[ts]
+								if tp == 0 then
+									if not capsOnly then
+										n = n + 1
+										out[n] = { f = s, t = ts }
+									end
+								else
+									if tp * turn < 0 then
+										n = n + 1
+										out[n] = { f = s, t = ts }
+									end
+									break
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+		return out
+	end
+
+	local function apply(pos, m)
+		local b = tclone(pos.b)
+		local turn = pos.turn
+		local pc = b[m.f]
+		local capture = b[m.t] ~= 0
+		b[m.f] = 0
+		if m.fl == 2 then
+			b[RANK[m.f] * 8 + FILE[m.t] + 1] = 0
+			capture = true
+		elseif m.fl == 3 then
+			b[m.f + 3] = 0
+			b[m.f + 1] = 4 * turn
+		elseif m.fl == 4 then
+			b[m.f - 4] = 0
+			b[m.f - 1] = 4 * turn
+		end
+		if m.p then b[m.t] = m.p * turn else b[m.t] = pc end
+		local np = {
+			b = b,
+			turn = -turn,
+			cr = clearRights(clearRights(pos.cr, m.f), m.t),
+			ep = (m.fl == 1) and ((m.f + m.t) // 2) or 0,
+			hm = (abs(pc) == 1 or capture) and 0 or (pos.hm + 1),
+			fm = pos.fm + ((turn == -1) and 1 or 0),
+			kw = pos.kw,
+			kb = pos.kb,
+		}
+		if abs(pc) == 6 then
+			if turn == 1 then np.kw = m.t else np.kb = m.t end
+		end
+		return np
+	end
+	CH.apply = apply
+
+	local function kingSq(pos, color) return (color == 1) and pos.kw or pos.kb end
+
+	-- Daftar langkah legal
+	function CH.legal(pos)
+		local out = {}
+		local ms = gen(pos, false)
+		for i = 1, #ms do
+			local np = apply(pos, ms[i])
+			if not attacked(np.b, kingSq(np, pos.turn), -pos.turn) then out[#out + 1] = ms[i] end
+		end
+		return out
+	end
+
+	function CH.start()
+		local b = {}
+		for i = 1, 64 do b[i] = 0 end
+		local back = { 4, 2, 3, 5, 6, 3, 2, 4 }
+		for f = 0, 7 do
+			b[f + 1] = back[f + 1]
+			b[8 + f + 1] = 1
+			b[48 + f + 1] = -1
+			b[56 + f + 1] = -back[f + 1]
+		end
+		return { b = b, turn = 1, cr = 15, ep = 0, hm = 0, fm = 1, kw = 5, kb = 61 }
+	end
+
+	function CH.fromFen(fen)
+		local parts = {}
+		for w in tostring(fen):gmatch("%S+") do parts[#parts + 1] = w end
+		if #parts < 2 then return nil end
+		local b = {}
+		for i = 1, 64 do b[i] = 0 end
+		local map = { p = 1, n = 2, b = 3, r = 4, q = 5, k = 6 }
+		local r, f = 7, 0
+		local kw, kb = 0, 0
+		for c in parts[1]:gmatch(".") do
+			if c == "/" then
+				r = r - 1
+				f = 0
+			elseif c:match("%d") then
+				f = f + tonumber(c)
+			else
+				local t = map[c:lower()]
+				if not t or r < 0 or f > 7 then return nil end
+				local color = (c == c:lower()) and -1 or 1
+				local s = r * 8 + f + 1
+				b[s] = t * color
+				if t == 6 then
+					if color == 1 then kw = s else kb = s end
+				end
+				f = f + 1
+			end
+		end
+		if kw == 0 or kb == 0 then return nil end
+		local cs = parts[3] or "-"
+		local cr = 0
+		if cs:find("K") then cr = cr + 1 end
+		if cs:find("Q") then cr = cr + 2 end
+		if cs:find("k") then cr = cr + 4 end
+		if cs:find("q") then cr = cr + 8 end
+		local ep = 0
+		if parts[4] and parts[4] ~= "-" and #parts[4] >= 2 then
+			local ef = parts[4]:byte(1) - 96
+			local er = tonumber(parts[4]:sub(2, 2))
+			if er and ef >= 1 and ef <= 8 then ep = (er - 1) * 8 + ef end
+		end
+		return {
+			b = b, turn = (parts[2] == "b") and -1 or 1, cr = cr, ep = ep,
+			hm = tonumber(parts[5]) or 0, fm = tonumber(parts[6]) or 1, kw = kw, kb = kb,
+		}
+	end
+
+	local function insufficient(b)
+		local minors = 0
+		for s = 1, 64 do
+			local t = abs(b[s])
+			if t == 1 or t == 4 or t == 5 then return false end
+			if t == 2 or t == 3 then minors = minors + 1 end
+		end
+		return minors <= 1
+	end
+
+	-- "ok" | "check" | "mate" | "stalemate" | "draw50" | "insufficient"  (+ apakah sedang skak)
+	function CH.status(pos)
+		local check = attacked(pos.b, kingSq(pos, pos.turn), -pos.turn)
+		if #CH.legal(pos) == 0 then return check and "mate" or "stalemate", check end
+		if pos.hm >= 100 then return "draw50", check end
+		if insufficient(pos.b) then return "insufficient", check end
+		return check and "check" or "ok", check
+	end
+
+	function CH.key(pos)
+		return table.concat(pos.b, ",") .. "|" .. pos.turn .. "|" .. pos.cr .. "|" .. pos.ep
+	end
+
+	function CH.sqName(s) return string.char(97 + FILE[s]) .. tostring(RANK[s] + 1) end
+
+	-- Deskripsi langkah, mis. "Kuda g8 ke f6 (tangkap Pion)"
+	function CH.describe(pos, m)
+		local pc = abs(pos.b[m.f])
+		local txt = CH.NAMES[pc] .. " " .. CH.sqName(m.f) .. " ke " .. CH.sqName(m.t)
+		if m.fl == 3 then
+			txt = "Rokade pendek (Raja " .. CH.sqName(m.f) .. " ke " .. CH.sqName(m.t) .. ")"
+		elseif m.fl == 4 then
+			txt = "Rokade panjang (Raja " .. CH.sqName(m.f) .. " ke " .. CH.sqName(m.t) .. ")"
+		end
+		local cap = abs(pos.b[m.t])
+		if m.fl == 2 then cap = 1 end
+		if cap ~= 0 then txt = txt .. " (tangkap " .. CH.NAMES[cap] .. ")" end
+		if m.p then txt = txt .. " jadi " .. CH.NAMES[m.p] end
+		return txt
+	end
+
+	-- ===== Zobrist hash + tabel transposisi + buku pembukaan =====
+	local bxor = bit32.bxor
+	local ZP, ZT, ZC, ZE = {}, nil, {}, {}
+	do
+		local function r16() return math.random(0, 65535) end
+		local function r32() return r16() * 65536 + r16() end
+		for s = 1, 64 do
+			local row = {}
+			for k = 1, 12 do row[k] = { r32(), r32() % 2097152 } end
+			ZP[s] = row
+		end
+		ZT = { r32(), r32() % 2097152 }
+		for i = 0, 15 do ZC[i] = { r32(), r32() % 2097152 } end
+		for i = 0, 64 do ZE[i] = { r32(), r32() % 2097152 } end
+	end
+
+	local function hashPos(pos)
+		local b = pos.b
+		local h1, h2 = 0, 0
+		for s = 1, 64 do
+			local pc = b[s]
+			if pc ~= 0 then
+				local z = ZP[s][(pc > 0) and pc or (6 - pc)]
+				h1 = bxor(h1, z[1])
+				h2 = bxor(h2, z[2])
+			end
+		end
+		if pos.turn == -1 then
+			h1 = bxor(h1, ZT[1])
+			h2 = bxor(h2, ZT[2])
+		end
+		local zc = ZC[pos.cr]
+		h1 = bxor(h1, zc[1])
+		h2 = bxor(h2, zc[2])
+		local ze = ZE[pos.ep]
+		h1 = bxor(h1, ze[1])
+		h2 = bxor(h2, ze[2])
+		return h1 + h2 * 4294967296
+	end
+	CH.hash = hashPos
+
+	local TT, ttN = {}, 0
+
+	-- ===== Evaluasi =====
+	local PASSB = { 0, 10, 20, 35, 60, 100, 150, 0 }
+
+	local function centerDist(s)
+		local f, r = FILE[s], RANK[s]
+		return math.max(3 - f, f - 4) + math.max(3 - r, r - 4)
+	end
+
+	local function evaluate(pos)
+		local b = pos.b
+		local npm = 0
+		for s = 1, 64 do
+			local t = abs(b[s])
+			if t > 1 and t < 6 then npm = npm + VAL[t] end
+		end
+		local endg = npm <= 2600
+		local score = 0
+		local wp, bp = { 0, 0, 0, 0, 0, 0, 0, 0 }, { 0, 0, 0, 0, 0, 0, 0, 0 }
+		local wmin, bmax = { 8, 8, 8, 8, 8, 8, 8, 8 }, { -1, -1, -1, -1, -1, -1, -1, -1 }
+		local pawns, np = {}, 0
+		local rooks, nr = {}, 0
+		local wB, bB, wMat, bMat = 0, 0, 0, 0
+		for s = 1, 64 do
+			local pc = b[s]
+			if pc ~= 0 then
+				local t = abs(pc)
+				local f, r = FILE[s], RANK[s]
+				local idx = (pc > 0) and ((7 - r) * 8 + f + 1) or (r * 8 + f + 1)
+				local tbl = PST[t]
+				if t == 6 and endg then tbl = KEG end
+				local v = VAL[t] + tbl[idx]
+				if t == 1 then
+					np = np + 1
+					pawns[np] = s
+					if pc > 0 then
+						wp[f + 1] = wp[f + 1] + 1
+						if r < wmin[f + 1] then wmin[f + 1] = r end
+					else
+						bp[f + 1] = bp[f + 1] + 1
+						if r > bmax[f + 1] then bmax[f + 1] = r end
+					end
+				elseif t == 2 then
+					local mob = 0
+					local rays = KNR[s]
+					for i = 1, #rays do
+						local q = b[rays[i][1]]
+						if q == 0 or q * pc < 0 then mob = mob + 1 end
+					end
+					v = v + (mob - 4) * 4
+				elseif t == 3 or t == 4 or t == 5 then
+					local rays = (t == 4) and RR[s] or BR[s]
+					local mob = 0
+					for i = 1, #rays do
+						local ray = rays[i]
+						for j = 1, #ray do
+							local q = b[ray[j]]
+							if q == 0 then
+								mob = mob + 1
+							else
+								if q * pc < 0 then mob = mob + 1 end
+								break
+							end
+						end
+					end
+					if t == 3 then
+						v = v + (mob - 6) * 3
+						if pc > 0 then wB = wB + 1 else bB = bB + 1 end
+					elseif t == 4 then
+						v = v + (mob - 7) * 2
+						nr = nr + 1
+						rooks[nr] = s
+					end
+				end
+				if t > 1 and t < 6 then
+					if pc > 0 then wMat = wMat + VAL[t] else bMat = bMat + VAL[t] end
+				end
+				if pc > 0 then score = score + v else score = score - v end
+			end
+		end
+		if wB >= 2 then score = score + 30 end
+		if bB >= 2 then score = score - 30 end
+
+		-- struktur pion: ganda, terisolasi, pion bebas
+		for i = 1, np do
+			local s = pawns[i]
+			local pc = b[s]
+			local f, r = FILE[s] + 1, RANK[s]
+			local sc = 0
+			if pc > 0 then
+				if wp[f] > 1 then sc = sc - 8 end
+				if (f == 1 or wp[f - 1] == 0) and (f == 8 or wp[f + 1] == 0) then sc = sc - 14 end
+				local passed = true
+				for ff = f - 1, f + 1 do
+					if ff >= 1 and ff <= 8 and bmax[ff] > r then passed = false end
+				end
+				if passed then
+					local bonus = PASSB[r + 1]
+					if endg then bonus = bonus + bonus // 2 end
+					sc = sc + bonus
+				end
+				score = score + sc
+			else
+				if bp[f] > 1 then sc = sc - 8 end
+				if (f == 1 or bp[f - 1] == 0) and (f == 8 or bp[f + 1] == 0) then sc = sc - 14 end
+				local passed = true
+				for ff = f - 1, f + 1 do
+					if ff >= 1 and ff <= 8 and wmin[ff] < r then passed = false end
+				end
+				if passed then
+					local bonus = PASSB[(7 - r) + 1]
+					if endg then bonus = bonus + bonus // 2 end
+					sc = sc + bonus
+				end
+				score = score - sc
+			end
+		end
+
+		-- benteng di kolom terbuka / setengah terbuka
+		for i = 1, nr do
+			local s = rooks[i]
+			local f = FILE[s] + 1
+			if b[s] > 0 then
+				if wp[f] == 0 then score = score + ((bp[f] == 0) and 20 or 10) end
+			else
+				if bp[f] == 0 then score = score - ((wp[f] == 0) and 20 or 10) end
+			end
+		end
+
+		-- keamanan raja (perisai pion) saat belum endgame
+		if not endg then
+			local ks = pos.kw
+			local kf, kr = FILE[ks], RANK[ks]
+			if kr <= 1 then
+				local sh = 0
+				for ff = kf - 1, kf + 1 do
+					if ff >= 0 and ff <= 7 then
+						if b[(kr + 1) * 8 + ff + 1] == 1 then sh = sh + 10
+						elseif kr + 2 <= 7 and b[(kr + 2) * 8 + ff + 1] == 1 then sh = sh + 5
+						else sh = sh - 12 end
+					end
+				end
+				score = score + sh
+			end
+			ks = pos.kb
+			kf, kr = FILE[ks], RANK[ks]
+			if kr >= 6 then
+				local sh = 0
+				for ff = kf - 1, kf + 1 do
+					if ff >= 0 and ff <= 7 then
+						if b[(kr - 1) * 8 + ff + 1] == -1 then sh = sh + 10
+						elseif kr - 2 >= 0 and b[(kr - 2) * 8 + ff + 1] == -1 then sh = sh + 5
+						else sh = sh - 12 end
+					end
+				end
+				score = score - sh
+			end
+		else
+			-- endgame menang: dorong raja lawan ke tepi, dekatkan raja sendiri
+			if bMat == 0 and wMat >= 500 then
+				local dk = abs(FILE[pos.kw] - FILE[pos.kb]) + abs(RANK[pos.kw] - RANK[pos.kb])
+				score = score + 47 * centerDist(pos.kb) // 10 + 16 * (14 - dk) // 10
+			elseif wMat == 0 and bMat >= 500 then
+				local dk = abs(FILE[pos.kw] - FILE[pos.kb]) + abs(RANK[pos.kw] - RANK[pos.kb])
+				score = score - (47 * centerDist(pos.kw) // 10 + 16 * (14 - dk) // 10)
+			end
+		end
+		return score * pos.turn
+	end
+
+	-- ===== Urutan langkah =====
+	local function orderMoves(pos, ms, ttm, st, ply)
+		local b = pos.b
+		local k1, k2
+		local hist
+		if st then
+			local k = st.kill[ply]
+			if k then k1, k2 = k[1], k[2] end
+			hist = st.hist
+		end
+		local side = (pos.turn == 1) and 0 or 4096
+		for i = 1, #ms do
+			local m = ms[i]
+			local v = 0
+			local cap = b[m.t]
+			if ttm and m.f == ttm.f and m.t == ttm.t and m.p == ttm.p then
+				v = 2000000
+			elseif cap ~= 0 then
+				v = 10000 + 10 * VAL[abs(cap)] - VAL[abs(b[m.f])]
+			elseif m.fl == 2 then
+				v = 10000 + 900
+			elseif k1 and m.f == k1.f and m.t == k1.t then
+				v = 9500
+			elseif k2 and m.f == k2.f and m.t == k2.t then
+				v = 9400
+			elseif hist then
+				local hv = hist[side + (m.f - 1) * 64 + m.t] or 0
+				v = (hv > 7000) and 7000 or hv
+			end
+			if m.p then v = v + 9000 + VAL[m.p] end
+			m.o = v
+		end
+		table.sort(ms, function(x, y) return x.o > y.o end)
+	end
+
+	local function tick(st)
+		st.nodes = st.nodes + 1
+		if st.nodes % 256 == 0 then
+			local now = os.clock()
+			if now >= st.deadline then
+				st.abort = true
+				return
+			end
+			if now - st.lastYield > 0.03 then
+				wait()
+				st.lastYield = os.clock()
+				if st.cancel and st.cancel() then st.abort = true end
+			end
+		end
+	end
+
+	local function quiesce(st, pos, alpha, beta, qd)
+		tick(st)
+		if st.abort then return 0 end
+		local stand = evaluate(pos)
+		if stand >= beta then return stand end
+		if stand > alpha then alpha = stand end
+		if qd >= 6 then return stand end
+		local ms = gen(pos, true)
+		orderMoves(pos, ms)
+		local turn = pos.turn
+		local b = pos.b
+		for i = 1, #ms do
+			local m = ms[i]
+			local cap = abs(b[m.t])
+			if m.fl == 2 then cap = 1 end
+			-- delta pruning: tangkapan kecil yang tak mungkin menaikkan alpha dilewati
+			if m.p or cap == 0 or stand + VAL[cap] + 200 >= alpha then
+				local np = apply(pos, m)
+				if not attacked(np.b, kingSq(np, turn), -turn) then
+					local sc = -quiesce(st, np, -beta, -alpha, qd + 1)
+					if st.abort then return 0 end
+					if sc >= beta then return sc end
+					if sc > alpha then alpha = sc end
+				end
+			end
+		end
+		return alpha
+	end
+
+	local function hasPieces(pos)
+		local b, turn = pos.b, pos.turn
+		for s = 1, 64 do
+			local v = b[s] * turn
+			if v > 1 and v < 6 then return true end
+		end
+		return false
+	end
+
+	local negamax
+	negamax = function(st, pos, depth, alpha, beta, ply, canNull)
+		tick(st)
+		if st.abort then return 0 end
+		if pos.hm >= 100 then return 0 end
+		local turn = pos.turn
+		local h = hashPos(pos)
+		if ply > 0 then
+			-- pengulangan posisi (di jalur pencarian ini atau yang sudah terjadi di partai) = remis
+			if st.path[h] or (st.game[h] or 0) >= 1 then return 0 end
+		end
+		local inCheck = attacked(pos.b, kingSq(pos, turn), -turn)
+		if inCheck and ply < 12 then depth = depth + 1 end
+		if depth <= 0 then return quiesce(st, pos, alpha, beta, 0) end
+
+		local alpha0 = alpha
+		local ttm
+		local e = TT[h]
+		if e then
+			ttm = e.m
+			if e.d >= depth and ply > 0 then
+				local sc = e.s
+				if sc > MATE - 1000 then sc = sc - ply elseif sc < -MATE + 1000 then sc = sc + ply end
+				if e.f == 0 then return sc end
+				if e.f == 1 and sc >= beta then return sc end
+				if e.f == 2 and sc <= alpha then return sc end
+			end
+		end
+
+		-- null-move pruning
+		if canNull and not inCheck and depth >= 3 and beta < MATE - 1000 and hasPieces(pos) then
+			local R = (depth >= 6) and 3 or 2
+			local nn = { b = pos.b, turn = -turn, cr = pos.cr, ep = 0, hm = pos.hm + 1, fm = pos.fm, kw = pos.kw, kb = pos.kb }
+			local sc = -negamax(st, nn, depth - 1 - R, -beta, -beta + 1, ply + 1, false)
+			if st.abort then return 0 end
+			if sc >= beta then return beta end
+		end
+
+		local ms = gen(pos, false)
+		orderMoves(pos, ms, ttm, st, ply)
+		local legal, best, bestM = 0, -INF, nil
+		local b = pos.b
+		local side = (turn == 1) and 0 or 4096
+		local fut = false
+		if depth <= 2 and (not inCheck) and alpha > -MATE + 1000 and alpha < MATE - 1000 then
+			if evaluate(pos) + ((depth == 1) and 200 or 450) <= alpha then fut = true end
+		end
+		st.path[h] = true
+		for i = 1, #ms do
+			local m = ms[i]
+			local np = apply(pos, m)
+			if not attacked(np.b, kingSq(np, turn), -turn) then
+				legal = legal + 1
+				local quiet = (b[m.t] == 0) and (not m.p) and m.fl ~= 2
+				if fut and quiet and legal > 1 and not attacked(np.b, kingSq(np, -turn), turn) then
+					-- futility: langkah tenang tanpa skak tidak mungkin menaikkan alpha
+					if best < alpha then best = alpha end
+				else
+				local d1 = depth - 1
+				local sc
+				if legal > 4 and depth >= 3 and quiet and not inCheck then
+					sc = -negamax(st, np, d1 - 1, -alpha - 1, -alpha, ply + 1, true)
+					if (not st.abort) and sc > alpha then
+						sc = -negamax(st, np, d1, -beta, -alpha, ply + 1, true)
+					end
+				elseif legal > 1 then
+					sc = -negamax(st, np, d1, -alpha - 1, -alpha, ply + 1, true)
+					if (not st.abort) and sc > alpha and sc < beta then
+						sc = -negamax(st, np, d1, -beta, -alpha, ply + 1, true)
+					end
+				else
+					sc = -negamax(st, np, d1, -beta, -alpha, ply + 1, true)
+				end
+				if st.abort then return 0 end
+				if sc > best then best, bestM = sc, m end
+				if sc > alpha then alpha = sc end
+				if alpha >= beta then
+					if quiet then
+						local k = st.kill[ply]
+						if not k then k = {}; st.kill[ply] = k end
+						if not (k[1] and k[1].f == m.f and k[1].t == m.t) then
+							k[2] = k[1]
+							k[1] = m
+						end
+						local hi = side + (m.f - 1) * 64 + m.t
+						st.hist[hi] = (st.hist[hi] or 0) + depth * depth
+					end
+					break
+				end
+				end
+			end
+		end
+		st.path[h] = nil
+		if legal == 0 then return inCheck and (-MATE + ply) or 0 end
+
+		local flag = 0
+		if best <= alpha0 then flag = 2 elseif best >= beta then flag = 1 end
+		local ss = best
+		if ss > MATE - 1000 then ss = ss + ply elseif ss < -MATE + 1000 then ss = ss - ply end
+		if ttN > 300000 then TT, ttN = {}, 0 end
+		if not TT[h] then ttN = ttN + 1 end
+		local bm = ttm
+		if bestM and flag ~= 2 then bm = { f = bestM.f, t = bestM.t, p = bestM.p } end
+		TT[h] = { d = depth, s = ss, f = flag, m = bm }
+		return best
+	end
+
+	-- Cari langkah terbaik. Iterative deepening dengan batas waktu (detik).
+	-- game = tabel hash posisi yang sudah terjadi di partai (untuk deteksi pengulangan), boleh nil.
+	-- Mengembalikan: langkah, skor (sudut pandang pemain yang jalan), kedalaman selesai.
+	-- Mengembalikan nil bila dibatalkan lewat cancelFn atau tidak ada langkah legal.
+	function CH.search(pos, maxDepth, timeLimit, cancelFn, game)
+		local st = {
+			nodes = 0, abort = false, deadline = os.clock() + timeLimit, lastYield = os.clock(), cancel = cancelFn,
+			path = {}, kill = {}, hist = {}, game = game or {},
+		}
+		local turn = pos.turn
+		local root = {}
+		local ms = gen(pos, false)
+		orderMoves(pos, ms)
+		for i = 1, #ms do
+			local np = apply(pos, ms[i])
+			if not attacked(np.b, kingSq(np, turn), -turn) then root[#root + 1] = { m = ms[i], np = np } end
+		end
+		if #root == 0 then return nil end
+		if #root == 1 then return root[1].m, 0, 0 end
+		local t0 = os.clock()
+		local hroot = hashPos(pos)
+		local bestMove, bestScore, doneDepth = root[1].m, 0, 0
+		for d = 1, maxDepth do
+			local alpha, itBest, itScore, itIdx, itAdj = -INF, nil, nil, 1, nil
+			st.path = { [hroot] = true }
+			for i = 1, #root do
+				local sc = -negamax(st, root[i].np, d - 1, -INF, -alpha, 1, true)
+				if st.abort then break end
+				-- bonus kecil untuk promosi supaya promosi tidak ditunda tanpa alasan
+				local adj = sc + (root[i].m.p == 5 and 25 or 0)
+				if not itAdj or adj > itAdj then itBest, itScore, itIdx, itAdj = root[i], sc, i, adj end
+				if sc > alpha then alpha = sc end
+			end
+			if st.abort then break end
+			bestMove, bestScore, doneDepth = itBest.m, itScore, d
+			table.remove(root, itIdx)
+			table.insert(root, 1, itBest)
+			if abs(itScore) > MATE - 100 then break end
+			-- iterasi berikutnya biasanya >2x lebih lama: kalau sudah lewat ~40% waktu, cukup
+			if d >= 4 and os.clock() - t0 > timeLimit * 0.4 then break end
+		end
+		if cancelFn and cancelFn() then return nil end
+		return bestMove, bestScore, doneDepth
+	end
+
+	-- ===== Buku pembukaan (garis utama teori master; koordinat dari-ke) =====
+	local BOOK = {}
+	local function sqOf(str)
+		return (str:byte(1) - 96) + (tonumber(str:sub(2, 2)) - 1) * 8
+	end
+	function CH.addLine(line)
+		local pos = CH.start()
+		for mv in line:gmatch("%S+") do
+			local f, t = sqOf(mv:sub(1, 2)), sqOf(mv:sub(3, 4))
+			local found
+			for _, m in ipairs(CH.legal(pos)) do
+				if m.f == f and m.t == t then found = m break end
+			end
+			if not found then return false, mv end
+			local h = hashPos(pos)
+			local lst = BOOK[h]
+			if not lst then lst = {}; BOOK[h] = lst end
+			local dup = false
+			for _, x in ipairs(lst) do
+				if x.f == f and x.t == t then x.w = x.w + 1; dup = true; break end
+			end
+			if not dup then lst[#lst + 1] = { f = f, t = t, w = 1 } end
+			pos = apply(pos, found)
+		end
+		return true
+	end
+	-- Langkah buku untuk posisi ini (acak berbobot), atau nil bila di luar buku.
+	function CH.bookMove(pos)
+		local lst = BOOK[hashPos(pos)]
+		if not lst then return nil end
+		local legal = CH.legal(pos)
+		local cands, total = {}, 0
+		for _, x in ipairs(lst) do
+			for _, m in ipairs(legal) do
+				if m.f == x.f and m.t == x.t then
+					cands[#cands + 1] = { m = m, w = x.w }
+					total = total + x.w
+					break
+				end
+			end
+		end
+		if total == 0 then return nil end
+		local r = math.random(1, total)
+		for _, c in ipairs(cands) do
+			r = r - c.w
+			if r <= 0 then return c.m end
+		end
+		return cands[1].m
+	end
+
+	local LINES = {
+		-- 1.e4 e5
+		"e2e4 e7e5 g1f3 b8c6 f1b5 a7a6 b5a4 g8f6 e1g1 f8e7 f1e1 b7b5 a4b3 d7d6 c2c3 e8g8 h2h3",
+		"e2e4 e7e5 g1f3 b8c6 f1b5 a7a6 b5a4 g8f6 e1g1 f6e4 d2d4 b7b5 a4b3 d7d5 d4e5 c8e6",
+		"e2e4 e7e5 g1f3 b8c6 f1b5 g8f6 e1g1 f6e4 d2d4 e4d6 b5c6 d7c6 d4e5 d6f5 d1d8 e8d8",
+		"e2e4 e7e5 g1f3 b8c6 f1c4 f8c5 c2c3 g8f6 d2d4 e5d4 c3d4 c5b4 b1c3 f6e4 e1g1 b4c3 b2c3 d7d5",
+		"e2e4 e7e5 g1f3 b8c6 f1c4 f8c5 c2c3 g8f6 d2d3 d7d6 e1g1 e8g8 f1e1 a7a6",
+		"e2e4 e7e5 g1f3 b8c6 f1c4 g8f6 f3g5 d7d5 e4d5 c6a5 c4b5 c7c6 d5c6 b7c6 b5e2 h7h6 g5f3 e5e4 f3e5 f8d6",
+		"e2e4 e7e5 g1f3 b8c6 d2d4 e5d4 f3d4 g8f6 d4c6 b7c6 e4e5 d8e7 d1e2 f6d5 c2c4 c8a6",
+		"e2e4 e7e5 g1f3 b8c6 d2d4 e5d4 f3d4 f8c5 c1e3 d8f6 c2c3 g8e7 f1c4 e8g8",
+		"e2e4 e7e5 g1f3 g8f6 f3e5 d7d6 e5f3 f6e4 d2d4 d6d5 f1d3 f8e7 e1g1 b8c6 f1e1 c8g4 c2c4 e4f6",
+		"e2e4 e7e5 g1f3 d7d6 d2d4 g8f6 b1c3 b8d7 f1c4 f8e7 e1g1 e8g8",
+		"e2e4 e7e5 b1c3 g8f6 g2g3 d7d5 e4d5 f6d5 f1g2 d5b6 g1f3 b8c6 e1g1 f8e7",
+		-- Sisilia
+		"e2e4 c7c5 g1f3 d7d6 d2d4 c5d4 f3d4 g8f6 b1c3 a7a6 c1e3 e7e5 d4b3 c8e6 f2f3 f8e7 d1d2 e8g8 e1c1 b8d7",
+		"e2e4 c7c5 g1f3 d7d6 d2d4 c5d4 f3d4 g8f6 b1c3 g7g6 c1e3 f8g7 f2f3 e8g8 d1d2 b8c6 e1c1",
+		"e2e4 c7c5 g1f3 b8c6 d2d4 c5d4 f3d4 g8f6 b1c3 e7e5 d4b5 d7d6 c1g5 a7a6 b5a3 b7b5 g5f6 g7f6 c3d5 f6f5",
+		"e2e4 c7c5 g1f3 b8c6 d2d4 c5d4 f3d4 g8f6 b1c3 d7d6 c1g5 e7e6 d1d2 a7a6 e1c1 c8d7",
+		"e2e4 c7c5 b1c3 b8c6 g2g3 g7g6 f1g2 f8g7 d2d3 d7d6 c1e3 e7e6",
+		"e2e4 c7c5 c2c3 g8f6 e4e5 f6d5 d2d4 c5d4 g1f3 b8c6 c3d4 d7d6 f1c4 d5b6 c4b5 d6e5 f3e5 c8d7",
+		"e2e4 c7c5 g1f3 e7e6 d2d4 c5d4 f3d4 a7a6 f1d3 g8f6 e1g1 d8c7 f2f4 b8c6",
+		-- Prancis
+		"e2e4 e7e6 d2d4 d7d5 b1c3 g8f6 c1g5 f8e7 e4e5 f6d7 g5e7 d8e7 f2f4 e8g8 g1f3 c7c5",
+		"e2e4 e7e6 d2d4 d7d5 b1c3 f8b4 e4e5 c7c5 a2a3 b4c3 b2c3 g8e7 d1g4 d8c7 g4g7 h8g8 g7h7 c5d4",
+		"e2e4 e7e6 d2d4 d7d5 b1d2 g8f6 e4e5 f6d7 f1d3 c7c5 c2c3 b8c6 g1e2 c5d4 c3d4 f7f6",
+		"e2e4 e7e6 d2d4 d7d5 e4e5 c7c5 c2c3 b8c6 g1f3 d8b6 a2a3 c5c4",
+		-- Caro-Kann
+		"e2e4 c7c6 d2d4 d7d5 b1c3 d5e4 c3e4 c8f5 e4g3 f5g6 h2h4 h7h6 g1f3 b8d7 h4h5 g6h7 f1d3 h7d3 d1d3 e7e6",
+		"e2e4 c7c6 d2d4 d7d5 e4e5 c8f5 g1f3 e7e6 f1e2 c6c5 e1g1 b8c6 c2c3",
+		"e2e4 c7c6 d2d4 d7d5 e4d5 c6d5 c2c4 g8f6 b1c3 e7e6 g1f3 f8e7 c4d5 f6d5 f1d3 b8c6 e1g1 e8g8",
+		-- lain-lain vs e4
+		"e2e4 d7d5 e4d5 d8d5 b1c3 d5a5 d2d4 g8f6 g1f3 c7c6 f1c4 c8f5",
+		"e2e4 d7d6 d2d4 g8f6 b1c3 g7g6 g1f3 f8g7 f1e2 e8g8 e1g1 c7c6",
+		"e2e4 g8f6 e4e5 f6d5 d2d4 d7d6 g1f3 c8g4 f1e2 e7e6 e1g1 f8e7 c2c4 d5b6",
+		-- 1.d4
+		"d2d4 d7d5 c2c4 e7e6 b1c3 g8f6 c1g5 f8e7 e2e3 e8g8 g1f3 b8d7 a1c1 c7c6 f1d3 d5c4 d3c4 f6d5 g5e7 d8e7 e1g1",
+		"d2d4 d7d5 c2c4 e7e6 b1c3 g8f6 c4d5 e6d5 c1g5 c7c6 e2e3 f8e7 f1d3 b8d7 d1c2 e8g8 g1e2 f8e8",
+		"d2d4 d7d5 c2c4 c7c6 g1f3 g8f6 b1c3 d5c4 a2a4 c8f5 e2e3 e7e6 f1c4 f8b4 e1g1 e8g8 d1e2 b8d7",
+		"d2d4 d7d5 c2c4 c7c6 g1f3 g8f6 b1c3 e7e6 e2e3 b8d7 f1d3 d5c4 d3c4 b7b5 c4d3 a7a6 e3e4 c6c5",
+		"d2d4 d7d5 c2c4 d5c4 g1f3 g8f6 e2e3 e7e6 f1c4 c7c5 e1g1 a7a6 d1e2 b7b5 c4b3 c8b7 f1d1 b8d7",
+		"d2d4 g8f6 c2c4 g7g6 b1c3 f8g7 e2e4 d7d6 g1f3 e8g8 f1e2 e7e5 e1g1 b8c6 d4d5 c6e7",
+		"d2d4 g8f6 c2c4 g7g6 b1c3 d7d5 c4d5 f6d5 e2e4 d5c3 b2c3 f8g7 g1f3 c7c5 f1e2 e8g8 e1g1 b8c6",
+		"d2d4 g8f6 c2c4 e7e6 b1c3 f8b4 e2e3 e8g8 f1d3 d7d5 g1f3 c7c5 e1g1 b8c6 a2a3 b4c3 b2c3 d5c4 d3c4 d8c7",
+		"d2d4 g8f6 c2c4 e7e6 b1c3 f8b4 d1c2 e8g8 a2a3 b4c3 c2c3 b7b6 c1g5 c8b7 e2e3 d7d6",
+		"d2d4 g8f6 c2c4 e7e6 g1f3 b7b6 g2g3 c8b7 f1g2 f8e7 e1g1 e8g8 b1c3 f6e4 d1c2 e4c3 c2c3 c7c5",
+		"d2d4 g8f6 c2c4 e7e6 g2g3 d7d5 f1g2 f8e7 g1f3 e8g8 e1g1 d5c4 d1c2 a7a6 c2c4 b7b5 c4c2 c8b7",
+		"d2d4 d7d5 g1f3 g8f6 c1f4 e7e6 e2e3 c7c5 c2c3 b8c6 b1d2 f8d6 f4g3 e8g8 f1d3 d8c7",
+		"d2d4 g8f6 g1f3 g7g6 c1f4 f8g7 e2e3 e8g8 h2h3 d7d6 f1e2 b8d7",
+		"d2d4 f7f5 g2g3 g8f6 f1g2 e7e6 g1f3 f8e7 e1g1 e8g8 c2c4 d7d6 b1c3 d8e8",
+		-- 1.c4 / 1.Nf3
+		"c2c4 e7e5 b1c3 g8f6 g1f3 b8c6 g2g3 d7d5 c4d5 f6d5 f1g2 d5b6 e1g1 f8e7",
+		"c2c4 c7c5 b1c3 b8c6 g2g3 g7g6 f1g2 f8g7 g1f3 e7e6 e1g1 g8e7 d2d4 c5d4 f3d4 e8g8",
+		"g1f3 d7d5 g2g3 g8f6 f1g2 e7e6 e1g1 f8e7 d2d4 e8g8 c2c4 d5c4",
+		"g1f3 g8f6 c2c4 g7g6 b1c3 f8g7 e2e4 d7d6 d2d4 e8g8",
+		"g1f3 d7d5 d2d4 g8f6 c2c4 e7e6 b1c3 f8e7 c1g5 e8g8",
+	}
+	for _, ln in ipairs(LINES) do
+		local ok, bad = CH.addLine(ln)
+		if not ok and warn then warn("[Catur] buku: langkah tidak valid " .. tostring(bad)) end
+	end
+
+	return CH
+end
+
+local function buildChess()
+	local CH = makeEngine()
+	local page = pages["Mini Game"]
+	local BASE_DESC = "Scan papan catur in-game, tandai langkah balasan terbaik (panah hijau). Langkah musuh = oranye."
+	local PCODE = { Pawn = 1, Knight = 2, Bishop = 3, Rook = 4, Queen = 5, King = 6 }
+	local C_HINT, C_OPP, C_THREAT = T.good, Color3.fromRGB(255, 160, 50), T.danger
+
+	sectionLabel(page, 9, "Catur")
+	local descLbl = addToggleCard(page, 10, "Saran Langkah Catur", BASE_DESC, "chess")
+	addSliderCard(page, 11, "Waktu Berpikir Saran", "Batas detik sebelum saran muncul (1-10). Kecil = cepat, besar = lebih akurat", "chessTime", 1, 10, 10, true)
+
+	local A: any = {
+		pos = nil, mine = nil, info = nil, hint = nil, hintTxt = "", lastOpp = nil, threat = {},
+		sid = 0, hist = {}, stableKey = nil, stableN = 0, sig = nil, on = false, remotePos = nil, hooked = {}, warned = false,
+	}
+
+	local function setDesc(s: string)
+		if not unloaded and descLbl and descLbl.Parent then descLbl.Text = s end
+	end
+
+	-- ---------- overlay: ScreenGui sendiri, tidak menyentuh UI game ----------
+	local ov = new("ScreenGui", {
+		Name = "UU_CHESS", ResetOnSpawn = false, DisplayOrder = 1000,
+		ZIndexBehavior = Enum.ZIndexBehavior.Sibling, Enabled = false,
+	}, playerGui)
+	local layer = new("Frame", {
+		Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, BorderSizePixel = 0, Active = false,
+	}, ov)
+	local hud = new("TextLabel", {
+		AnchorPoint = Vector2.new(0.5, 1), Size = UDim2.fromOffset(0, 26), AutomaticSize = Enum.AutomaticSize.X,
+		BackgroundColor3 = T.bg, BackgroundTransparency = 0.15, BorderSizePixel = 0, Text = "",
+		TextColor3 = C_HINT, Font = Enum.Font.GothamBold, TextSize = 14, Visible = false, Active = false,
+	}, ov)
+	round(hud, 8)
+	stroke(hud, C_HINT, 1.2, 0.3)
+	new("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10) }, hud)
+
+	-- ---------- baca papan in-game ----------
+	-- Papan: PlayerGui["2DBoard"].Main.Board.<a1..h8> (kotak), Main.Pieces.<Warna>_<Jenis> (bidak, ImageButton).
+	-- Kotak & bidak dicocokkan lewat posisi layar (titik tengah), jadi tidak peduli papan diputar / dibalik.
+	local function scan()
+		local g = playerGui:FindFirstChild("2DBoard")
+		local main = g and g:FindFirstChild("Main")
+		local board = main and main:FindFirstChild("Board")
+		local pieces = main and main:FindFirstChild("Pieces")
+		if not (g and board and pieces) then return nil, "nogui" end
+		if g:IsA("ScreenGui") and not g.Enabled then return nil, "nogui" end
+		if main:IsA("GuiObject") and not main.Visible then return nil, "nogui" end
+
+		local cen: { [number]: Vector2 } = {}
+		local size, cnt = 0, 0
+		for _, c in ipairs(board:GetChildren()) do
+			local f, r = string.match(c.Name, "^([a-h])([1-8])$")
+			if f and c:IsA("GuiObject") then
+				local sq = (tonumber(r) - 1) * 8 + (string.byte(f) - 96)
+				if not cen[sq] then cnt += 1 end
+				cen[sq] = c.AbsolutePosition + c.AbsoluteSize / 2
+				size = c.AbsoluteSize.X
+			end
+		end
+		if cnt ~= 64 or size < 8 then return nil, "nogui" end
+
+		local b = {}
+		for i = 1, 64 do b[i] = 0 end
+		for _, p in ipairs(pieces:GetChildren()) do
+			if p:IsA("GuiObject") and p.Visible then
+				local col, typ = string.match(p.Name, "^(%a+)_(%a+)$")
+				local code = typ and PCODE[typ]
+				if code and (col == "White" or col == "Black") then
+					local pc = p.AbsolutePosition + p.AbsoluteSize / 2
+					local best, bd = nil, math.huge
+					for sq, c in pairs(cen) do
+						local d = (c - pc).Magnitude
+						if d < bd then best, bd = sq, d end
+					end
+					if bd <= size * 0.3 then
+						if b[best] ~= 0 then return nil, "dup" end -- dua bidak di satu kotak = animasi tangkap
+						b[best] = (col == "White") and code or -code
+					elseif bd <= size * 0.75 then
+						return nil, "anim" -- bidak sedang meluncur
+					end -- lebih jauh dari itu: bidak di luar papan (tertangkap), diabaikan
+				end
+			end
+		end
+		local inset = false
+		if g:IsA("ScreenGui") then inset = g.IgnoreGuiInset end
+		return b, { cen = cen, size = size, inset = inset }
+	end
+
+	local function sameBoard(a: any, c: any): boolean
+		for i = 1, 64 do
+			if a[i] ~= c[i] then return false end
+		end
+		return true
+	end
+
+	-- warna milikku = sisi yang rajanya ada di BAWAH layar
+	local function myColorOf(b: any, cen: any): number?
+		local yw, yb = nil, nil
+		for s = 1, 64 do
+			if b[s] == 6 then yw = cen[s].Y elseif b[s] == -6 then yb = cen[s].Y end
+		end
+		if yw and yb and math.abs(yw - yb) > 1 then return (yw > yb) and 1 or -1 end
+		return nil
+	end
+
+	local function fromScan(b: any, turn: number): any
+		local kw, kb = 0, 0
+		for s = 1, 64 do
+			if b[s] == 6 then kw = s elseif b[s] == -6 then kb = s end
+		end
+		if kw == 0 or kb == 0 then return nil end
+		local cr = 0
+		if kw == 5 then
+			if b[8] == 4 then cr += 1 end
+			if b[1] == 4 then cr += 2 end
+		end
+		if kb == 61 then
+			if b[64] == -4 then cr += 4 end
+			if b[57] == -4 then cr += 8 end
+		end
+		return { b = b, turn = turn, cr = cr, ep = 0, hm = 0, fm = 1, kw = kw, kb = kb }
+	end
+
+	-- Lacak posisi: cari langkah legal (1 lalu 2 langkah) yang mengubah posisi lama jadi papan sekarang.
+	-- Dari sini giliran, hak rokade, en passant, dan langkah terakhir musuh diketahui pasti.
+	local function trackTo(b: any, mine: number)
+		local P = A.pos
+		local newPos, oppMove = nil, nil
+		if P then
+			local sides = { P.turn, -P.turn }
+			for _, t in ipairs(sides) do
+				local S = P
+				if t ~= P.turn then
+					S = table.clone(P)
+					S.turn, S.ep = t, 0
+				end
+				for _, m in ipairs(CH.legal(S)) do
+					local np = CH.apply(S, m)
+					if sameBoard(np.b, b) then
+						newPos = np
+						if t ~= mine then oppMove = m end
+						break
+					end
+				end
+				if newPos then break end
+			end
+			if not newPos then
+				for _, t in ipairs(sides) do
+					local S = P
+					if t ~= P.turn then
+						S = table.clone(P)
+						S.turn, S.ep = t, 0
+					end
+					for _, m1 in ipairs(CH.legal(S)) do
+						local n1 = CH.apply(S, m1)
+						for _, m2 in ipairs(CH.legal(n1)) do
+							local n2 = CH.apply(n1, m2)
+							if sameBoard(n2.b, b) then
+								newPos = n2
+								oppMove = (t ~= mine) and m1 or m2
+								break
+							end
+						end
+						if newPos then break end
+					end
+					if newPos then break end
+				end
+			end
+		end
+		if not newPos then
+			-- tidak cocok (script baru jalan di tengah game / game baru): bangun dari papan
+			A.lastOpp = nil
+			A.hist = {}
+			oppMove = nil
+			local start = CH.start()
+			local rp = A.remotePos
+			if sameBoard(b, start.b) then
+				newPos = start
+			elseif rp and sameBoard(rp.b, b) then
+				newPos = rp -- FEN dari server: giliran & hak rokade pasti
+			else
+				newPos = fromScan(b, mine) -- anggap sekarang giliranmu
+			end
+		end
+		if oppMove then A.lastOpp = oppMove end
+		A.pos = newPos
+	end
+
+	local function evalText(sc: number): string
+		if sc > CH.MATE - 100 then return " [skakmat!]" end
+		if sc < -(CH.MATE - 100) then return " [bahaya skakmat]" end
+		return string.format(" [%+.1f]", sc / 100)
+	end
+
+	local function think()
+		local sid, pos = A.sid, A.pos
+		setDesc("Giliranmu - menghitung saran...")
+		-- 1) buku pembukaan (langkah teori master)
+		local okB, bm = pcall(CH.bookMove, pos)
+		if okB and bm then
+			A.hint = bm
+			A.hintTxt = CH.describe(pos, bm) .. " [buku pembukaan]"
+			A.sig = nil
+			setDesc("Saran: " .. A.hintTxt)
+			toast("Saran: " .. CH.describe(pos, bm))
+			return
+		end
+		-- 2) mesin: iterative deepening sampai 12 ply / 4 detik, sadar pengulangan posisi
+		task.spawn(function()
+			local m, sc, dd = CH.search(pos, 16, math.clamp(values.chessTime or 3, 1, 10), function()
+				return unloaded or A.sid ~= sid or not state.chess
+			end, A.hist)
+			if unloaded or A.sid ~= sid or not state.chess then return end
+			if not m then
+				setDesc("Tidak ada langkah legal.")
+				return
+			end
+			A.hint = m
+			A.hintTxt = CH.describe(pos, m) .. evalText(sc) .. " d" .. tostring(dd or 0)
+			A.sig = nil
+			setDesc("Saran: " .. A.hintTxt)
+			toast("Saran: " .. CH.describe(pos, m))
+		end)
+	end
+
+	local function onNewPosition()
+		A.sid += 1
+		A.hint, A.hintTxt, A.sig = nil, "", nil
+		local pos = A.pos
+		do
+			local okH, hk = pcall(CH.hash, pos)
+			if okH then A.hist[hk] = (A.hist[hk] or 0) + 1 end
+		end
+		local st = CH.status(pos)
+		A.threat = {}
+		if st == "mate" or st == "stalemate" or st == "draw50" or st == "insufficient" then
+			setDesc(st == "mate" and "Skakmat - permainan selesai." or "Remis - permainan selesai.")
+			return
+		end
+		A.threat = CH.threatened(pos, A.mine)
+		if pos.turn == A.mine then
+			think()
+		else
+			setDesc("Giliran musuh - menunggu langkahnya...")
+		end
+	end
+
+	-- ---------- gambar tanda di atas papan game ----------
+	local function redraw()
+		local info = A.info
+		if not info then return end
+		local cen, s = info.cen, info.size
+		local lo = layer.AbsolutePosition
+		local hint, opp = A.hint, A.lastOpp
+		local thr = A.threat or {}
+		local c1, c64 = cen[1], cen[64]
+		local sig = string.format("%.1f|%.1f|%.1f|%.1f|%.1f|%.1f|%d|%d|%d|%d|%d",
+			lo.X, lo.Y, c1.X, c1.Y, c64.X, c64.Y,
+			hint and hint.f or 0, hint and hint.t or 0, opp and opp.f or 0, opp and opp.t or 0, #thr)
+		if sig == A.sig then return end
+		A.sig = sig
+		layer:ClearAllChildren()
+
+		local function sqBox(sq: number, color: Color3, tr: number, thick: number)
+			local c = cen[sq] - lo
+			local f = new("Frame", {
+				AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset(c.X, c.Y),
+				Size = UDim2.fromOffset(s, s), BackgroundColor3 = color, BackgroundTransparency = tr,
+				BorderSizePixel = 0, Active = false, ZIndex = 5,
+			}, layer)
+			stroke(f, color, thick, 0)
+		end
+
+		if opp then
+			sqBox(opp.f, C_OPP, 0.75, 2)
+			sqBox(opp.t, C_OPP, 0.6, 3)
+		end
+		for _, sq in ipairs(thr) do
+			local c = cen[sq] - lo + Vector2.new(s * 0.3, -s * 0.3)
+			local d = new("Frame", {
+				AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset(c.X, c.Y),
+				Size = UDim2.fromOffset(s * 0.2, s * 0.2), BackgroundColor3 = C_THREAT,
+				BorderSizePixel = 0, Active = false, ZIndex = 7,
+			}, layer)
+			new("UICorner", { CornerRadius = UDim.new(0.5, 0) }, d)
+			stroke(d, WHITE, 1, 0.2)
+		end
+		if hint then
+			sqBox(hint.f, C_HINT, 0.6, 3)
+			sqBox(hint.t, C_HINT, 0.35, 4)
+			local p1, p2 = cen[hint.f] - lo, cen[hint.t] - lo
+			local d = p2 - p1
+			local len = d.Magnitude
+			if len > 1 then
+				local u = d / len
+				local ang = math.deg(math.atan2(d.Y, d.X))
+				local sP, hP = p1 + u * s * 0.25, p2 - u * s * 0.22
+				local L = math.max(2, (hP - sP).Magnitude)
+				new("Frame", {
+					AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset((sP.X + hP.X) / 2, (sP.Y + hP.Y) / 2),
+					Size = UDim2.fromOffset(L, 8), Rotation = ang, BackgroundColor3 = C_HINT,
+					BackgroundTransparency = 0.15, BorderSizePixel = 0, Active = false, ZIndex = 8,
+				}, layer)
+				new("Frame", {
+					AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset(hP.X, hP.Y),
+					Size = UDim2.fromOffset(s * 0.28, s * 0.28), Rotation = ang + 45, BackgroundColor3 = C_HINT,
+					BackgroundTransparency = 0.15, BorderSizePixel = 0, Active = false, ZIndex = 8,
+				}, layer)
+			end
+		end
+
+		-- teks saran di atas papan
+		if hint and A.hintTxt ~= "" then
+			local minY, sx, n = math.huge, 0, 0
+			for _, c in pairs(cen) do
+				minY = math.min(minY, c.Y)
+				sx += c.X
+				n += 1
+			end
+			hud.Text = "Saran: " .. A.hintTxt
+			hud.Position = UDim2.fromOffset(sx / n - lo.X, math.max(30, minY - s / 2 - lo.Y - 6))
+			hud.Visible = true
+		else
+			hud.Visible = false
+		end
+	end
+
+	local function clearAll()
+		layer:ClearAllChildren()
+		hud.Visible = false
+		A.sig = nil
+	end
+
+	-- ---------- langkah utama (dipanggil ~8x per detik) ----------
+	local function step()
+		local b, info = scan()
+		if not b then
+			A.stableN = 0
+			if info == "nogui" and (A.pos or A.info) then
+				A.pos, A.info, A.hint, A.lastOpp = nil, nil, nil, nil
+				A.sid += 1
+				clearAll()
+				setDesc("Papan 2DBoard tidak terlihat. Buka game catur dulu.")
+			end
+			return
+		end
+		local key = table.concat(b, ",")
+		if key == A.stableKey then
+			A.stableN += 1
+		else
+			A.stableKey, A.stableN = key, 1
+		end
+		if A.stableN < 2 then return end -- papan harus diam dulu (animasi gerak bidak selesai)
+
+		A.info = info
+		local mine = myColorOf(b, info.cen) or A.mine or 1
+		if A.mine ~= mine then
+			A.mine = mine
+			A.pos = nil -- warna/arah berubah (game baru): lacak ulang
+		end
+		ov.IgnoreGuiInset = info.inset
+
+		if not (A.pos and sameBoard(A.pos.b, b)) then
+			local ok, err = pcall(trackTo, b, mine)
+			if not ok or not A.pos then
+				A.pos = nil
+				if not A.warned then
+					A.warned = true
+					warn("[Catur] " .. tostring(err))
+				end
+				return
+			end
+			onNewPosition()
+		end
+		redraw()
+	end
+
+	-- ---------- remote server: FEN lengkap bila ada (hanya dipakai saat memulai di tengah game) ----------
+	local function hookRemote(inst: Instance)
+		if not inst:IsA("RemoteEvent") or A.hooked[inst] then return end
+		if not string.find(inst.Name, "^MoveMade") then return end
+		A.hooked[inst] = true
+		track(inst.OnClientEvent:Connect(function(...)
+			for i = 1, select("#", ...) do
+				local v = select(i, ...)
+				if type(v) == "string" and string.find(v, "/", 1, true) then
+					local okF, p = pcall(CH.fromFen, v)
+					if okF and p then A.remotePos = p end
+					break
+				end
+			end
+		end))
+	end
+	for _, d in ipairs(ReplicatedStorage:GetDescendants()) do hookRemote(d) end
+	track(ReplicatedStorage.DescendantAdded:Connect(hookRemote))
+
+	effects.chess = function(on: boolean)
+		A.sid += 1
+		A.on = on
+		A.pos, A.info, A.hint, A.lastOpp, A.sig = nil, nil, nil, nil, nil
+		A.threat = {}
+		A.stableKey, A.stableN = nil, 0
+		clearAll()
+		ov.Enabled = on
+		setDesc(on and "Menunggu papan 2DBoard..." or BASE_DESC)
+	end
+
+	local acc = 0
+	track(RunService.Heartbeat:Connect(function(dt: number)
+		if unloaded then return end
+		if not state.chess then
+			if A.on then effects.chess(false) end -- mis. "Matikan Semua Fitur"
+			return
+		end
+		if not A.on then effects.chess(true) end
+		acc += dt
+		if acc < 0.12 then return end
+		acc = 0
+		local ok, err = pcall(step)
+		if not ok and not A.warned then
+			A.warned = true
+			warn("[Catur] " .. tostring(err))
+		end
+	end))
+end
+
+buildChess()
 end
 
 -- =====================================================
@@ -8913,6 +11255,1976 @@ end)
 end
 
 -- =====================================================
+-- TAB SCAN: SCAN RARITY + REKAM MINIGAME (dari SCANNER_MINI_GAME.txt)
+-- Menggantikan "Tes Deteksi Rarity" dan "Scan Mini Game" yang lama.
+-- Dibungkus do...end + fungsi supaya tidak menambah jumlah local di level atas.
+-- =====================================================
+do
+local function buildScan()
+	local RS = game:GetService("ReplicatedStorage")
+	local Marketplace = game:GetService("MarketplaceService")
+	local PPS = game:GetService("ProximityPromptService")
+
+	local CFG = {
+		folder = "UniversalUI_Scan", -- folder file di workspace executor
+		maxObjs = 2500,        -- objek UI yang dipantau
+		maxSamples = 250000,   -- total sampel posisi (batas memori)
+		maxEvents = 6000,      -- kejadian (teks, tampil/sembunyi, model hilang, dll)
+		maxTrials = 400,       -- jumlah tekanan yang dicatat
+		flushEvery = 2,        -- detik: tulis buffer ke file
+		reportMaxChars = 58000, -- batas ringkasan di clipboard (file tetap lengkap)
+		tableMaxRows = 70,     -- baris tabel tekan di ringkasan
+	}
+
+	-- ---------- fungsi executor (opsional, semua dicek) ----------
+	local ENV: any = _G
+	do
+		local ok, e = pcall(function() return (getgenv :: any)() end)
+		if ok and type(e) == "table" then ENV = e end
+	end
+	local fsWrite: any, fsAppend: any = ENV.writefile, ENV.appendfile
+	local fsMake: any, fsIsFolder: any = ENV.makefolder, ENV.isfolder
+	local clipFn: any = ENV.setclipboard or ENV.toclipboard
+
+	local folderReady = false
+	local function ensureFolder()
+		if folderReady then return end
+		folderReady = true
+		pcall(function()
+			if fsMake and fsIsFolder and not fsIsFolder(CFG.folder) then fsMake(CFG.folder) end
+		end)
+	end
+	local function fpath(name: string): string
+		return CFG.folder .. "/" .. name
+	end
+	local function saveFile(name: string, content: string): boolean
+		if not fsWrite then return false end
+		ensureFolder()
+		return (pcall(fsWrite, fpath(name), content))
+	end
+	local function appendFile(name: string, content: string): boolean
+		if not fsAppend then return false end
+		ensureFolder()
+		return (pcall(fsAppend, fpath(name), content))
+	end
+	local function copyText(s: string): boolean
+		if not clipFn then return false end
+		return (pcall(clipFn, s))
+	end
+
+	-- ---------- util umum ----------
+	local lastYield = os.clock()
+	local function maybeYield()
+		if os.clock() - lastYield > 0.008 then
+			task.wait()
+			lastYield = os.clock()
+		end
+	end
+
+	local function relPath(inst: Instance): string
+		local full = inst:GetFullName()
+		local r = string.gsub(full, "^Players%.[^%.]+%.PlayerGui%.", "")
+		return r
+	end
+
+	local function shown(inst: Instance): boolean
+		local cur: Instance? = inst
+		local rootLayer: LayerCollector? = nil
+		while cur and cur ~= playerGui do
+			if cur:IsA("GuiObject") and not cur.Visible then return false end
+			if cur:IsA("LayerCollector") then
+				rootLayer = cur :: LayerCollector
+				if not rootLayer.Enabled then return false end
+				break
+			end
+			cur = cur.Parent
+		end
+		return (cur == playerGui and rootLayer ~= nil) or (rootLayer ~= nil and rootLayer.Parent ~= nil)
+	end
+
+	local function cut(s: any, n: number): string
+		local str = tostring(s)
+		str = string.gsub(str, "[\r\n|]+", " ")
+		if #str > n then str = string.sub(str, 1, n) .. "~" end
+		return str
+	end
+
+	local function norm(s: any): string
+		return (string.gsub(string.lower(tostring(s)), "[^%a]", ""))
+	end
+
+	local function median(t: { number }): number
+		local n = #t
+		if n == 0 then return 0 end
+		local c = table.clone(t)
+		table.sort(c)
+		if n % 2 == 1 then return c[(n + 1) // 2] end
+		return (c[n // 2] + c[n // 2 + 1]) / 2
+	end
+
+	-- =================================================================================
+	-- A) SCAN RARITY (generik)
+	-- =================================================================================
+	local RW_STRONG: { [string]: boolean } = {}
+	for _, w in ipairs({ "common", "uncommon", "rare", "epic", "legendary", "mythic", "mythical", "godly", "divine",
+		"secret", "exotic", "ultra", "ancient", "celestial", "transcendent", "immortal", "cosmic", "supreme", "omega",
+		"biasa", "langka", "epik", "legendaris", "mitos", "dewa", "rahasia" }) do
+		RW_STRONG[w] = true
+	end
+	local RW_WEAK: { [string]: boolean } = {}
+	for _, w in ipairs({ "basic", "normal", "ordinary", "special", "unique", "limited", "event", "relic", "artifact",
+		"collector", "superrare", "ultrarare", "masterwork" }) do
+		RW_WEAK[w] = true
+	end
+	local RW_ORDER: { [string]: number } = {
+		basic = 0, normal = 0, ordinary = 0, common = 1, biasa = 1, uncommon = 2, rare = 3, langka = 3, epic = 4, epik = 4,
+		legendary = 5, legendaris = 5, mythic = 6, mythical = 6, mitos = 6, godly = 7, divine = 7, dewa = 7, secret = 8, rahasia = 8,
+	}
+	local function isRW(s: any): boolean
+		local n = norm(s)
+		return RW_STRONG[n] == true or RW_WEAK[n] == true
+	end
+	local function isRKey(k: any): boolean
+		if type(k) ~= "string" then return false end
+		local l = string.lower(k)
+		return string.find(l, "rarity", 1, true) ~= nil or l == "rare" or l == "tier" or l == "grade" or l == "quality" or l == "rank"
+	end
+	local MOD_WORDS = { "rarity", "item", "data", "config", "drop", "loot", "shop", "tool", "mushroom", "fish", "pet", "crop",
+		"ore", "gem", "seed", "product", "catalog", "registry", "zone", "tier", "recipe", "stat", "resource", "collect",
+		"harvest", "world" }
+
+	local function brief(v: any): string
+		local ty = typeof(v)
+		if ty == "string" then return '"' .. string.sub(v, 1, 30) .. '"' end
+		if ty == "number" or ty == "boolean" then return tostring(v) end
+		if ty == "Color3" then return "#" .. v:ToHex() end
+		return ty
+	end
+	local function briefTable(t: any): string
+		local parts, n = {}, 0
+		for k, v in pairs(t) do
+			if type(v) ~= "table" and type(v) ~= "function" then
+				n += 1
+				if n > 8 then break end
+				parts[#parts + 1] = tostring(k) .. "=" .. brief(v)
+			end
+		end
+		return table.concat(parts, " ")
+	end
+
+	local function safeRequire(m: Instance): any
+		local done, res = false, nil
+		task.spawn(function()
+			local ok, r = pcall(require, m)
+			if ok then res = r end
+			done = true
+		end)
+		local t0 = os.clock()
+		while not done and os.clock() - t0 < 1.5 do task.wait() end
+		return res
+	end
+
+	-- menelusuri tabel data: cari (a) daftar urutan rarity, (b) kamus rarity->detail, (c) item ber-rarity
+	local function walkData(root: any, modName: string, ctx: any)
+		local seen: { [any]: boolean } = {}
+		local function walk(t: any, path: string, depth: number)
+			if depth > 5 or ctx.nodes > 40000 or seen[t] then return end
+			seen[t] = true
+			ctx.nodes += 1
+
+			if t[1] ~= nil then
+				local words, nStrong = {}, 0
+				for i = 1, math.min(#t, 30) do
+					local v = t[i]
+					if type(v) == "string" and isRW(v) then
+						words[#words + 1] = v
+						if RW_STRONG[norm(v)] then nStrong += 1 end
+					end
+				end
+				if #words >= 3 and nStrong >= 2 and #ctx.orders < 6 then
+					ctx.orders[#ctx.orders + 1] = { path = modName .. path, list = words }
+				end
+			end
+
+			local rows, nDef = {}, 0
+			for k, v in pairs(t) do
+				if type(k) == "string" and isRW(k) and (type(v) == "number" or type(v) == "table" or type(v) == "string") then
+					nDef += 1
+					if type(v) == "table" then
+						rows[#rows + 1] = k .. " { " .. briefTable(v) .. " }"
+					else
+						rows[#rows + 1] = k .. " = " .. brief(v)
+					end
+				end
+			end
+			if nDef >= 3 and #ctx.defs < 8 then
+				ctx.defs[#ctx.defs + 1] = { path = modName .. path, rows = rows }
+			end
+
+			for k, v in pairs(t) do
+				if type(v) == "table" then
+					local rv, nm = nil, nil
+					for fk, fv in pairs(v) do
+						if type(fk) == "string" then
+							if rv == nil and isRKey(fk) and (type(fv) == "string" or type(fv) == "number") then rv = fv end
+							local lf = string.lower(fk)
+							if nm == nil and (lf == "name" or lf == "displayname" or lf == "id") and type(fv) == "string" then nm = fv end
+						end
+					end
+					if rv ~= nil and ctx.nItems < 4000 then
+						ctx.nItems += 1
+						ctx.items[#ctx.items + 1] = { n = nm or tostring(k), r = rv, src = modName }
+					end
+					walk(v, path .. "." .. tostring(k), depth + 1)
+				elseif type(v) == "string" and type(k) == "string" and isRW(v) and not isRW(k) and ctx.nItems < 4000 then
+					ctx.nItems += 1
+					ctx.items[#ctx.items + 1] = { n = k, r = v, src = modName }
+				end
+			end
+		end
+		walk(root, "", 0)
+	end
+
+	local function runRarity(setStatus: (string) -> ()): (string, string, Color3)
+		local L: { string } = {}
+		local function add(s: string) L[#L + 1] = s end
+
+		add("== UNIVERSAL UI SCAN: RARITY ==")
+		add("GameId: " .. tostring(game.GameId) .. " | PlaceId: " .. tostring(game.PlaceId))
+		local placeName = "?"
+		local okP, info = pcall(function() return Marketplace:GetProductInfo(game.PlaceId) end)
+		if okP and type(info) == "table" and info.Name then placeName = tostring(info.Name) end
+		add("Place: " .. placeName)
+
+		local ch = player.Character
+		local hrp = ch and ch:FindFirstChild("HumanoidRootPart") :: BasePart?
+
+		-- ---------- 1) item di dunia (ProximityPrompt) ----------
+		setStatus("Memindai item di dunia...")
+		local prompts: { ProximityPrompt } = {}
+		for _, d in ipairs(workspace:GetDescendants()) do
+			maybeYield()
+			if d:IsA("ProximityPrompt") then
+				prompts[#prompts + 1] = d
+				if #prompts >= 600 then break end
+			end
+		end
+
+		local function evidence(inst: Instance, outList: { string }, label: string)
+			for k, v in pairs(inst:GetAttributes()) do
+				if (isRKey(k) and (type(v) == "string" or type(v) == "number")) or (type(v) == "string" and isRW(v)) then
+					outList[#outList + 1] = label .. " attr " .. tostring(k) .. "=" .. tostring(v)
+				end
+			end
+			if inst:IsA("ValueBase") then
+				local okv, val = pcall(function() return (inst :: any).Value end)
+				if okv and (isRKey(inst.Name) or (type(val) == "string" and isRW(val))) then
+					outList[#outList + 1] = label .. " value " .. inst.Name .. "=" .. tostring(val)
+				end
+			end
+			if inst:IsA("TextLabel") and isRW((inst :: any).Text) then
+				outList[#outList + 1] = label .. " teks '" .. (inst :: any).Text .. "'"
+			end
+			if isRW(inst.Name) then outList[#outList + 1] = label .. " nama '" .. inst.Name .. "'" end
+		end
+
+		local worldRows: { any } = {}
+		local withEv, seenModels = 0, {}
+		for _, pr in ipairs(prompts) do
+			maybeYield()
+			local m: Instance = pr:FindFirstAncestorOfClass("Model") or pr.Parent or pr
+			if not seenModels[m] then
+				seenModels[m] = true
+				local ev: { string } = {}
+				evidence(m, ev, "model")
+				evidence(pr, ev, "prompt")
+				local n = 0
+				for _, d in ipairs(m:GetDescendants()) do
+					n += 1
+					if n > 150 then break end
+					evidence(d, ev, d.ClassName)
+				end
+				local dist = -1
+				if hrp then
+					local okD, pv = pcall(function() return (m :: any):GetPivot().Position end)
+					if okD then dist = math.floor((pv - hrp.Position).Magnitude) end
+				end
+				local ak = {}
+				for k, v in pairs(m:GetAttributes()) do
+					if #ak < 10 then ak[#ak + 1] = tostring(k) .. "=" .. cut(v, 20) end
+				end
+				table.sort(ak)
+				worldRows[#worldRows + 1] = {
+					name = m.Name, text = pr.ObjectText, dist = dist, ev = ev, attrs = ak,
+				}
+				if #ev > 0 then withEv += 1 end
+			end
+		end
+		table.sort(worldRows, function(a, b)
+			if (a.dist < 0) ~= (b.dist < 0) then return a.dist >= 0 end
+			return a.dist < b.dist
+		end)
+
+		add("")
+		add("[1] ITEM DI DUNIA (ProximityPrompt): " .. #worldRows .. " item dicek, " .. withEv .. " membawa info rarity")
+		if #worldRows == 0 then
+			add("  Tidak ada item ber-prompt yang termuat. Dekati area item lalu scan lagi.")
+		else
+			add("  10 terdekat (nama | prompt | jarak | info rarity | atribut):")
+			for i = 1, math.min(10, #worldRows) do
+				local r = worldRows[i]
+				add(string.format("  %d. %s | '%s' | %d st | %s | %s", i, r.name, tostring(r.text), r.dist,
+					#r.ev > 0 and cut(r.ev[1], 70) or "tanpa info rarity", #r.attrs > 0 and table.concat(r.attrs, ", ") or "(tanpa atribut)"))
+			end
+		end
+
+		-- ---------- 2) ReplicatedStorage ----------
+		setStatus("Memindai ReplicatedStorage...")
+		local rsHits: { string } = {}
+		local mods: { ModuleScript } = {}
+		local folders: { string } = {}
+		for _, d in ipairs(RS:GetDescendants()) do
+			maybeYield()
+			for k, v in pairs(d:GetAttributes()) do
+				if (type(v) == "string" or type(v) == "number") and (isRKey(k) or (type(v) == "string" and isRW(v))) and #rsHits < 40 then
+					rsHits[#rsHits + 1] = d:GetFullName() .. " [attr " .. tostring(k) .. "=" .. tostring(v) .. "]"
+				end
+			end
+			if d:IsA("ValueBase") then
+				local okv, val = pcall(function() return (d :: any).Value end)
+				if okv and (type(val) == "string" or type(val) == "number") and (isRKey(d.Name) or (type(val) == "string" and isRW(val))) and #rsHits < 40 then
+					rsHits[#rsHits + 1] = d:GetFullName() .. " [value " .. tostring(val) .. "]"
+				end
+			end
+			if d:IsA("ModuleScript") then mods[#mods + 1] = d end
+			if (d:IsA("Folder") or d:IsA("Configuration")) and isRW(d.Name) and #folders < 20 then
+				folders[#folders + 1] = d:GetFullName() .. " (" .. #d:GetChildren() .. " isi)"
+			end
+		end
+
+		-- ---------- 3) modul data ----------
+		setStatus("Membaca modul data game...")
+		local cand: { any } = {}
+		local skipped: { string } = {}
+		for _, m in ipairs(mods) do
+			local l = string.lower(m.Name)
+			local score = 0
+			for _, w in ipairs(MOD_WORDS) do
+				if string.find(l, w, 1, true) then
+					score = math.max(score, w == "rarity" and 3 or (w == "item" or w == "config" or w == "data") and 2 or 1)
+				end
+			end
+			if score > 0 then cand[#cand + 1] = { m = m, s = score } elseif #skipped < 40 then skipped[#skipped + 1] = m.Name end
+		end
+		table.sort(cand, function(a, b) return a.s > b.s end)
+		local ctx: any = { nodes = 0, orders = {}, defs = {}, items = {}, nItems = 0 }
+		local modLog: { string } = {}
+		for i, c in ipairs(cand) do
+			if i > 60 then
+				modLog[#modLog + 1] = "(+" .. (#cand - 60) .. " modul kandidat lain tidak dibaca)"
+				break
+			end
+			setStatus(string.format("Membaca modul %d/%d: %s", i, math.min(#cand, 60), c.m.Name))
+			local before = ctx.nItems + #ctx.orders + #ctx.defs
+			local res = safeRequire(c.m)
+			if type(res) == "table" then
+				pcall(walkData, res, c.m.Name, ctx)
+				local got = ctx.nItems + #ctx.orders + #ctx.defs - before
+				modLog[#modLog + 1] = c.m:GetFullName() .. (got > 0 and (" -> " .. got .. " temuan") or " -> tidak ada info rarity")
+			else
+				modLog[#modLog + 1] = c.m:GetFullName() .. " -> tidak bisa dimuat / bukan tabel"
+			end
+		end
+
+		-- urutan rarity
+		add("")
+		add("[2] URUTAN RARITY DARI DATA GAME")
+		if #ctx.orders == 0 and #ctx.defs == 0 then
+			add("  (tidak ditemukan daftar urutan rarity di modul)")
+		end
+		for _, o in ipairs(ctx.orders) do
+			add("  daftar: " .. o.path .. " -> " .. table.concat(o.list, " < "))
+		end
+		for _, d in ipairs(ctx.defs) do
+			add("  detail: " .. d.path)
+			for _, r in ipairs(d.rows) do add("     " .. r) end
+		end
+
+		-- item per rarity
+		local groups: { [string]: any } = {}
+		for _, it in ipairs(ctx.items) do
+			local key, label, rank
+			if type(it.r) == "number" then
+				key, label, rank = "tier" .. tostring(it.r), "tier " .. tostring(it.r), 100 + it.r
+			else
+				key = norm(it.r)
+				label = tostring(it.r)
+				rank = RW_ORDER[key] or 50
+			end
+			local g = groups[key]
+			if not g then
+				g = { label = label, rank = rank, n = 0, names = {}, seen = {}, tier = type(it.r) == "number" and it.r or nil }
+				groups[key] = g
+			end
+			g.n += 1
+			if #g.names < 12 and not g.seen[it.n] then
+				g.seen[it.n] = true
+				g.names[#g.names + 1] = it.n
+			end
+		end
+		local glist: { any } = {}
+		for _, g in pairs(groups) do glist[#glist + 1] = g end
+		table.sort(glist, function(a, b)
+			if a.rank ~= b.rank then return a.rank < b.rank end
+			return a.label < b.label
+		end)
+		add("")
+		add("[3] ITEM PER RARITY (dari modul data): " .. #ctx.items .. " entri")
+		if #glist == 0 then add("  (tidak ada entri item ber-rarity di modul)") end
+		local firstOrder = ctx.orders[1]
+		for _, g in ipairs(glist) do
+			local extra = ""
+			if g.tier and firstOrder and firstOrder.list[g.tier] then
+				extra = " (kemungkinan = " .. tostring(firstOrder.list[g.tier]) .. ", cocokkan dengan item yang Anda tahu)"
+			end
+			add(string.format("  %s%s: %d item | %s", g.label, extra, g.n, table.concat(g.names, ", ")))
+		end
+
+		-- sumber lain
+		add("")
+		add("[4] SUMBER LAIN DI REPLICATEDSTORAGE")
+		add("  Atribut/Value berinfo rarity: " .. #rsHits)
+		for i = 1, math.min(#rsHits, 8) do add("   - " .. rsHits[i]) end
+		add("  Folder bernama rarity: " .. #folders)
+		for i = 1, math.min(#folders, 8) do add("   - " .. folders[i]) end
+		add("  Modul dibaca:")
+		for _, ln in ipairs(modLog) do add("   - " .. ln) end
+		if #skipped > 0 then add("  Modul tidak dibaca (nama tidak mirip data): " .. table.concat(skipped, ", ")) end
+
+		-- warna rarity di UI
+		setStatus("Membaca warna rarity di UI...")
+		add("")
+		add("[5] WARNA RARITY DI UI (label/bingkai yang bernama rarity)")
+		local colorRows, seenW = {}, {}
+		for _, d in ipairs(playerGui:GetDescendants()) do
+			maybeYield()
+			if #colorRows >= 30 then break end
+			if not d:IsDescendantOf(gui) then
+				local word, col
+				if d:IsA("TextLabel") or d:IsA("TextButton") then
+					if isRW(d.Text) then word, col = d.Text, d.TextColor3 end
+				end
+				if not word and (d:IsA("Frame") or d:IsA("ImageLabel")) and isRW(d.Name) then
+					word, col = d.Name, (d :: any).BackgroundColor3
+				end
+				if word and col and not seenW[norm(word) .. col:ToHex()] then
+					seenW[norm(word) .. col:ToHex()] = true
+					colorRows[#colorRows + 1] = string.format("  %s -> #%s (%s)", tostring(word), col:ToHex(), relPath(d))
+				end
+			end
+		end
+		if #colorRows == 0 then add("  (tidak ada; buka menu inventory/koleksi lalu scan lagi)") end
+		for _, r in ipairs(colorRows) do add(r) end
+
+		-- lokasi ringkas
+		add("")
+		add("[6] LOKASI & STATUS")
+		if hrp then
+			local pp = hrp.Position
+			add(string.format("  Posisi: %.0f, %.0f, %.0f", pp.X, pp.Y, pp.Z))
+		end
+		local function attrs(label: string, inst: Instance?)
+			if not inst then return end
+			for k, v in pairs(inst:GetAttributes()) do add("  " .. label .. " attr " .. tostring(k) .. " = " .. cut(v, 40)) end
+		end
+		attrs("Player", player)
+		attrs("Character", player.Character)
+		attrs("Workspace", workspace)
+		local ls = player:FindFirstChild("leaderstats")
+		if ls then
+			for _, v in ipairs(ls:GetChildren()) do
+				local okv, val = pcall(function() return (v :: any).Value end)
+				add("  leaderstats " .. v.Name .. " = " .. tostring(okv and val or "?"))
+			end
+		end
+
+		local verdict, col
+		if #ctx.items > 0 or #ctx.orders > 0 or #ctx.defs > 0 then
+			verdict = string.format("TERDETEKSI: %d item ber-rarity, %d daftar urutan, %d tabel detail rarity.", #ctx.items, #ctx.orders, #ctx.defs)
+			col = T.good
+		elseif withEv > 0 or #rsHits > 0 or #folders > 0 then
+			verdict = "SEBAGIAN: ada petunjuk rarity (atribut/folder/item) tapi belum ada data lengkap. Salin hasilnya untuk dicek."
+			col = Color3.fromRGB(255, 176, 72)
+		else
+			verdict = "TIDAK TERDETEKSI: game tampaknya menyembunyikan rarity (server-side) sampai item didapat. Salin hasilnya tetap berguna."
+			col = T.danger
+		end
+		add("")
+		add("KESIMPULAN: " .. verdict)
+		return table.concat(L, "\n"), verdict, col
+	end
+
+	-- =================================================================================
+	-- B) REKAM MINIGAME
+	-- =================================================================================
+	local R: any = { rec = false, conns = {}, mode = "Bebas", ctx = "", fileName = nil, fileOk = nil, hasData = false, tEnd = 0 }
+
+	local function resetData()
+		R.objs, R.nObjs, R.nSamples, R.samplesFull, R.nTexts = {}, 0, 0, false, 0
+		R.hot, R.vis = {}, {}
+		R.events, R.nEvents, R.eventsFull = {}, 0, false
+		R.trials, R.trialsFull = {}, false
+		R.rate, R.prompts = {}, {}
+		R.outbuf, R.keep = {}, {}
+		R.idSeq = 0
+		R.pendingNote = nil
+		R.nValueHooks = 0
+		R.t0 = os.clock()
+		R.tEnd = 0
+		R.lastFlush = os.clock()
+		R.hasData = false
+	end
+	resetData()
+
+	local function now(): number
+		return os.clock() - R.t0
+	end
+
+	local function stripDigits(s: string): string
+		return (string.gsub(string.lower(s), "%d+", "#"))
+	end
+
+	-- ---------- penulisan file (streaming) ----------
+	local function out(line: string)
+		R.outbuf[#R.outbuf + 1] = line
+		if not fsAppend and #R.keep < 400000 then R.keep[#R.keep + 1] = line end
+	end
+
+	local function flushOut(force: boolean)
+		if not R.fileName then return end
+		if fsAppend then
+			if #R.outbuf == 0 then return end
+			R.fileOk = appendFile(R.fileName, table.concat(R.outbuf, "\n") .. "\n")
+			table.clear(R.outbuf)
+		elseif fsWrite then
+			-- tanpa appendfile: tulis ulang seluruh file jarang-jarang (tiap 10 dtk) dan saat berhenti
+			if force or os.clock() - R.lastFlush >= 10 then
+				R.fileOk = saveFile(R.fileName, table.concat(R.keep, "\n") .. "\n")
+				R.lastFlush = os.clock()
+			end
+			table.clear(R.outbuf)
+		else
+			table.clear(R.outbuf)
+		end
+	end
+
+	local function addEvent(kind: string, msg: string, sig: string?)
+		if R.nEvents >= CFG.maxEvents then
+			R.eventsFull = true
+			return
+		end
+		local t = now()
+		R.nEvents += 1
+		R.events[R.nEvents] = { t = t, k = kind, m = msg, s = sig or stripDigits(msg) }
+		out(string.format("E|%.3f|%s|%s", t, kind, cut(msg, 220)))
+	end
+
+	-- pembatas laju: teks/remote yang berubah sangat cepat (timer) tidak membanjiri catatan
+	local function rateOk(key: any, limit: number, label: string): boolean
+		local t = os.clock()
+		local r = R.rate[key]
+		if not r then
+			r = { w = t, n = 0, flagged = false }
+			R.rate[key] = r
+		end
+		if t - r.w > 1 then
+			if r.n <= limit then r.flagged = false end
+			r.w, r.n = t, 0
+		end
+		r.n += 1
+		if r.n > limit then
+			if not r.flagged then
+				r.flagged = true
+				addEvent("RAMAI", label .. " berubah sangat cepat (timer/ticker); selebihnya tidak dicatat", "ramai:" .. label)
+			end
+			return false
+		end
+		return true
+	end
+
+	local function addConn(c: RBXScriptConnection)
+		R.conns[#R.conns + 1] = c
+	end
+	local function stopConns()
+		for _, c in ipairs(R.conns) do pcall(function() c:Disconnect() end) end
+		table.clear(R.conns)
+	end
+
+	local function ser(v: any, depth: number): string
+		local ty = typeof(v)
+		if ty == "string" then
+			return '"' .. string.sub(v, 1, 40) .. '"'
+		elseif ty == "table" then
+			if depth >= 2 then return "{...}" end
+			local parts, n = {}, 0
+			for k, x in pairs(v) do
+				n += 1
+				if n > 6 then parts[#parts + 1] = "..." break end
+				parts[#parts + 1] = tostring(k) .. "=" .. ser(x, depth + 1)
+			end
+			return "{" .. table.concat(parts, ", ") .. "}"
+		elseif ty == "Instance" then
+			local ok, nm = pcall(function() return v:GetFullName() end)
+			return ok and nm or "Instance"
+		end
+		return tostring(v)
+	end
+
+
+	-- Recorder V2: bounded independent evidence; legacy five-column samples stay compatible.
+	local V2 = {lines={}, bytes=0, count=0, limit=90000, full=false, held={}, last={}}
+	function V2.reset()
+		V2.lines={}; V2.bytes=0; V2.count=0; V2.full=false; V2.held={}; V2.last={}
+	end
+	function V2.own(inst)
+		local p=inst
+		while p and p~=playerGui do
+			if p==gui or p.Name=="UU_NPC" or p.Name=="UU_ITEMS" or p.Name=="UU_RARITY" or p.Name=="UU_ZONE" or p.Name=="UU_CHESS" then return true end
+			p=p.Parent
+		end
+		return false
+	end
+	function V2.put(line)
+		if V2.bytes+#line+1>V2.limit then V2.full=true; return end
+		V2.lines[#V2.lines+1]=line; V2.bytes+=#line+1
+		out("V2|"..line)
+	end
+	function V2.encode(value)
+		local budget=2500
+		local seen={}
+		local function walk(v,depth)
+			budget-=1
+			if budget<=0 then return "<node limit>" end
+			local ty=typeof(v)
+			if ty=="string" then return string.sub(v,1,600) end
+			if ty=="number" then return (v==v and math.abs(v)<math.huge) and v or tostring(v) end
+			if ty=="boolean" or ty=="nil" then return v end
+			if ty~="table" then return tostring(v) end
+			if seen[v] then return "<cycle>" end
+			if depth>=7 then return "<depth limit>" end
+			seen[v]=true
+			local r={}; local n=0
+			for k,x in pairs(v) do
+				n+=1; if n>100 then r["__truncated"]="key limit"; break end
+				r[tostring(k)]=walk(x,depth+1)
+			end
+			seen[v]=nil; return r
+		end
+		local ok,encoded=pcall(function() return game:GetService("HttpService"):JSONEncode(walk(value,0)) end)
+		return ok and string.sub(encoded,1,14000) or "<serialization failed>"
+	end
+	function V2.prop(inst,o,prop,t)
+		if V2.full or not R.rec or V2.own(inst) then return end
+		local ok,value=pcall(function() return (inst :: any)[prop] end)
+		if not ok then return end
+		local encoded
+		local ty=typeof(value)
+		if ty=="Color3" then encoded=value:ToHex()
+		elseif ty=="Vector2" or ty=="UDim2" or ty=="Vector3" then encoded=tostring(value)
+		elseif ty=="string" then encoded=string.sub(value,1,220)
+		else encoded=tostring(value) end
+		V2.put(string.format("PROP|%d|%.4f|%s|%s",o.id,t or now(),prop,string.gsub(encoded,"[\r\n|]"," ")))
+	end
+	function V2.sample(inst,o,t,force)
+		if V2.full or not R.rec or V2.own(inst) then return end
+		local last=V2.last[inst]
+		if not force and last and t-last.t<0.033 then return end
+		local p,z=inst.AbsolutePosition,inst.AbsoluteSize
+		local rot=inst.Rotation
+		local absrot=rot; pcall(function() absrot=inst.AbsoluteRotation end)
+		local row=string.format("%.2f|%.2f|%.2f|%.2f|%.3f|%.3f",p.X+z.X/2,p.Y+z.Y/2,z.X,z.Y,rot,absrot)
+		if not force and last and last.row==row then return end
+		if not last then
+			V2.put("OBJECT|"..o.id.."|"..o.path.."|"..o.cls.."|attrs="..V2.encode(inst:GetAttributes()))
+			-- Snapshot detailed properties only for likely puzzle UI; live changes remain watched globally.
+			local lp=string.lower(o.path)
+			local relevant=false
+			for _,word in ipairs({"minigame","puzzle","challenge","stage","lock","pin","marker","target","sweet","perfect","zone","bar","dial","wheel","sequence","memory","timer","prompt"}) do
+				if string.find(lp,word,1,true) then relevant=true break end
+			end
+			if relevant or inst:IsA("TextButton") or inst:IsA("ImageButton") then
+				if inst:IsA("TextLabel") or inst:IsA("TextButton") or inst:IsA("TextBox") then
+					V2.prop(inst,o,"Text",t); V2.prop(inst,o,"TextColor3",t); V2.prop(inst,o,"TextTransparency",t); V2.prop(inst,o,"TextSize",t)
+				end
+				if inst:IsA("ImageLabel") or inst:IsA("ImageButton") then
+					V2.prop(inst,o,"Image",t); V2.prop(inst,o,"ImageColor3",t); V2.prop(inst,o,"ImageTransparency",t)
+				end
+				local bgOk,bg=pcall(function() return inst.BackgroundTransparency end)
+				if bgOk and bg<0.98 then V2.prop(inst,o,"BackgroundColor3",t); V2.prop(inst,o,"BackgroundTransparency",t) end
+			end
+		end
+		V2.last[inst]={t=t,row=row}; V2.count+=1
+		V2.put(string.format("POSE|%d|%.4f|%s",o.id,t,row))
+	end
+
+	-- ---------- pemantauan posisi objek UI ----------
+	local promote: any, sampleObj: any
+
+	local function connectVis(a: Instance)
+		if R.vis[a] or a == playerGui or not R.rec then return end
+		R.vis[a] = true
+		local prop = nil
+		if a:IsA("LayerCollector") then prop = "Enabled" elseif a:IsA("GuiObject") then prop = "Visible" end
+		if not prop or a:IsDescendantOf(gui) then return end
+		addConn(a:GetPropertyChangedSignal(prop):Connect(function()
+			if not R.rec then return end
+			if not rateOk(a, 6, a.Name) then return end
+			local on = (a :: any)[prop]
+			addEvent(on and "TAMPIL" or "SEMBUNYI", relPath(a), (on and "tampil:" or "sembunyi:") .. a.Name)
+		end))
+	end
+
+	local function baseline(inst: Instance)
+		local g: Instance? = inst.Parent
+		if g and g.Parent and g.Parent ~= playerGui then g = g.Parent end
+		if not g then return end
+		local n = 0
+		for _, d in ipairs(g:GetDescendants()) do
+			n += 1
+			if n > 80 then break end
+			local o = R.objs[d]
+			if o and not o.base and shown(d) then
+				o.base = true
+				sampleObj(d, o, now())
+			end
+		end
+	end
+
+	promote = function(inst: any, o: any)
+		o.hot = true
+		R.hot[#R.hot + 1] = inst
+		local cur = inst.Parent
+		while cur and cur ~= playerGui do
+			connectVis(cur)
+			cur = cur.Parent
+		end
+		baseline(inst)
+	end
+
+	sampleObj = function(inst: any, o: any, t: number)
+		if not R.rec then return end
+		V2.sample(inst, o, t, false)
+		local p, s = inst.AbsolutePosition, inst.AbsoluteSize
+		if s.X < 1 and s.Y < 1 then return end
+		local cx, cy = p.X + s.X / 2, p.Y + s.Y / 2
+		local sr = o.series
+		local n = #sr
+		if n >= 5 and math.abs(sr[n - 3] - cx) < 0.01 and math.abs(sr[n - 2] - cy) < 0.01
+			and math.abs(sr[n - 1] - s.X) < 0.01 and math.abs(sr[n] - s.Y) < 0.01 then
+			return
+		end
+		if R.nSamples >= CFG.maxSamples then
+			R.samplesFull = true
+			return
+		end
+		if not o.written then
+			o.written = true
+			out(string.format("O|%d|%s|%s|#%s", o.id, o.path, o.cls, o.color))
+		end
+		sr[n + 1], sr[n + 2], sr[n + 3], sr[n + 4], sr[n + 5] = t, cx, cy, s.X, s.Y
+		R.nSamples += 1
+		o.cnt += 1
+		out(string.format("S|%d|%.3f|%.2f|%.2f|%.2f|%.2f", o.id, t, cx, cy, s.X, s.Y))
+		if not o.hot and o.cnt >= 3 then promote(inst, o) end
+	end
+
+	local function onText(inst: any)
+		if not R.rec or V2.own(inst) then return end
+		local txt = inst.Text
+		if txt == "" or not shown(inst) then return end
+		if not rateOk(inst, 6, inst.Name) then return end
+		addEvent("TEKS", inst.Name .. ": '" .. cut(txt, 80) .. "' (" .. cut(relPath(inst), 60) .. ")", "teks:" .. stripDigits(cut(txt, 60)))
+	end
+
+	local function consider(inst: Instance)
+		if R.objs[inst] or R.nObjs >= CFG.maxObjs or not R.rec then return end
+		if not inst:IsA("GuiObject") or V2.own(inst) then return end
+		local cls = inst.ClassName
+		if cls == "ScrollingFrame" or cls == "ViewportFrame" then return end
+		local i: any = inst
+		local vp = viewport()
+		local sz = i.AbsoluteSize
+		if sz.X >= vp.X * 0.9 and sz.Y >= vp.Y * 0.9 then return end
+
+		R.idSeq += 1
+		local o: any = {
+			id = R.idSeq, path = relPath(inst), cls = cls, color = i.BackgroundColor3:ToHex(),
+			series = {}, written = false, hot = false, base = false, cnt = 0,
+		}
+		R.objs[inst] = o
+		R.nObjs += 1
+
+		local function onChange()
+			if R.rec and inst.Parent and shown(inst) then sampleObj(inst, o, now()) end
+		end
+		addConn(i:GetPropertyChangedSignal("AbsolutePosition"):Connect(onChange))
+		addConn(i:GetPropertyChangedSignal("AbsoluteSize"):Connect(onChange))
+		addConn(i:GetPropertyChangedSignal("Rotation"):Connect(onChange))
+		pcall(function() addConn(i:GetPropertyChangedSignal("AbsoluteRotation"):Connect(onChange)) end)
+		addConn(i.AttributeChanged:Connect(function(name)
+			if R.rec and not V2.full then V2.put(string.format("ATTR|%d|%.4f|%s|%s",o.id,now(),name,V2.encode(i:GetAttribute(name)))) end
+		end))
+		-- Capture non-positional UI changes too: text, image, tint, transparency and button state.
+		local watchProps={"BackgroundColor3","BackgroundTransparency","ZIndex","LayoutOrder","AnchorPoint"}
+		if inst:IsA("TextLabel") or inst:IsA("TextButton") or inst:IsA("TextBox") then
+			for _,prop in ipairs({"Text","TextColor3","TextTransparency","TextScaled","TextSize"}) do watchProps[#watchProps+1]=prop end
+		elseif inst:IsA("ImageLabel") or inst:IsA("ImageButton") then
+			for _,prop in ipairs({"Image","ImageColor3","ImageTransparency","ImageRectOffset","ImageRectSize"}) do watchProps[#watchProps+1]=prop end
+		end
+		for _,prop in ipairs(watchProps) do
+			local okSignal,signal=pcall(function() return i:GetPropertyChangedSignal(prop) end)
+			if okSignal and signal then
+				addConn(signal:Connect(function()
+					if R.rec and rateOk(tostring(inst)..":"..prop,18,inst.Name..":"..prop) then
+						V2.prop(i,o,prop,now())
+						addEvent("UI_PROPERTY",o.path.."."..prop.."="..cut(V2.encode((function() local ok,v=pcall(function() return (i :: any)[prop] end); return ok and v or "?" end)()),100),"uiprop:"..prop)
+					end
+				end))
+			end
+		end
+		if inst:IsA("GuiButton") then
+			addConn((inst :: GuiButton).Activated:Connect(function()
+				if R.rec then addEvent("BUTTON_ACTIVATED",o.path,"button:"..o.path); V2.put(string.format("BUTTON|%.4f|%d|%s",now(),o.id,o.path)) end
+			end))
+		end
+		if shown(inst) then V2.sample(i,o,now(),true) end
+
+
+		if (cls == "TextLabel" or cls == "TextButton") and R.nTexts < 3000 then
+			R.nTexts += 1
+			addConn(i:GetPropertyChangedSignal("Text"):Connect(function() onText(inst) end))
+		end
+
+		local depth, cur = 0, inst.Parent
+		while cur and cur ~= playerGui do
+			depth += 1
+			cur = cur.Parent
+		end
+		if depth <= 3 then connectVis(inst) end
+	end
+
+	-- ---------- target terdekat (jenis objek/item yang sedang diproses) ----------
+	local function nearestTarget(): (string, string)
+		local ch = player.Character
+		local hrp = ch and ch:FindFirstChild("HumanoidRootPart") :: BasePart?
+		if not hrp then return "", "" end
+		local best: ProximityPrompt? = nil
+		local bd = 25
+		for pr in pairs(R.prompts) do
+			if pr.Parent then
+				local par: any = pr.Parent
+				local pos: Vector3? = nil
+				if par:IsA("BasePart") then
+					pos = par.Position
+				elseif par:IsA("Attachment") then
+					pos = par.WorldPosition
+				else
+					local m = pr:FindFirstAncestorOfClass("Model")
+					if m then
+						local ok, pv = pcall(function() return m:GetPivot().Position end)
+						if ok then pos = pv end
+					end
+				end
+				if pos then
+					local d = (pos - hrp.Position).Magnitude
+					if d < bd then
+						bd, best = d, pr
+					end
+				end
+			else
+				R.prompts[pr] = nil
+			end
+		end
+		if not best then return "", "" end
+		local m = best:FindFirstAncestorOfClass("Model")
+		local name = m and m.Name or (best.Parent and best.Parent.Name) or best.Name
+		local ak = {}
+		if m then
+			for k, v in pairs(m:GetAttributes()) do
+				if #ak < 6 then ak[#ak + 1] = tostring(k) .. "=" .. cut(v, 18) end
+			end
+			table.sort(ak)
+		end
+		return name, string.format("%s | prompt '%s' | %.1f st%s", name, best.ObjectText, bd, #ak > 0 and (" | " .. table.concat(ak, ",")) or "")
+	end
+
+	local function recordTrial(label: string)
+		if #R.trials >= CFG.maxTrials then
+			R.trialsFull = true
+			return
+		end
+		local t = now()
+		for _, inst in ipairs(R.hot) do
+			local o = R.objs[inst]
+			if o and inst.Parent and shown(inst) then sampleObj(inst, o, t) end
+		end
+		local nm, nInfo = nearestTarget()
+		local tr = {
+			id = #R.trials + 1, t = t, key = label, mode = R.mode, ctx = R.ctx,
+			near = nm, nearInfo = nInfo, note = R.pendingNote or "",
+		}
+		R.pendingNote = nil
+		R.trials[tr.id] = tr
+		out(string.format("T|%d|%.3f|%s|%s|%s|%s", tr.id, t, label, R.mode, cut(R.ctx, 60), cut(nInfo, 160)))
+	end
+
+	local function hookRemote(d: Instance)
+		if not d:IsA("RemoteEvent") then return end
+		addConn((d :: any).OnClientEvent:Connect(function(...)
+			if not R.rec or not rateOk(d, 20, d.Name) then return end
+			local args = table.pack(...)
+			if string.find(string.lower(d.Name),"minigame",1,true) then
+				V2.put(string.format("REMOTE_DETAIL|%.4f|%s|%s",now(),d:GetFullName(),V2.encode(args)))
+			end
+
+			local parts = {}
+			for i = 1, math.min(args.n, 6) do parts[#parts + 1] = ser(args[i], 0) end
+			addEvent("REMOTE", d.Name .. "(" .. cut(table.concat(parts, ", "), 160) .. ")", "remote:" .. d.Name)
+		end))
+	end
+
+	local function stopRec() end -- diisi di bawah (butuh buildMini)
+	local function hookValue(inst: Instance)
+		if not inst:IsA("ValueBase") or V2.held[inst] or R.nValueHooks>=450 then return end
+		V2.held[inst]=true
+		R.nValueHooks+=1
+		local ok,value=pcall(function() return (inst :: any).Value end)
+		if ok and R.rec then V2.put("VALUE_INIT|"..relPath(inst).."|"..V2.encode(value)) end
+		addConn((inst :: any):GetPropertyChangedSignal("Value"):Connect(function()
+			if not R.rec or not rateOk(inst,24,inst.Name) then return end
+			local good,newValue=pcall(function() return (inst :: any).Value end)
+			if good then
+				V2.put("VALUE|"..string.format("%.4f",now()).."|"..relPath(inst).."|"..V2.encode(newValue))
+				addEvent("VALUE_CHANGED",relPath(inst).."="..cut(V2.encode(newValue),100),"value:"..inst.Name)
+			end
+		end))
+	end
+	local function startRec()
+		stopConns()
+		resetData()
+		V2.reset()
+		R.stamp = tostring(os.time())
+		pcall(function() R.stamp = os.date("!%Y%m%d_%H%M%S") end)
+		R.fileName = string.format("minigame_%s_%s.csv", tostring(game.GameId), R.stamp)
+		R.summaryName = string.format("minigame_%s_%s_ringkasan.txt", tostring(game.GameId), R.stamp)
+		R.rec = true
+		R.hasData = true
+		local vp = viewport()
+		out("# UNIVERSAL UI SCAN MINIGAME | GameId " .. tostring(game.GameId) .. " | PlaceId " .. tostring(game.PlaceId)
+			.. string.format(" | layar %dx%d", math.floor(vp.X), math.floor(vp.Y)))
+		out("# format: O|id|path|kelas|warna  S|id|t|cx|cy|w|h (px absolut)  T|no|t|tombol|mode|konteks|target  E|t|jenis|pesan")
+		flushOut(true)
+
+		-- masukan: tiap tekan/klik = satu percobaan (putaran)
+		addConn(UIS.InputBegan:Connect(function(input)
+			if not R.rec then return end
+			local ut = input.UserInputType
+			local label: string? = nil
+			if ut == Enum.UserInputType.MouseButton1 then label = "Klik-Kiri"
+			elseif ut == Enum.UserInputType.MouseButton2 then label = "Klik-Kanan"
+			elseif ut == Enum.UserInputType.MouseButton3 then label = "Klik-Tengah"
+			elseif ut == Enum.UserInputType.Touch then label = "Tap"
+			elseif ut == Enum.UserInputType.Keyboard then
+				if input.KeyCode == settings.toggleKey then return end
+				label = input.KeyCode.Name
+			elseif string.find(tostring(ut),"Gamepad",1,true) then
+				label = "Gamepad:" .. input.KeyCode.Name
+			end
+			if not label or UIS:GetFocusedTextBox() then return end
+			if ut ~= Enum.UserInputType.Keyboard then
+				local okG, hit = pcall(function() return playerGui:GetGuiObjectsAtPosition(input.Position.X, input.Position.Y) end)
+				if okG then
+					for _, g in ipairs(hit) do
+						if g:IsDescendantOf(gui) then return end -- klik pada panel ini: bukan tekanan minigame
+					end
+				end
+			end
+			recordTrial(label)
+			V2.held[label]={t=now(),id=#R.trials}
+			V2.put(string.format("INPUT_DOWN|%.4f|%s|trial=%d|pointer=%s",now(),label,#R.trials,tostring(input.Position)))
+			for obj,info in pairs(R.objs) do
+				if obj.Parent and shown(obj) and string.find(string.lower(info.path),"minigame",1,true) then V2.sample(obj,info,now(),true) end
+			end
+
+		end))
+
+		addConn(UIS.InputEnded:Connect(function(input)
+			if not R.rec then return end
+			local ty=input.UserInputType
+			local label=ty==Enum.UserInputType.Keyboard and input.KeyCode.Name
+				or (ty==Enum.UserInputType.MouseButton1 and "Klik-Kiri")
+				or (ty==Enum.UserInputType.MouseButton2 and "Klik-Kanan")
+				or (ty==Enum.UserInputType.MouseButton3 and "Klik-Tengah")
+				or (ty==Enum.UserInputType.Touch and "Tap")
+				or (string.find(tostring(ty),"Gamepad",1,true) and ("Gamepad:"..input.KeyCode.Name))
+			local h=label and V2.held[label]
+			if h then
+				V2.put(string.format("INPUT_UP|%.4f|%s|trial=%d|hold=%.4f",now(),label,h.id,now()-h.t))
+				V2.held[label]=nil
+			end
+		end))
+		-- Continuous pointer/analog movement: sampled at a bounded rate for drag, swipe and stick minigames.
+		addConn(UIS.InputChanged:Connect(function(input)
+			if not R.rec then return end
+			local ty=input.UserInputType
+			if ty==Enum.UserInputType.MouseMovement or ty==Enum.UserInputType.MouseWheel or ty==Enum.UserInputType.Touch or string.find(tostring(ty),"Gamepad",1,true) then
+				if rateOk("pointer-move",12,"pointer-move") then
+					local pos=input.Position
+					local delta=input.Delta
+					V2.put(string.format("INPUT_MOVE|%.4f|%s|pos=%s|delta=%s",now(),tostring(ty),tostring(pos),tostring(delta)))
+				end
+			end
+		end))
+
+		-- GUI baru
+		addConn(playerGui.DescendantAdded:Connect(function(d)
+			task.defer(function()
+				if not R.rec then return end
+				consider(d)
+				if d.Parent == playerGui and d ~= gui and not d:IsDescendantOf(gui) then
+					addEvent("GUI BARU", d.Name, "guibaru:" .. d.Name)
+				end
+			end)
+		end))
+
+		-- server -> client (hanya mendengarkan)
+		for _, d in ipairs(RS:GetDescendants()) do
+			hookRemote(d)
+			hookValue(d)
+		end
+		addConn(RS.DescendantAdded:Connect(function(d) hookRemote(d); hookValue(d) end))
+		for _,d in ipairs(playerGui:GetDescendants()) do hookValue(d) end
+		addConn(playerGui.DescendantAdded:Connect(function(d) task.defer(function() if R.rec then hookValue(d) end end) end))
+
+		-- prompt: objek/item yang sedang ditarget
+		addConn(workspace.DescendantAdded:Connect(function(d)
+			if d:IsA("ProximityPrompt") then R.prompts[d] = true end
+			hookValue(d)
+			if d:IsA("GuiObject") then task.defer(function() if R.rec then consider(d) end end) end
+		end))
+		local function pname(pr: ProximityPrompt): string
+			local m = pr:FindFirstAncestorOfClass("Model")
+			return (m and m.Name or (pr.Parent and pr.Parent.Name) or "?") .. " '" .. pr.ObjectText .. "'"
+		end
+		addConn(PPS.PromptButtonHoldBegan:Connect(function(pr) addEvent("PROMPT", "tahan mulai: " .. pname(pr), "prompt:tahan mulai") end))
+		addConn(PPS.PromptButtonHoldEnded:Connect(function(pr) addEvent("PROMPT", "tahan lepas: " .. pname(pr), "prompt:tahan lepas") end))
+		addConn(PPS.PromptTriggered:Connect(function(pr) addEvent("PROMPT", "terpicu: " .. pname(pr), "prompt:terpicu") end))
+
+		-- hasil di sisi pemain: statistik, atribut, item masuk
+		addConn(player.AttributeChanged:Connect(function(a)
+			if R.rec and rateOk("pa" .. a, 6, a) then
+				addEvent("ATRIBUT", "player." .. a .. "=" .. cut(player:GetAttribute(a), 40), "atribut:" .. a)
+			end
+		end))
+		local ls = player:FindFirstChild("leaderstats")
+		if ls then
+			for _, v in ipairs(ls:GetChildren()) do
+				if v:IsA("ValueBase") then
+					local last = (v :: any).Value
+					addConn((v :: any):GetPropertyChangedSignal("Value"):Connect(function()
+						local nv = (v :: any).Value
+						addEvent("STAT", v.Name .. ": " .. tostring(last) .. " -> " .. tostring(nv), "stat:" .. v.Name)
+						last = nv
+					end))
+				end
+			end
+		end
+		local bp = player:FindFirstChildOfClass("Backpack")
+		if bp then
+			addConn(bp.ChildAdded:Connect(function(c) addEvent("ITEM", "+ " .. c.Name, "item+:" .. stripDigits(c.Name)) end))
+			addConn(bp.ChildRemoved:Connect(function(c) addEvent("ITEM", "- " .. c.Name, "item-:" .. stripDigits(c.Name)) end))
+		end
+
+		-- model/benda di dekat yang hilang (mis. objek rusak/diambil)
+		addConn(workspace.DescendantRemoving:Connect(function(d)
+			if not R.rec then return end
+			local isM = d:IsA("Model")
+			if not (isM or (d:IsA("BasePart") and d.Parent and not d.Parent:IsA("Model"))) then return end
+			local chr = player.Character
+			if not chr or d == chr or d:IsDescendantOf(chr) then return end
+			local hrp = chr:FindFirstChild("HumanoidRootPart") :: BasePart?
+			if not hrp then return end
+			local ok, pos = pcall(function()
+				if isM then return (d :: any):GetPivot().Position end
+				return (d :: any).Position
+			end)
+			if not ok then return end
+			local dist = (pos - hrp.Position).Magnitude
+			if dist > 60 or not rateOk("rm", 20, "model hilang") then return end
+			addEvent("MODEL HILANG", string.format("%s (%s, %d st)", d.Name, d.ClassName, math.floor(dist)), "hilang:" .. stripDigits(d.Name))
+		end))
+
+		-- pemindaian awal (dipecah supaya tidak membuat game patah-patah)
+		task.spawn(function()
+			for _, d in ipairs(playerGui:GetDescendants()) do
+				if not R.rec then return end
+				consider(d)
+				maybeYield()
+			end
+			for _, sg in ipairs(playerGui:GetChildren()) do
+				if R.rec then connectVis(sg) end
+			end
+		end)
+		task.spawn(function()
+			for _, d in ipairs(workspace:GetDescendants()) do
+				if not R.rec then return end
+				if d:IsA("ProximityPrompt") then R.prompts[d] = true end
+				hookValue(d)
+				if d:IsA("GuiObject") then consider(d) end -- SurfaceGui/BillboardGui minigames in the 3D world
+				maybeYield()
+			end
+		end)
+	end
+
+	-- ---------- analisis ----------
+	-- posisi objek pada waktu t (tahan nilai terakhir; marker diekstrapolasi < 0.1 dtk dengan kecepatannya)
+	local function stateAt(o: any, t: number): (number?, number?, number, number)
+		local sr = o.series
+		local n = math.floor(#sr / 5)
+		if n == 0 then return nil, nil, 0, 1e9 end
+		local lo, hi, k = 1, n, 0
+		while lo <= hi do
+			local mid = (lo + hi) // 2
+			if sr[(mid - 1) * 5 + 1] <= t then
+				k = mid
+				lo = mid + 1
+			else
+				hi = mid - 1
+			end
+		end
+		if k == 0 then return nil, nil, 0, 1e9 end
+		local b = (k - 1) * 5
+		local t0, x0, w0 = sr[b + 1], sr[b + 2], sr[b + 4]
+		local vel = 0
+		if k >= 2 then
+			local bj = (math.max(1, k - 2) - 1) * 5
+			local dt = t0 - sr[bj + 1]
+			if dt > 0 and dt < 0.3 then vel = (x0 - sr[bj + 2]) / dt end
+		end
+		local age = t - t0
+		local x = x0
+		if age > 0 and age < 0.1 then x = x0 + vel * age end
+		return x, w0, vel, age
+	end
+
+	local function fnum(v: number, d: number?): string
+		return string.format("%." .. tostring(d or 1) .. "f", v)
+	end
+
+	-- V3 layers 2-4: heuristic classifier, cross-signal analysis and implementation-ready evidence.
+	local function buildV3Analysis(full:boolean,limit:number):string
+		local L={}; local function add(x) L[#L+1]=x end
+		local stats={horizontal=0,vertical=0,rotation=0,resize=0,objects=0,pose=0,properties=0,values=0,buttons=0,remote=0,moves=0,inputs=0}
+		local candidates={}; local rotRanges={}
+		for _,line in ipairs(V2.lines) do
+			if string.sub(line,1,5)=="POSE|" then
+				stats.pose+=1
+				local id,rot,absrot=string.match(line,"^POSE|(%d+)|[^|]+|[^|]+|[^|]+|[^|]+|[^|]+|([^|]+)|([^|]+)")
+				if id and rot then local key=tonumber(id); local v=tonumber(rot); if key and v then local rr=rotRanges[key] or {lo=v,hi=v}; rr.lo=math.min(rr.lo,v); rr.hi=math.max(rr.hi,v); rotRanges[key]=rr end end
+			elseif string.sub(line,1,7)=="OBJECT|" then stats.objects+=1
+			elseif string.sub(line,1,5)=="PROP|" then stats.properties+=1
+			elseif string.sub(line,1,6)=="VALUE|" then stats.values+=1
+			elseif string.sub(line,1,7)=="BUTTON|" then stats.buttons+=1
+			elseif string.sub(line,1,14)=="REMOTE_DETAIL|" then stats.remote+=1
+			elseif string.sub(line,1,11)=="INPUT_MOVE|" then stats.moves+=1
+			elseif string.sub(line,1,11)=="INPUT_DOWN|" then stats.inputs+=1 end
+		end
+		for _,o in pairs(R.objs) do
+			local sr=o.series; local n=math.floor(#sr/5)
+			if n>=3 then
+				local minX,maxX,minY,maxY,minW,maxW,minH,maxH=math.huge,-math.huge,math.huge,-math.huge,math.huge,-math.huge,math.huge,-math.huge
+				for k=1,n do local b=(k-1)*5; local x,y,w,h=sr[b+2],sr[b+3],sr[b+4],sr[b+5]
+					minX=math.min(minX,x); maxX=math.max(maxX,x); minY=math.min(minY,y); maxY=math.max(maxY,y)
+					minW=math.min(minW,w); maxW=math.max(maxW,w); minH=math.min(minH,h); maxH=math.max(maxH,h)
+				end
+				local rr=rotRanges[o.id] or {lo=0,hi=0}; local minR,maxR=rr.lo,rr.hi
+				local rx,ry,rw,rh=maxX-minX,maxY-minY,maxW-minW,maxH-minH
+				if rx>18 then stats.horizontal+=1 end; if ry>18 then stats.vertical+=1 end
+				if maxR-minR>20 then stats.rotation+=1 end; if rw>8 or rh>8 then stats.resize+=1 end
+				local path=string.lower(o.path); local score=rx+ry+(maxR-minR)*0.8+rw+rh
+				if string.find(path,"marker",1,true) or string.find(path,"needle",1,true) or string.find(path,"pick",1,true) or string.find(path,"cursor",1,true) or string.find(path,"arrow",1,true) then score+=80 end
+				if string.find(path,"target",1,true) or string.find(path,"sweet",1,true) or string.find(path,"perfect",1,true) or string.find(path,"zone",1,true) then score+=45 end
+				if score>15 then candidates[#candidates+1]={o=o,n=n,rx=rx,ry=ry,rr=maxR-minR,rw=rw,rh=rh,score=score} end
+			end
+		end
+		table.sort(candidates,function(a,b) return a.score>b.score end)
+		local blob=""
+		for _,line in ipairs(V2.lines) do blob..=" "..string.lower(line) end
+		local function hasAny(words) for _,w in ipairs(words) do if string.find(blob,w,1,true) then return true end end return false end
+		local likely={}
+		if hasAny({"lockpick","sweet","pin"}) then likely[#likely+1]="Lockpick / target sudut" end
+		if stats.rotation>0 or hasAny({"rotation","needle","dial","wheel","spinner"}) then likely[#likely+1]="Rotasi / timing sudut" end
+		if stats.horizontal>0 or hasAny({"marker","bar","slider","progress"}) then likely[#likely+1]="Timing horizontal" end
+		if stats.vertical>0 then likely[#likely+1]="Timing vertikal / gerak Y" end
+		if stats.values>0 or hasAny({"sequence","memory","pattern","order","stage"}) then likely[#likely+1]="Urutan / state / memory (perlu verifikasi)" end
+		if stats.moves>0 then likely[#likely+1]="Drag / swipe / input analog" end
+		if stats.properties>0 or hasAny({"color","colour","image","button"}) then likely[#likely+1]="Perubahan visual / tombol" end
+		if #likely==0 then likely[1]="Belum cukup bukti untuk mengklasifikasikan" end
+		add("== REKAM MINIGAME ==")
+		add("LAPISAN 1 - CAPTURE: posisi/ukuran/rotasi UI (ScreenGui/SurfaceGui/BillboardGui), teks/gambar/warna/transparansi, atribut, ValueBase, tombol, input keyboard/mouse/touch/gamepad, RemoteEvent inbound (server->client), prompt, hasil/stat sederhana.")
+		add(string.format("Bukti: objek=%d pose=%d perubahan-properti=%d ValueBase=%d tombol-UI=%d detail-remote=%d input-down=%d gerak-pointer=%d",stats.objects,stats.pose,stats.properties,stats.values,stats.buttons,stats.remote,stats.inputs,stats.moves))
+		add("LAPISAN 2 - CLASSIFIER (heuristik, bukan kepastian): "..table.concat(likely,"; "))
+		add(string.format("Objek dengan gerak terukur: X=%d | Y=%d | rotasi=%d | resize=%d",stats.horizontal,stats.vertical,stats.rotation,stats.resize))
+		add("LAPISAN 3 - PATTERN ANALYZER: korelasikan input, perubahan properti/nilai, gerak objek dan event sekitar waktu tekanan. Bandingkan ronde Tepat/Cepat/Telat dan catatan hasil untuk mencari aturan yang konsisten.")
+		add("LAPISAN 4 - AUTO MODULE SPEC: gunakan kandidat dan jejak di bawah untuk membuat modul khusus. Recorder tidak mengaktifkan auto-input universal secara otomatis; modul harus divalidasi pada game/minigame terkait.")
+		add("KANDIDAT OBJEK BERGERAK (koordinat px absolut; range rotasi dihitung dari sampel POSE):")
+		if #candidates==0 then add("  (belum ada kandidat dengan gerak cukup)") end
+		for i,c in ipairs(candidates) do if i>math.min(full and 30 or 12,#candidates) then break end
+			add(string.format("  #%d id=%d %s | sampel=%d | rangeX=%.1f rangeY=%.1f rangeRot=%.1f° | rangeSize=%.1fx%.1f | skor=%.1f",i,c.o.id,cut(c.o.path,110),c.n,c.rx,c.ry,c.rr,c.rw,c.rh,c.score))
+		end
+		add("KORELASI INPUT (event relevan dari 0.25 dtk sebelum hingga 1.25 dtk sesudah tekanan):")
+		for ti,tr in ipairs(R.trials) do
+			if ti>math.min(full and 30 or 12,#R.trials) then break end
+			add(string.format("  #%d t=%.3f input=%s mode=%s catatan=%s",tr.id,tr.t,tr.key,tr.mode,cut(tr.note~="" and tr.note or "-",70)))
+			local shownEvents=0
+			for _,e in ipairs(R.events) do
+				if e.t>=tr.t-0.25 and e.t<=tr.t+1.25 and (e.k=="UI_PROPERTY" or e.k=="VALUE_CHANGED" or e.k=="BUTTON_ACTIVATED" or e.k=="REMOTE" or e.k=="TAMPIL" or e.k=="SEMBUNYI" or e.k=="STAT") then
+					if shownEvents<5 then add(string.format("    %+0.3fs %s %s",e.t-tr.t,e.k,cut(e.m,100))); shownEvents+=1 end
+				end
+			end
+			if shownEvents==0 then add("    (tidak ada event relevan di jendela ini)") end
+			local shownObjects=0
+			for ci,c in ipairs(candidates) do
+				if ci>3 then break end
+				local sr=c.o.series; local best,bestAge=nil,math.huge
+				for k=1,c.n do local b=(k-1)*5; local age=math.abs(sr[b+1]-tr.t); if age<bestAge then bestAge=age; best={x=sr[b+2],y=sr[b+3],t=sr[b+1]} end end
+				if best and bestAge<=0.35 then add(string.format("    obj#%d %s @input x=%.1f y=%.1f (sampel %.0fms)",c.o.id,cut(c.o.path,55),best.x,best.y,bestAge*1000)); shownObjects+=1 end
+			end
+			if shownObjects==0 then add("    (tidak ada pose dekat waktu input)") end
+		end
+		add("INPUT & HASIL: tiap tekanan memiliki timestamp dan label; gunakan mode Tepat/Cepat/Telat serta catatan manual untuk membedakan target yang benar. Tekanan tanpa hasil/catatan tidak cukup untuk menyimpulkan tombol solusi.")
+		return table.concat(L,"\n")
+	end
+
+	local function buildMini(full: boolean): string
+		local L: { string } = {}
+		local chars = 0
+		local function add(s: string)
+			L[#L + 1] = s
+			chars += #s + 1
+		end
+		add("== REKAM MINIGAME: EVIDENCE ==")
+		add("POSE columns: object id | time seconds | centerX | centerY | width | height | Rotation degrees | AbsoluteRotation degrees")
+		add("Rotation/vertical evidence is independent from legacy horizontal marker detection. Zero active marker trials does NOT prove minigame inactive.")
+		add("Bounded detail: 90000 bytes; JSON max depth 7, 100 keys/table, 2500 nodes, 14000 chars/event. Truncation may occur.")
+		add("V2 samples: "..tostring(V2.count).." | detail full: "..tostring(V2.full).." | raw file write: "..tostring(R.fileOk))
+		local v3ok,v3report=pcall(buildV3Analysis,full,CFG.reportMaxChars)
+		if v3ok then add(v3report) else add("V3 analysis unavailable: "..tostring(v3report)) end
+		add("== RAW V2 EVIDENCE (may be truncated by evidence budget) ==")
+		for _,line in ipairs(V2.lines) do add(line) end
+		add("== LEGACY HORIZONTAL ANALYSIS (may not apply to rotation/vertical puzzles) ==")
+		local limit = full and 1e9 or CFG.reportMaxChars
+		local dur = R.rec and now() or R.tEnd
+		local vp = viewport()
+
+		-- 1) klasifikasi objek
+		local list: { any } = {}
+		for _, o in pairs(R.objs) do
+			local sr = o.series
+			local n = math.floor(#sr / 5)
+			if n >= 1 then
+				local xmin, xmax, wmin, wmax = math.huge, -math.huge, math.huge, -math.huge
+				local steps, speeds, dts, allDx = {}, {}, {}, {}
+				local rev, lastSign, nd, distinct = 0, 0, 0, {}
+				for k = 1, n do
+					local b = (k - 1) * 5
+					local x, w = sr[b + 2], sr[b + 4]
+					if x < xmin then xmin = x end
+					if x > xmax then xmax = x end
+					if w < wmin then wmin = w end
+					if w > wmax then wmax = w end
+					local key = math.floor(x + 0.5)
+					if not distinct[key] then
+						distinct[key] = true
+						nd += 1
+					end
+					if k > 1 then
+						local dt, dx = sr[b + 1] - sr[b - 4], x - sr[b - 3]
+						allDx[#allDx + 1] = math.abs(dx)
+						if dt > 0 and dt <= 0.12 then
+							steps[#steps + 1] = math.abs(dx)
+							speeds[#speeds + 1] = math.abs(dx) / dt
+							dts[#dts + 1] = dt
+						end
+						local sg = (dx > 0.05 and 1) or (dx < -0.05 and -1) or 0
+						if sg ~= 0 then
+							if lastSign ~= 0 and sg ~= lastSign then rev += 1 end
+							lastSign = sg
+						end
+					end
+				end
+				local range = xmax - xmin
+				local wrap = 0
+				for _, dx in ipairs(allDx) do
+					if range > 20 and dx > 0.5 * range then wrap += 1 end
+				end
+				local medStep = median(steps)
+				local continuous = n >= 25 and #steps >= 20 and medStep > 0.3 and range > 20
+				list[#list + 1] = {
+					o = o, n = n, xmin = xmin, xmax = xmax, wmin = wmin, wmax = wmax, nd = nd, range = range,
+					medStep = medStep, medSpeed = median(speeds), medDt = median(dts), rev = rev, wrap = wrap,
+					continuous = continuous, score = continuous and n * range or 0,
+				}
+			end
+		end
+
+		local M: any = nil
+		for _, c in ipairs(list) do
+			if c.continuous and (c.rev + c.wrap >= 1 or c.n >= 60) and (not M or c.score > M.score) then M = c end
+		end
+		local zones: { any } = {}
+		if M then
+			for _, c in ipairs(list) do
+				if c ~= M and c.xmax >= M.xmin - 20 and c.xmin <= M.xmax + 20 and c.wmax >= 2 and c.wmax < 0.9 * M.range then
+					zones[#zones + 1] = c
+				end
+			end
+			table.sort(zones, function(a, b)
+				if a.nd ~= b.nd then return a.nd > b.nd end
+				return a.wmax < b.wmax
+			end)
+			while #zones > 4 do table.remove(zones) end
+		end
+
+		-- 2) evaluasi tiap tekanan
+		local trials: { any } = R.trials
+		local rows: { any } = {}
+		local j0 = 1
+		for idx, tr in ipairs(trials) do
+			local row: any = { tr = tr, ev = {}, sigs = {} }
+			if M then
+				local mx, mw, mv, age = stateAt(M.o, tr.t)
+				if mx and age <= 0.25 then
+					row.m = { x = mx, w = mw, v = mv }
+					row.z = {}
+					local sign = mv >= 0 and 1 or -1
+					for zi, z in ipairs(zones) do
+						local zx, zw = stateAt(z.o, tr.t)
+						if zx and zw then
+							local off = mx - zx
+							row.z[zi] = {
+								x = zx, w = zw, off = off, late = off * sign,
+								ms = off * sign / math.max(math.abs(mv), 1) * 1000,
+								inside = math.abs(off) <= zw / 2,
+								pct = M.range > 0 and (zx - M.xmin) / M.range * 100 or 0,
+							}
+						end
+					end
+				end
+			end
+			local upper = tr.t + 2.5
+			if trials[idx + 1] then upper = math.min(upper, trials[idx + 1].t - 0.02) end
+			while R.events[j0] and R.events[j0].t < tr.t - 0.05 do j0 += 1 end
+			local j = j0
+			while R.events[j] and R.events[j].t <= upper do
+				local e = R.events[j]
+				if e.k ~= "KONTEKS" and e.k ~= "CATATAN" then
+					row.ev[#row.ev + 1] = e
+					row.sigs[e.k .. ":" .. e.s] = true
+				end
+				j += 1
+			end
+			rows[idx] = row
+		end
+
+		local active: { any } = {}
+		for _, r in ipairs(rows) do
+			if r.m then active[#active + 1] = r end
+		end
+		local nAct = #active
+
+		-- kejadian konstan (muncul hampir tiap tekan) tidak dipakai untuk membedakan hasil
+		local freq: { [string]: number } = {}
+		for _, r in ipairs(active) do
+			for s in pairs(r.sigs) do freq[s] = (freq[s] or 0) + 1 end
+		end
+		local constant: { [string]: boolean } = {}
+		local constList: { string } = {}
+		for s, c in pairs(freq) do
+			if nAct >= 5 and c >= 0.9 * nAct then
+				constant[s] = true
+				constList[#constList + 1] = s
+			end
+		end
+		table.sort(constList)
+
+		-- zona utama: namanya mengandung perfect/hit/target/sweet; kalau tidak ada, yang paling dekat dengan titik tekan
+		local pz = 1
+		do
+			local found = false
+			for zi, z in ipairs(zones) do
+				local lp = string.lower(z.o.path)
+				if string.find(lp, "perfect", 1, true) or string.find(lp, "sweet", 1, true) or string.find(lp, "hit", 1, true) or string.find(lp, "target", 1, true) then
+					pz, found = zi, true
+					break
+				end
+			end
+			if not found then
+				local bestMed = math.huge
+				for zi in ipairs(zones) do
+					local vals = {}
+					for _, r in ipairs(active) do
+						if r.z and r.z[zi] then vals[#vals + 1] = math.abs(r.z[zi].off) end
+					end
+					if #vals > 0 then
+						local md = median(vals)
+						if md < bestMed then bestMed, pz = md, zi end
+					end
+				end
+			end
+		end
+
+		local function resultOf(r: any): string
+			local parts = {}
+			for _, e in ipairs(r.ev) do
+				if e.k ~= "RAMAI" and not constant[e.k .. ":" .. e.s] then
+					local p = e.k .. " " .. cut(e.m, 50)
+					if #parts < 3 then parts[#parts + 1] = p end
+				end
+			end
+			return #parts > 0 and table.concat(parts, "; ") or "(tidak ada kejadian)"
+		end
+		local function clusterKey(r: any): string
+			local ks = {}
+			for s in pairs(r.sigs) do
+				if not constant[s] and string.sub(s, 1, 6) ~= "RAMAI:" then ks[#ks + 1] = s end
+			end
+			table.sort(ks)
+			while #ks > 3 do table.remove(ks) end
+			return #ks > 0 and cut(table.concat(ks, " + "), 90) or "(tidak ada kejadian)"
+		end
+
+		-- ================= LAPORAN =================
+		add("== UNIVERSAL UI SCAN: MINIGAME ==")
+		add("GameId: " .. tostring(game.GameId) .. " | PlaceId: " .. tostring(game.PlaceId) .. string.format(" | layar %dx%d", math.floor(vp.X), math.floor(vp.Y)))
+		add(string.format("Durasi: %.1f dtk | tekan dicatat: %d (aktif saat minigame: %d) | objek: %d | sampel: %d | kejadian: %d",
+			dur, #trials, nAct, R.nObjs, R.nSamples, R.nEvents))
+		if R.samplesFull or R.eventsFull or R.trialsFull then
+			add("PERINGATAN BATAS: " .. (R.samplesFull and "sampel penuh; " or "") .. (R.eventsFull and "kejadian penuh; " or "")
+				.. (R.trialsFull and "tekan penuh; " or "") .. "data setelahnya tidak masuk. Rekam ulang lebih pendek.")
+		end
+		if R.fileName then add("File data mentah lengkap: " .. fpath(R.fileName) .. (R.fileOk == false and " (GAGAL ditulis)" or "")) end
+
+		add("")
+		add("## OBJEK UTAMA")
+		if not M then
+			add("marker: TIDAK TERDETEKSI (tidak ada objek yang bergerak kontinu). Pastikan minigame dimainkan saat Rekam ON.")
+		else
+			add(string.format("marker (tebakan): %s | warna #%s | %d sampel | X %.0f..%.0f (jalur %.0f px) | lebar %.0f..%.0f",
+				M.o.path, M.o.color, M.n, M.xmin, M.xmax, M.range, M.wmin, M.wmax))
+			add(string.format("  kecepatan median: %.0f px/dtk (%.2f jalur/dtk) | sampling median: %.1f ms (~%.0f Hz) | balik arah: %d | lompat balik: %d",
+				M.medSpeed, M.range > 0 and M.medSpeed / M.range or 0, M.medDt * 1000, M.medDt > 0 and 1 / M.medDt or 0, M.rev, M.wrap))
+			for zi, z in ipairs(zones) do
+				add(string.format("zona kandidat %d%s: %s | warna #%s | %d sampel, %d posisi berbeda | X %.0f..%.0f | lebar %.0f..%.0f",
+					zi, zi == pz and " (UTAMA)" or "", z.o.path, z.o.color, z.n, z.nd, z.xmin, z.xmax, z.wmin, z.wmax))
+			end
+		end
+		add("lainnya yang bergerak/berubah:")
+		table.sort(list, function(a, b) return a.n > b.n end)
+		local shownOther = 0
+		for _, c in ipairs(list) do
+			if c ~= M and not table.find(zones, c) and c.n >= 3 then
+				shownOther += 1
+				if shownOther > 8 then break end
+				add(string.format("  - %s | #%s | %d sampel | X %.0f..%.0f | lebar %.0f..%.0f", c.o.path, c.o.color, c.n, c.xmin, c.xmax, c.wmin, c.wmax))
+			end
+		end
+		if shownOther == 0 then add("  (tidak ada)") end
+		if #constList > 0 then
+			add("kejadian yang muncul hampir tiap tekan (tidak dipakai membedakan hasil):")
+			for i = 1, math.min(#constList, 6) do add("  - " .. cut(constList[i], 100)) end
+		end
+
+		-- 3) kelompok hasil + batas Perfect
+		local clusters: { [string]: any } = {}
+		local clist: { any } = {}
+		for _, r in ipairs(active) do
+			local zz = r.z and r.z[pz]
+			if zz then
+				local key = clusterKey(r)
+				local c = clusters[key]
+				if not c then
+					c = { key = key, lates = {}, ms = {}, modes = {}, abs = {} }
+					clusters[key] = c
+					clist[#clist + 1] = c
+				end
+				c.lates[#c.lates + 1] = zz.late
+				c.ms[#c.ms + 1] = zz.ms
+				c.abs[#c.abs + 1] = math.abs(zz.late)
+				c.modes[r.tr.mode] = (c.modes[r.tr.mode] or 0) + 1
+			end
+		end
+		for _, c in ipairs(clist) do
+			c.n = #c.lates
+			c.meanAbs = 0
+			for _, v in ipairs(c.abs) do c.meanAbs += v end
+			c.meanAbs /= math.max(c.n, 1)
+			c.min, c.max = math.huge, -math.huge
+			c.msMin, c.msMax = math.huge, -math.huge
+			for i, v in ipairs(c.lates) do
+				if v < c.min then c.min = v end
+				if v > c.max then c.max = v end
+				if c.ms[i] < c.msMin then c.msMin = c.ms[i] end
+				if c.ms[i] > c.msMax then c.msMax = c.ms[i] end
+			end
+		end
+		table.sort(clist, function(a, b) return a.meanAbs < b.meanAbs end)
+
+		add("")
+		add("## KELOMPOK HASIL (selisih marker vs zona utama; + = telat, - = terlalu cepat)")
+		if #clist == 0 then add("(belum ada tekanan yang bisa dihitung selisihnya)") end
+		for _, c in ipairs(clist) do
+			local md = {}
+			for m, n in pairs(c.modes) do md[#md + 1] = m .. " " .. n end
+			table.sort(md)
+			add(string.format("- %s | %d tekan | selisih %.1f..%.1f px (%+.0f..%+.0f ms) | mode: %s",
+				c.key, c.n, c.min, c.max, c.msMin, c.msMax, table.concat(md, ", ")))
+		end
+
+		add("")
+		add("## BATAS ZONA TERBAIK / PERFECT (perkiraan dari variasi tekan Anda)")
+		if #clist >= 2 then
+			local P = clist[1]
+			local lowOut, highOut = -math.huge, math.huge
+			local lowMs, highMs = 0, 0
+			for _, r in ipairs(active) do
+				local zz = r.z and r.z[pz]
+				if zz and clusterKey(r) ~= P.key then
+					if zz.late < P.min and zz.late > lowOut then lowOut, lowMs = zz.late, zz.ms end
+					if zz.late > P.max and zz.late < highOut then highOut, highMs = zz.late, zz.ms end
+				end
+			end
+			add("kelompok terdekat ke pusat (dianggap Perfect): " .. P.key)
+			add(string.format("  tekan Perfect tercatat dari %.1f sampai %.1f px (%+.0f sampai %+.0f ms)", P.min, P.max, P.msMin, P.msMax))
+			add(string.format("  batas CEPAT: di antara %s dan %.1f px", lowOut > -math.huge and fnum(lowOut) or "(tak ada tekan lebih cepat)", P.min))
+			add(string.format("  batas TELAT: di antara %.1f dan %s px", P.max, highOut < math.huge and fnum(highOut) or "(tak ada tekan lebih telat)"))
+			if lowOut > -math.huge and highOut < math.huge then
+				add(string.format("  => lebar toleransi Perfect: antara %.1f dan %.1f px (%.0f..%.0f ms total)", P.max - P.min, highOut - lowOut,
+					P.msMax - P.msMin, highMs - lowMs))
+			end
+			local pzone = zones[pz]
+			if pzone then
+				add(string.format("  bandingkan: lebar visual zona utama = %.0f..%.0f px", pzone.wmin, pzone.wmax))
+			end
+		else
+			add("Belum cukup variasi hasil. Perlu tekan yang tepat DAN yang sengaja terlalu cepat / telat (masing-masing beberapa kali).")
+		end
+
+		-- 4) kesulitan per konteks / per target
+		local function groupBy(title: string, keyFn: (any) -> string)
+			local g: { [string]: any } = {}
+			local order: { string } = {}
+			for _, r in ipairs(active) do
+				local k = keyFn(r)
+				if not g[k] then
+					g[k] = { n = 0, zw = {}, sp = {}, hit = 0 }
+					order[#order + 1] = k
+				end
+				local e = g[k]
+				e.n += 1
+				e.sp[#e.sp + 1] = math.abs(r.m.v)
+				local zz = r.z and r.z[pz]
+				if zz then
+					e.zw[#e.zw + 1] = zz.w
+					if zz.inside then e.hit += 1 end
+				end
+			end
+			if #order <= 1 and order[1] == "(tanpa)" then return end
+			add("")
+			add("## " .. title)
+			table.sort(order)
+			for _, k in ipairs(order) do
+				local e = g[k]
+				add(string.format("- %s | %d tekan | lebar zona median %.0f px | kecepatan marker median %.0f px/dtk | tekan di dalam zona: %d", k, e.n, median(e.zw), median(e.sp), e.hit))
+			end
+		end
+		groupBy("KESULITAN PER KONTEKS (jenis/level yang Anda isi)", function(r) return r.tr.ctx ~= "" and r.tr.ctx or "(tanpa)" end)
+		groupBy("KESULITAN PER TARGET (objek terdekat saat tekan)", function(r) return r.tr.near ~= "" and r.tr.near or "(tanpa)" end)
+
+		-- 5) tabel tekan
+		add("")
+		add("## TABEL TEKAN (zona utama; semua selisih: + telat, - cepat)")
+		add("no|t(dtk)|tombol|mode|konteks|target|marker x|kec px/dtk|zona x|zona w|zona %jalur|selisih px|selisih ms|dalam|hasil|zona lain|catatan")
+		local tableBudget = full and 1e9 or limit * 0.62
+		local shownRows, skippedRows = 0, 0
+		for _, r in ipairs(rows) do
+			local tr = r.tr
+			local line
+			local zz = r.z and r.z[pz]
+			if r.m and zz then
+				local others = {}
+				for zi, z in pairs(r.z) do
+					if zi ~= pz then others[#others + 1] = string.format("z%d:%+.1f", zi, z.late) end
+				end
+				table.sort(others)
+				line = string.format("%d|%.2f|%s|%s|%s|%s|%.1f|%+.0f|%.1f|%.0f|%.0f|%+.1f|%+.0f|%s|%s|%s|%s",
+					tr.id, tr.t, tr.key, tr.mode, cut(tr.ctx, 24), cut(tr.near, 24), r.m.x, r.m.v, zz.x, zz.w, zz.pct, zz.late, zz.ms,
+					zz.inside and "ya" or "tidak", resultOf(r), table.concat(others, " "), cut(tr.note, 60))
+			else
+				line = string.format("%d|%.2f|%s|%s|%s|%s|-|-|-|-|-|-|-|-|%s|-|%s (tanpa minigame aktif)", tr.id, tr.t, tr.key, tr.mode,
+					cut(tr.ctx, 24), cut(tr.near, 24), resultOf(r), cut(tr.note, 60))
+			end
+			if shownRows < CFG.tableMaxRows or full then
+				if chars + #line < tableBudget then
+					add(line)
+					shownRows += 1
+				else
+					skippedRows += 1
+				end
+			else
+				skippedRows += 1
+			end
+		end
+		if skippedRows > 0 then add("... (" .. skippedRows .. " baris lagi ada di file mentah)") end
+
+		-- 6) sampel mentah di sekitar tekanan (bukti resolusi waktu)
+		if M and #active > 0 then
+			add("")
+			add("## SAMPEL MENTAH MARKER DI SEKITAR TEKAN (ms relatif terhadap tekan : x px)")
+			local shownRaw = 0
+			for _, r in ipairs(active) do
+				if shownRaw >= 3 then break end
+				shownRaw += 1
+				local parts = {}
+				local sr = M.o.series
+				for k = 1, math.floor(#sr / 5) do
+					local b = (k - 1) * 5
+					local rel = (sr[b + 1] - r.tr.t) * 1000
+					if rel >= -250 and rel <= 100 and #parts < 26 then parts[#parts + 1] = string.format("%+d:%.1f", math.floor(rel + 0.5), sr[b + 2]) end
+				end
+				add(string.format("tekan #%d: %s", r.tr.id, table.concat(parts, " ")))
+			end
+		end
+
+		-- 7) kejadian kronologis
+		add("")
+		add("## KEJADIAN (kronologis)")
+		local evBudget = full and 1e9 or limit * 0.97
+		local nEv = 0
+		for _, e in ipairs(R.events) do
+			if e.k ~= "RAMAI" or full then
+				local line = string.format("[%7.2f] %s %s", e.t, e.k, cut(e.m, 110))
+				if chars + #line >= evBudget then break end
+				add(line)
+				nEv += 1
+			end
+		end
+		if nEv < R.nEvents then add("... (kejadian lain ada di file mentah)") end
+		if #R.events == 0 then add("(tidak ada)") end
+		return table.concat(L, "\n")
+	end
+
+	-- ---------- berhenti merekam + simpan ringkasan ----------
+	stopRec = function()
+		if not R.rec then return end
+		R.rec = false
+		R.tEnd = now()
+		stopConns()
+		flushOut(true)
+		local ok, rep = pcall(buildMini, true)
+		if ok then
+			R.lastFull = rep
+			R.fileSummaryOk = R.summaryName and saveFile(R.summaryName, rep) or false
+		else
+			warn("[Scan] gagal membuat ringkasan: " .. tostring(rep))
+		end
+	end
+
+	-- =================================================================================
+	-- C) UI  (bagian Scan di tab "Mini Game")
+	-- =================================================================================
+	local page = pages["Mini Game"] -- Scan digabung ke tab Mini Game; LayoutOrder 100+ supaya di bawah Auto Cut
+	local RARITY: any = { report = "", busy = false }
+
+	-- ---- Scan Rarity ----
+	sectionLabel(page, 100, "Scan Rarity")
+	local rCard = makeCard(page, 132, 101)
+	text(rCard, {
+		Text = "Scan Rarity",
+		Font = Enum.Font.GothamBold,
+		TextSize = 14,
+		Position = UDim2.fromOffset(14, 10),
+		Size = UDim2.new(1, -28, 0, 18),
+	})
+	text(rCard, {
+		Text = "Baca urutan & jenis rarity dari data game, tanpa memetik item. Dekati area item dulu agar ikut terbaca.",
+		TextSize = 11,
+		TextColor3 = T.sub,
+		TextWrapped = true,
+		TextYAlignment = Enum.TextYAlignment.Top,
+		Position = UDim2.fromOffset(14, 30),
+		Size = UDim2.new(1, -28, 0, 28),
+	})
+	local rBtn = makeButton(rCard, 0, "🔎 SCAN RARITY", T.accent, 30)
+	rBtn.Position = UDim2.fromOffset(14, 64)
+	rBtn.Size = UDim2.new(1, -28, 0, 30)
+	local rStatus = text(rCard, {
+		Text = "Belum ada hasil.",
+		TextSize = 10,
+		TextColor3 = T.sub,
+		TextWrapped = true,
+		TextYAlignment = Enum.TextYAlignment.Top,
+		Position = UDim2.fromOffset(14, 100),
+		Size = UDim2.new(1, -28, 0, 26),
+	})
+
+	rBtn.MouseButton1Click:Connect(function()
+		if RARITY.busy or unloaded then return end
+		RARITY.busy = true
+		rBtn.Text = "⏳ Memindai..."
+		task.spawn(function()
+			local ok, rep, verdict, col = pcall(runRarity, function(s: string)
+				if not unloaded then rStatus.Text = s end
+			end)
+			if unloaded then return end
+			if ok then
+				RARITY.report = rep
+				rStatus.Text = verdict
+				rStatus.TextColor3 = col
+				saveFile("rarity_" .. tostring(game.GameId) .. ".txt", rep)
+				toast("Scan rarity selesai")
+			else
+				rStatus.Text = "Scan error: " .. tostring(rep)
+				rStatus.TextColor3 = T.danger
+				warn("[Scan] rarity: " .. tostring(rep))
+			end
+			rBtn.Text = "🔎 SCAN RARITY"
+			RARITY.busy = false
+		end)
+	end)
+
+	-- ---- Rekam Minigame ----
+	sectionLabel(page, 102, "Rekam Minigame")
+	state.scanRec = false
+	effects.scanRec = function(on: boolean)
+		if on then
+			startRec()
+			toast("Merekam... file mentah ditulis otomatis")
+		elseif R.rec then
+			stopRec()
+			toast("Rekaman selesai & tersimpan. Tekan Salin Semua Hasil")
+		end
+	end
+	local recDesc = addToggleCard(page, 103, "Rekam Minigame", "Perekam universal untuk berbagai tipe minigame. Nyalakan sebelum minigame dimulai, lalu mainkan seperti biasa.", "scanRec")
+	recDesc.Text = "Rekam posisi, rotasi, teks, warna, nilai, tombol & event dari berbagai tipe minigame. Pilih mode sebelum tiap input; coba 3-5 ronde Tepat/Cepat/Telat dan catat hasilnya, lalu Salin Minigame. Toggle juga bisa lewat keybind Settings."
+
+	local cCard = makeCard(page, 184, 104)
+	text(cCard, {
+		Text = "Mode tekan (dicap ke tiap tekanan berikutnya)",
+		TextSize = 11,
+		TextColor3 = T.sub,
+		Position = UDim2.fromOffset(14, 10),
+		Size = UDim2.new(1, -28, 0, 14),
+	})
+	local modeRow = new("Frame", {
+		BackgroundTransparency = 1,
+		Position = UDim2.fromOffset(14, 28),
+		Size = UDim2.new(1, -28, 0, 28),
+	}, cCard)
+	new("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }, modeRow)
+	local modeBtns: { [string]: any } = {}
+	local function setMode(name: string)
+		R.mode = name
+		for n, b in pairs(modeBtns) do
+			tween(b, { BackgroundColor3 = (n == name) and T.accent or T.off }, 0.12)
+		end
+	end
+	for i, name in ipairs({ "Tepat", "Cepat", "Telat", "Bebas" }) do
+		local b = new("TextButton", {
+			LayoutOrder = i,
+			Size = UDim2.new(0.25, -3, 1, 0),
+			BackgroundColor3 = T.off,
+			Text = name,
+			TextColor3 = WHITE,
+			Font = Enum.Font.GothamBold,
+			TextSize = 12,
+			AutoButtonColor = false,
+		}, modeRow)
+		round(b, 8)
+		modeBtns[name] = b
+		b.MouseButton1Click:Connect(function() setMode(name) end)
+	end
+	setMode("Bebas")
+
+	local function makeBox(y: number, placeholder: string): any
+		local box = new("TextBox", {
+			Position = UDim2.fromOffset(14, y),
+			Size = UDim2.new(1, -28, 0, 28),
+			BackgroundColor3 = T.bg,
+			TextColor3 = T.text,
+			PlaceholderText = placeholder,
+			PlaceholderColor3 = T.sub,
+			Font = Enum.Font.Gotham,
+			TextSize = 12,
+			ClearTextOnFocus = false,
+			BorderSizePixel = 0,
+			Text = "",
+			TextXAlignment = Enum.TextXAlignment.Left,
+		}, cCard)
+		round(box, 8)
+		stroke(box, T.stroke, 1, 0.3)
+		new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }, box)
+		return box
+	end
+	local ctxBox = makeBox(64, "Jenis / level / tingkat kesulitan (mis. level 2, tipe A) - berlaku sampai diganti")
+	local noteBox = makeBox(98, "Catatan ronde terakhir (mis. gagal, item rusak) lalu Enter")
+	local liveLbl = text(cCard, {
+		Text = "Rekam OFF.",
+		TextSize = 10,
+		TextColor3 = T.sub,
+		TextWrapped = true,
+		TextYAlignment = Enum.TextYAlignment.Top,
+		Position = UDim2.fromOffset(14, 134),
+		Size = UDim2.new(1, -28, 0, 44),
+	})
+
+	ctxBox.FocusLost:Connect(function()
+		R.ctx = ctxBox.Text
+		if R.rec then addEvent("KONTEKS", "konteks = '" .. cut(R.ctx, 80) .. "'") end
+	end)
+	noteBox.FocusLost:Connect(function(enter: boolean)
+		local txt = noteBox.Text
+		if txt == "" or not enter then return end
+		noteBox.Text = ""
+		if not R.rec and not R.hasData then
+			toast("Nyalakan Rekam dulu")
+			return
+		end
+		local last = R.trials[#R.trials]
+		if last then
+			last.note = (last.note ~= "" and (last.note .. " / ") or "") .. txt
+			out(string.format("N|%d|%.3f|%s", last.id, now(), cut(txt, 200)))
+			addEvent("CATATAN", "tekan #" .. last.id .. ": " .. cut(txt, 100))
+			toast("Catatan disimpan ke tekan #" .. last.id)
+		else
+			R.pendingNote = txt
+			toast("Catatan akan dipasang di tekan berikutnya")
+		end
+	end)
+
+	-- ---- Hasil ----
+	sectionLabel(page, 105, "Hasil")
+	local hCard = makeCard(page, 168, 106)
+	local allBtn = makeButton(hCard, 0, "📋 SALIN SEMUA HASIL", T.accent, 34)
+	allBtn.Position = UDim2.fromOffset(14, 12)
+	allBtn.Size = UDim2.new(1, -28, 0, 34)
+
+	local cpR = makeButton(hCard, 0, "Salin Rarity", T.accent2, 28)
+	cpR.Position = UDim2.fromOffset(14, 54)
+	cpR.Size = UDim2.new(0.5, -18, 0, 28)
+	local cpM = makeButton(hCard, 0, "Salin Minigame", T.accent2, 28)
+	cpM.AnchorPoint = Vector2.new(1, 0)
+	cpM.Position = UDim2.new(1, -14, 0, 54)
+	cpM.Size = UDim2.new(0.5, -18, 0, 28)
+
+	local clrBtn = makeButton(hCard, 0, "Hapus Rekaman", T.off, 28)
+	clrBtn.Position = UDim2.fromOffset(14, 90)
+	clrBtn.Size = UDim2.new(1, -28, 0, 28)
+
+	local hLbl = text(hCard, {
+		Text = "Data mentah lengkap otomatis tersimpan di folder " .. CFG.folder .. " (workspace executor).",
+		TextSize = 10,
+		TextColor3 = T.sub,
+		TextWrapped = true,
+		TextYAlignment = Enum.TextYAlignment.Top,
+		Position = UDim2.fromOffset(14, 124),
+		Size = UDim2.new(1, -28, 0, 38),
+	})
+
+	local function miniText(): string?
+		if not R.hasData then return nil end
+		local ok, rep = pcall(buildMini, false)
+		if not ok then
+			warn("[Scan] ringkasan: " .. tostring(rep))
+			return "(gagal membuat ringkasan: " .. tostring(rep) .. ")"
+		end
+		return rep
+	end
+
+	local function doCopy(text_: string, label: string)
+		local ok = copyText(text_)
+		if ok then
+			hLbl.Text = string.format("%s disalin (%d karakter).", label, #text_)
+			toast(label .. " disalin")
+		else
+			hLbl.Text = "Executor tidak bisa menyalin. Ambil file di folder " .. CFG.folder .. " (rarity_*.txt / minigame_*_ringkasan.txt)."
+			toast("Tidak bisa menyalin; lihat file")
+		end
+	end
+
+	cpR.MouseButton1Click:Connect(function()
+		if RARITY.report == "" then toast("Belum ada hasil Scan Rarity") return end
+		doCopy(RARITY.report, "Hasil rarity")
+	end)
+	cpM.MouseButton1Click:Connect(function()
+		if R.rec then setFeature("scanRec", false) end
+		local m = miniText()
+		if not m then toast("Belum ada rekaman minigame") return end
+		doCopy(m, "Hasil minigame")
+	end)
+	allBtn.MouseButton1Click:Connect(function()
+		if R.rec then setFeature("scanRec", false) end
+		local m = miniText()
+		if RARITY.report == "" and not m then toast("Belum ada hasil untuk disalin") return end
+		local parts = {}
+		if RARITY.report ~= "" then parts[#parts + 1] = RARITY.report end
+		if m then parts[#parts + 1] = m end
+		local all = table.concat(parts, "\n\n")
+		saveFile("semua_" .. tostring(game.GameId) .. ".txt", all)
+		doCopy(all, "Semua hasil")
+	end)
+	clrBtn.MouseButton1Click:Connect(function()
+		if R.rec then setFeature("scanRec", false) end
+		resetData()
+		V2.reset()
+		R.fileName = nil
+		liveLbl.Text = "Rekaman dihapus (file di folder tidak ikut terhapus)."
+		toast("Rekaman dihapus")
+	end)
+
+	-- status langsung + tulis buffer berkala
+	local acc, accFlush = 0, 0
+	track(RunService.Heartbeat:Connect(function(dt)
+		if unloaded then return end
+		acc += dt
+		accFlush += dt
+		if R.rec and accFlush >= CFG.flushEvery then
+			accFlush = 0
+			flushOut(false)
+		end
+		if acc >= 0.3 then
+			acc = 0
+			if R.rec then
+				liveLbl.Text = string.format("MEREKAM %.0f dtk | tekan: %d | objek: %d | sampel: %d | kejadian: %d | file: %s%s",
+					now(), #R.trials, R.nObjs, R.nSamples, R.nEvents, R.fileOk == false and "GAGAL" or (fsWrite and "OK" or "tidak didukung"),
+					(R.samplesFull or R.eventsFull or R.trialsFull) and " | BATAS PENUH" or "")
+			elseif R.hasData then
+				liveLbl.Text = string.format("Selesai: %d tekan, %d objek, %d kejadian. File: %s", #R.trials, R.nObjs, R.nEvents,
+					R.fileSummaryOk and (CFG.folder .. "/" .. tostring(R.summaryName)) or "(tidak tersimpan, salin saja)")
+			end
+		end
+	end))
+
+	settings.scanShutdown = function()
+		R.rec = false
+		stopConns()
+	end
+end
+buildScan()
+end
+
+
+-- =====================================================
 -- KEYBIND
 -- =====================================================
 track(UIS.InputBegan:Connect(function(input, processed)
@@ -8967,760 +13279,20 @@ track(UIS.InputBegan:Connect(function(input, processed)
 		cycleWaypoint()
 	elseif kc == settings.followKey then
 		follow.toggle()
-	elseif kc == settings.autoCutKey then
+	elseif kc == settings.autoCutKey and settings.miniGameOk then
 		setFeature("autoCut", not state.autoCut)
 		toast(state.autoCut and "Auto Cut: ON" or "Auto Cut: OFF")
+	elseif kc == settings.recordMiniKey then
+		setFeature("scanRec", not state.scanRec)
+		toast(state.scanRec and "Rekam Minigame: ON" or "Rekam Minigame: OFF")
 	end
 end))
 
 -- =====================================================
--- GUI: TES DETEKSI RARITY (otomatis, tanpa harus memetik item)
--- Memeriksa: item di dunia (Attribute / Value / nama / teks GUI), ReplicatedStorage
--- (Attribute, Value, folder bernama rarity) dan ModuleScript data (require, dibatasi waktu).
--- Kartu kecil di tab Config: tekan SCAN, lalu "Salin hasil" (juga disimpan ke <saveFolder>/rarity_scan_<GameId>.txt).
--- Dibungkus xpcall + function supaya tidak menambah jumlah local di level atas
--- dan kalau ada error tidak merusak script lain.
+-- LABEL DAERAH (pop-up pin): dipindah dari kartu rarity lama ke kartu kecil sendiri di tab Settings (bagian Config)
 -- =====================================================
 xpcall(function()
-	local RAR_WORDS = { "legendary", "legendaris", "legenda", "mythical", "mythic", "mitos", "mitis", "epic", "epik", "uncommon", "common", "rare", "langka", "jarang", "biasa", "exotic", "divine", "godly", "secret", "unique" }
-	local KEY_WORDS = { "rarity", "tier", "grade" }
-	local MOD_WORDS = { "item", "mushroom", "shroom", "fung", "rarit", "data", "config", "loot", "drop", "forag", "catalog", "info", "stat", "list", "const", "shop", "crop", "plant" }
-
-	-- kata rarity yang muncul di dalam teks (mis. "Epic Mushroom" -> "epic")
-	local function wordIn(s)
-		local l = string.lower(tostring(s))
-		for _, w in ipairs(RAR_WORDS) do
-			if string.find(l, "%f[%a]" .. w .. "%f[%A]") then return w end
-		end
-		return nil
-	end
-
-	-- teks yang HANYA berisi kata rarity (mis. nama folder "Epic")
-	local function exactWord(s)
-		local l = string.lower(tostring(s))
-		l = string.gsub(l, "[%s_%-]", "")
-		for _, w in ipairs(RAR_WORDS) do
-			if l == w then return w end
-		end
-		return nil
-	end
-
-	-- nama atribut/field yang menandakan rarity (Rarity, ItemRarity, Tier, Grade, ...)
-	local function isKey(k)
-		local l = string.lower(tostring(k))
-		for _, w in ipairs(KEY_WORDS) do
-			if string.find(l, w, 1, true) then return true end
-		end
-		return false
-	end
-
-	-- ---------- UI (kecil, di tab Config) ----------
-	local card = makeCard(configPage, 186, 200)
-	text(card, {
-		Text = "Tes Deteksi Rarity & Streaming",
-		Font = Enum.Font.GothamBold,
-		TextSize = 13,
-		Position = UDim2.fromOffset(14, 10),
-		Size = UDim2.new(1, -28, 0, 18),
-	})
-
-	local scanB = new("TextButton", {
-		Position = UDim2.fromOffset(14, 34),
-		Size = UDim2.new(0.5, -18, 0, 28),
-		BackgroundColor3 = T.accent,
-		Text = "🔎 SCAN",
-		TextColor3 = WHITE,
-		Font = Enum.Font.GothamBold,
-		TextSize = 12,
-		AutoButtonColor = false,
-	}, card)
-	round(scanB, 8)
-	hover(scanB, T.accent)
-
-	local copyB = new("TextButton", {
-		AnchorPoint = Vector2.new(1, 0),
-		Position = UDim2.new(1, -14, 0, 34),
-		Size = UDim2.new(0.5, -18, 0, 28),
-		BackgroundColor3 = T.bg,
-		Text = "Salin hasil",
-		TextColor3 = T.sub,
-		Font = Enum.Font.GothamMedium,
-		TextSize = 12,
-		AutoButtonColor = false,
-		BorderSizePixel = 0,
-	}, card)
-	round(copyB, 8)
-	stroke(copyB, T.stroke, 1, 0.3)
-
-	local status = text(card, {
-		Text = "Belum scan. Tekan SCAN: tes rarity + cek batas jarak muat game (streaming) + info lokasi/map. Lalu Salin hasil.",
-		TextSize = 11,
-		TextColor3 = T.sub,
-		TextWrapped = true,
-		TextYAlignment = Enum.TextYAlignment.Top,
-		Position = UDim2.fromOffset(14, 68),
-		Size = UDim2.new(1, -28, 0, 76),
-	})
-
-	local busy = false
-	local lastReport = ""
-
-	local function setStatus(s, col)
-		status.Text = s
-		status.TextColor3 = col or T.sub
-	end
-
-	-- Telusuri tabel data hasil require: cari entri yang punya field rarity,
-	-- atau tabel yang dikelompokkan per kata rarity ({ Epic = { "Black Truffle", ... } }).
-	local function scanTable(root, modName, found)
-		local seen = {}
-		local nodes = 0
-		local function walk(t, depth, key)
-			if depth > 5 or seen[t] or nodes > 4000 then return end
-			seen[t] = true
-			nodes = nodes + 1
-
-			local rv = nil
-			for k, v in pairs(t) do
-				if type(k) == "string" and isKey(k) and (type(v) == "string" or type(v) == "number") then
-					rv = v
-					break
-				end
-			end
-			if rv ~= nil then
-				local nm = t.Name or t.DisplayName or t.name or t.displayName or t.Title or key
-				if nm ~= nil then
-					table.insert(found, { name = tostring(nm), rar = tostring(rv), src = modName })
-				end
-			end
-
-			for k, v in pairs(t) do
-				if type(v) == "table" then
-					if type(k) == "string" and exactWord(k) then
-						for ik, iv in pairs(v) do
-							local nm = nil
-							if type(iv) == "string" then
-								nm = iv
-							elseif type(ik) == "string" then
-								nm = ik
-							elseif type(iv) == "table" then
-								nm = iv.Name or iv.DisplayName or iv.name
-							end
-							if nm ~= nil then
-								table.insert(found, { name = tostring(nm), rar = k, src = modName })
-							end
-						end
-					end
-					walk(v, depth + 1, (type(k) == "string") and k or key)
-				end
-			end
-		end
-		pcall(walk, root, 0, nil)
-	end
-
-	local function run()
-		if busy or unloaded then return end
-		busy = true
-		scanB.Text = "Memindai..."
-		setStatus("Memindai item di dunia...", T.sub)
-
-		local lines = {}
-		local function add(s) lines[#lines + 1] = s end
-
-		local yieldN = 0
-		local function maybeYield()
-			yieldN = yieldN + 1
-			if yieldN % 2500 == 0 then task.wait() end
-		end
-
-		add("== TES DETEKSI RARITY ==")
-		add("Build: v1.2 | rarity-filter-6 | storage-1 | PATCH-ZONA-v5")
-		add("GameId: " .. tostring(game.GameId))
-
-		-- ---------- 0) STREAMING: batas jarak muat objek dari game ----------
-		local stLine = "Streaming MATI (semua objek termuat)"
-		do
-			local en = workspace.StreamingEnabled
-			local okR, rad = pcall(function() return workspace.StreamingTargetRadius end)
-			local okM, minR = pcall(function() return workspace.StreamingMinRadius end)
-			local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
-			local far, cnt = 0, 0
-			if root then
-				for _, d in ipairs(workspace:GetDescendants()) do
-					maybeYield()
-					if d:IsA("ProximityPrompt") or d:IsA("ClickDetector") then
-						local part = nil
-						local pa = d.Parent
-						while pa and pa ~= workspace do
-							if pa:IsA("BasePart") then
-								part = pa
-								break
-							end
-							if pa:IsA("Model") then
-								part = pa.PrimaryPart or pa:FindFirstChildWhichIsA("BasePart", true)
-								break
-							end
-							pa = pa.Parent
-						end
-						if part then
-							cnt = cnt + 1
-							local dist = (part.Position - root.Position).Magnitude
-							if dist > far then far = dist end
-						end
-					end
-				end
-			end
-			add("")
-			add("[0] STREAMING (batas jarak muat objek dari game)")
-			add("  StreamingEnabled: " .. tostring(en))
-			add("  StreamingTargetRadius: " .. (okR and tostring(rad) or "(tidak terbaca)"))
-			add("  StreamingMinRadius: " .. (okM and tostring(minR) or "(tidak terbaca)"))
-			add("  Objek interaktif termuat: " .. cnt .. " | terjauh dari kamu: " .. math.floor(far) .. " studs")
-			if en then
-				add("  Artinya: objek di luar jangkauan ini belum dikirim game, jadi ESP tidak bisa menandainya sampai kamu mendekat.")
-				stLine = "Streaming AKTIF" .. (okR and (" · radius " .. tostring(rad)) or "") .. " · item terjauh termuat " .. math.floor(far) .. " st"
-			else
-				add("  Artinya: streaming mati, batas jarak bukan dari game.")
-			end
-		end
-
-		-- ---------- 1) ITEM DI DUNIA (lewat ProximityPrompt) ----------
-		local prompts, pickPrompts, groups = {}, {}, {}
-		local function checkGroup(d, src)
-			if d:IsA("Folder") or d:IsA("Configuration") or d:IsA("Model") then
-				local rw = exactWord(d.Name)
-				if rw and #d:GetChildren() > 0 then
-					table.insert(groups, { rar = rw, inst = d, src = src })
-				end
-			end
-		end
-
-		for _, d in ipairs(workspace:GetDescendants()) do
-			maybeYield()
-			if d:IsA("ProximityPrompt") then
-				table.insert(prompts, d)
-				local at = string.lower(d.ActionText)
-				if string.find(at, "pick", 1, true) then
-					table.insert(pickPrompts, d)
-				end
-			else
-				checkGroup(d, "Workspace")
-			end
-		end
-
-		local use = (#pickPrompts > 0) and pickPrompts or prompts
-		local seenM, items = {}, {}
-		for _, pr in ipairs(use) do
-			if #items >= 150 then break end
-			local m = pr:FindFirstAncestorOfClass("Model") or pr.Parent
-			if m and not seenM[m] then
-				seenM[m] = true
-				table.insert(items, { m = m, pr = pr })
-			end
-		end
-
-		local function inspect(inst, ev, tag)
-			for k, v in pairs(inst:GetAttributes()) do
-				if type(v) == "string" or type(v) == "number" then
-					if isKey(k) or (type(v) == "string" and wordIn(v)) then
-						table.insert(ev, { k = "attr", t = "Attribute " .. tostring(k) .. "=" .. tostring(v) .. " [" .. tag .. "]" })
-					end
-				end
-			end
-			if inst:IsA("ValueBase") then
-				local okv, val = pcall(function() return inst.Value end)
-				if okv and (type(val) == "string" or type(val) == "number") then
-					if isKey(inst.Name) or (type(val) == "string" and wordIn(val)) then
-						table.insert(ev, { k = "val", t = "Value " .. inst.Name .. "=" .. tostring(val) })
-					end
-				end
-			end
-			if inst:IsA("TextLabel") or inst:IsA("TextButton") then
-				if wordIn(inst.Text) then
-					table.insert(ev, { k = "gui", t = "Teks GUI '" .. inst.Text .. "'" })
-				end
-			end
-		end
-
-		local withEv = 0
-		local kinds = { attr = 0, val = 0, gui = 0, name = 0 }
-		local samples = {}
-		local noEvShape = {}
-
-		for _, it in ipairs(items) do
-			local ev = {}
-			inspect(it.m, ev, "model")
-			inspect(it.pr, ev, "prompt")
-			local n = 0
-			for _, d in ipairs(it.m:GetDescendants()) do
-				n = n + 1
-				if n > 250 then break end
-				inspect(d, ev, d.ClassName)
-			end
-			local label = (it.pr.ObjectText ~= "" and it.pr.ObjectText) or it.m.Name
-			if wordIn(it.m.Name) then
-				table.insert(ev, { k = "name", t = "Nama model '" .. it.m.Name .. "'" })
-			end
-			if it.pr.ObjectText ~= "" and wordIn(it.pr.ObjectText) then
-				table.insert(ev, { k = "name", t = "Nama prompt '" .. it.pr.ObjectText .. "'" })
-			end
-
-			if #ev > 0 then
-				withEv = withEv + 1
-				local got = {}
-				for _, e in ipairs(ev) do
-					if not got[e.k] then
-						got[e.k] = true
-						kinds[e.k] = kinds[e.k] + 1
-					end
-				end
-				if #samples < 8 then
-					table.insert(samples, "  • " .. label .. " -> " .. ev[1].t)
-				end
-			elseif #noEvShape < 2 then
-				-- bentuk isi model yang tidak punya info rarity (untuk dibaca manual)
-				local attrs = {}
-				for k, v in pairs(it.m:GetAttributes()) do
-					if #attrs < 12 then table.insert(attrs, tostring(k) .. "=" .. tostring(v)) end
-				end
-				local kids = {}
-				local c = 0
-				for _, d in ipairs(it.m:GetDescendants()) do
-					c = c + 1
-					if c > 18 then break end
-					table.insert(kids, d.Name .. "(" .. d.ClassName .. ")")
-				end
-				table.insert(noEvShape, "  - " .. label .. " | Attribute: " .. (#attrs > 0 and table.concat(attrs, ", ") or "(kosong)")
-					.. " | Isi: " .. table.concat(kids, ", "))
-			end
-		end
-
-		add("")
-		do
-			local lp = game:GetService("Players").LocalPlayer
-			local ch = lp and lp.Character
-			local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
-			if hrp then
-				local near = {}
-				for _, pr in ipairs(use) do
-					local m = pr:FindFirstAncestorOfClass("Model") or pr.Parent
-					local part = nil
-					if m and m:IsA("BasePart") then
-						part = m
-					elseif m and m:IsA("Model") then
-						part = m.PrimaryPart or m:FindFirstChildWhichIsA("BasePart", true)
-					end
-					if part then near[#near + 1] = { m = m, pr = pr, d = (part.Position - hrp.Position).Magnitude } end
-				end
-				table.sort(near, function(a, b) return a.d < b.d end)
-				add("")
-				add("[1b] 10 ITEM TERDEKAT (untuk cek jamur yang tidak muncul di ESP)")
-				local apiN = settings.rarityApi
-				for i = 1, math.min(10, #near) do
-					local o = near[i]
-					local sp = o.m:GetAttribute("Sp")
-					local key = (type(sp) == "string" and sp) or o.m.Name
-					local rr = apiN and apiN.ready and apiN.get(key) or nil
-					local ak = {}
-					for k in pairs(o.m:GetAttributes()) do ak[#ak + 1] = k end
-					table.sort(ak)
-					add(string.format("  %d. %s | jarak %d | Sp=%s | rarity data=%s | prompt=%s '%s' | atribut: %s", i, o.m.Name, math.floor(o.d), tostring(sp), tostring(rr), o.pr.Name, tostring(o.pr.ObjectText), table.concat(ak, ",")))
-				end
-			end
-		end
-		add("[1] ITEM DI DUNIA (ProximityPrompt): " .. #items .. " item dicek, " .. withEv .. " membawa info rarity")
-		if #items == 0 then
-			add("  Tidak ada item ber-prompt yang termuat. Dekati area mushroom (game bisa memuat item hanya di sekitarmu) lalu scan lagi.")
-		else
-			add("  Sumber: Attribute " .. kinds.attr .. " | Value " .. kinds.val .. " | Nama " .. kinds.name .. " | Teks GUI " .. kinds.gui)
-			for _, s in ipairs(samples) do add(s) end
-			if withEv == 0 then
-				add("  Contoh isi item (tanpa info rarity):")
-				for _, s in ipairs(noEvShape) do add(s) end
-			end
-		end
-
-		-- ---------- 2) REPLICATEDSTORAGE ----------
-		setStatus("Memindai ReplicatedStorage...", T.sub)
-		local rsHits = {}
-		local mods = {}
-		for _, d in ipairs(ReplicatedStorage:GetDescendants()) do
-			maybeYield()
-			for k, v in pairs(d:GetAttributes()) do
-				if (type(v) == "string" or type(v) == "number") and (isKey(k) or (type(v) == "string" and wordIn(v))) then
-					if #rsHits < 40 then
-						table.insert(rsHits, d:GetFullName() .. " [Attribute " .. tostring(k) .. "=" .. tostring(v) .. "]")
-					end
-				end
-			end
-			if d:IsA("ValueBase") then
-				local okv, val = pcall(function() return d.Value end)
-				if okv and (type(val) == "string" or type(val) == "number") and (isKey(d.Name) or (type(val) == "string" and wordIn(val))) then
-					if #rsHits < 40 then
-						table.insert(rsHits, d:GetFullName() .. " [Value " .. tostring(val) .. "]")
-					end
-				end
-			end
-			if d:IsA("ModuleScript") then
-				local l = string.lower(d.Name)
-				for _, w in ipairs(MOD_WORDS) do
-					if string.find(l, w, 1, true) then
-						table.insert(mods, d)
-						break
-					end
-				end
-			end
-			checkGroup(d, "ReplicatedStorage")
-		end
-
-		add("")
-		add("[2] REPLICATEDSTORAGE: " .. #rsHits .. " atribut/value berinfo rarity, " .. #mods .. " modul data kandidat")
-		for i = 1, math.min(#rsHits, 6) do add("  • " .. rsHits[i]) end
-
-		-- ---------- 3) DATA RARITY (mesin yang SAMA dengan dropdown Rarity) ----------
-		setStatus("Memuat data rarity (mesin yang sama dengan dropdown)...", T.sub)
-		local api = settings.rarityApi
-		local apiErr = nil
-		add("")
-		if not api then
-			apiErr = "modul rarity tidak aktif"
-			add("[3] DATA RARITY: modul loader tidak aktif (error saat startup, lihat konsol).")
-		else
-			local okR, eR = pcall(api.reload)
-			if not okR then
-				apiErr = tostring(eR)
-			elseif api.error then
-				apiErr = tostring(api.error)
-			end
-			add("[3] DATA RARITY (mesin yang sama dengan dropdown Rarity): " .. (api.ready and "SIAP" or "TIDAK SIAP")
-				.. ", " .. tostring(api.count or 0) .. " entri, sumber: " .. tostring(api.source or "-"))
-			if apiErr then add("  ERROR: " .. apiErr) end
-			if api.ready then
-				local parts = {}
-				for rn, n in pairs(api.summary()) do parts[#parts + 1] = rn .. " " .. n end
-				table.sort(parts)
-				add("  Per rarity: " .. table.concat(parts, ", "))
-				add("  Filter jamur: " .. (api.mushOnly and "AKTIF" or "tidak aktif") .. " | " .. tostring(api.srcInfo or "-"))
-				add("  Nomor tier -> nama dipakai: " .. tostring(api.tierMapInfo or "-"))
-				add("  Nama rarity dari config game: " .. (api.namesFromGame and tostring(api.gameNamesStr) or "TIDAK ditemukan (nama di atas = tebakan urutan)"))
-				for _, ln in ipairs(api.modKeys or {}) do add("  isi modul -> " .. ln) end
-				local brr = api.byRarity(8)
-				for _, rn in ipairs(api.names) do
-					if brr[rn] then add("  " .. rn .. ": " .. table.concat(brr[rn], ", ")) end
-				end
-				for _, ln in ipairs(api.diag or {}) do add("  contoh: " .. ln) end
-				add("  === DAFTAR PISAU/ALAT (urut toko, lalu level) ===")
-				for _, t in ipairs(api.tools or {}) do
-					local tn = (api.names and api.names[t.r]) or "?"
-					add("   - [" .. t.s .. "] " .. t.n .. " | tier " .. tostring(t.r) .. " (" .. tostring(tn) .. ") | level " .. tostring(t.l) .. " | harga " .. t.p)
-				end
-				add("  === NPC DI WORKSPACE (nama | jarak) ===")
-				pcall(function()
-					local hrp0 = getRoot()
-					local nf = workspace:FindFirstChild("NPCs")
-					if not nf then add("   (folder NPCs tidak ada)") return end
-					local rows = {}
-					for _, c in ipairs(nf:GetChildren()) do
-						local okP, pv = pcall(function() return c:GetPivot().Position end)
-						local d = (okP and hrp0) and math.floor((pv - hrp0.Position).Magnitude) or -1
-						rows[#rows + 1] = { n = c.Name, d = d }
-					end
-					table.sort(rows, function(a, b) return a.d < b.d end)
-					for _, r in ipairs(rows) do add("   - " .. r.n .. " | " .. tostring(r.d) .. " st") end
-				end)
-				add("  === OBJEK 'THORN' / 'WHISPER' / 'ELDER' DI DEKATMU (hanya yang termuat) ===")
-				pcall(function()
-					local hrp0 = getRoot()
-					local n = 0
-					local KEYS = { "thorn", "whisper", "elder", "threestone", "three stone" }
-					for _, o in ipairs(workspace:GetDescendants()) do
-						if n >= 15 then break end
-						local txt = string.lower(o.Name)
-						if o:IsA("ProximityPrompt") then
-							txt = txt .. " " .. string.lower(o.ObjectText) .. " " .. string.lower(o.ActionText)
-						end
-						local hit = false
-						for _, k in ipairs(KEYS) do
-							if string.find(txt, k, 1, true) then hit = true break end
-						end
-						if hit and not o:IsA("Terrain") then
-							local tgt = o:IsA("ProximityPrompt") and o.Parent or o
-							local okP, pv = pcall(function() return tgt:GetPivot().Position end)
-							local d = (okP and hrp0) and math.floor((pv - hrp0.Position).Magnitude) or -1
-							n = n + 1
-							add("   - " .. o.ClassName .. " | " .. o:GetFullName() .. " | " .. tostring(d) .. " st")
-						end
-					end
-					if n == 0 then add("   (tidak ada yang termuat di dekatmu; coba lagi sambil berjalan ke area lain)") end
-				end)
-				add("  === OBJEK BERNAMA 'WAYSTATION' ===")
-				pcall(function()
-					local hrp0 = getRoot()
-					local n = 0
-					for _, o in ipairs(workspace:GetDescendants()) do
-						if n >= 8 then break end
-						if string.find(string.lower(o.Name), "waystation", 1, true) then
-							local okP, pv = pcall(function() return o:GetPivot().Position end)
-							local d = (okP and hrp0) and math.floor((pv - hrp0.Position).Magnitude) or -1
-							n = n + 1
-							add("   - " .. o:GetFullName() .. " | " .. tostring(d) .. " st")
-						end
-					end
-					if n == 0 then add("   (tidak ada)") end
-				end)
-				add("  Isi dropdown Rarity: " .. table.concat(api.names, ", "))
-				if api.tierGuess then
-					add("  PERHATIAN: rarity di game ini berupa NOMOR tier. Nama (Common..Mythic) hanya TEBAKAN urutan standar 1-6, cocokkan dengan item yang kamu tahu rarity-nya.")
-				end
-				for _, s in ipairs(api.sample(10)) do add("  • " .. s) end
-			end
-		end
-
-		-- ---------- FOLDER BERNAMA RARITY ----------
-		add("")
-		add("[4] FOLDER BERNAMA RARITY (Common/Epic/...): " .. #groups .. " ditemukan")
-		for i = 1, math.min(#groups, 8) do
-			local g = groups[i]
-			local names = {}
-			for j, ch in ipairs(g.inst:GetChildren()) do
-				if j > 5 then break end
-				table.insert(names, ch.Name)
-			end
-			add("  • " .. g.src .. "." .. g.inst.Name .. " (" .. #g.inst:GetChildren() .. " isi): " .. table.concat(names, ", "))
-		end
-
-		-- ---------- [PATCH] 5) LOKASI / MAP (satu pintu dengan tes rarity & streaming) ----------
-		local locLine = ""
-		local okLoc, errLoc = pcall(function()
-			add("")
-			add("[5] LOKASI / MAP")
-			local placeName = "?"
-			local okP, info = pcall(function()
-				return game:GetService("MarketplaceService"):GetProductInfo(game.PlaceId)
-			end)
-			if okP and type(info) == "table" and info.Name then placeName = tostring(info.Name) end
-			add("  Place: " .. placeName .. " | PlaceId: " .. tostring(game.PlaceId))
-			locLine = "📍 " .. placeName
-			local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
-			if hrp then
-				local pp = (hrp :: BasePart).Position
-				add(string.format("  Posisi: %.0f, %.0f, %.0f", pp.X, pp.Y, pp.Z))
-			end
-			local function attrs(label: string, inst: Instance?)
-				if not inst then return end
-				for k, v in pairs(inst:GetAttributes()) do
-					add("  " .. label .. " attr " .. tostring(k) .. " = " .. tostring(v))
-				end
-			end
-			attrs("Player", player)
-			attrs("Character", player.Character)
-			attrs("Workspace", workspace)
-			attrs("ReplicatedStorage", ReplicatedStorage)
-			attrs("Lighting", game:GetService("Lighting"))
-			local ls = player:FindFirstChild("leaderstats")
-			if ls then
-				for _, v in ipairs(ls:GetChildren()) do
-					local okv, val = pcall(function() return (v :: any).Value end)
-					add("  leaderstats " .. v.Name .. " = " .. tostring(okv and val or "?"))
-				end
-			end
-			local KW = { "map", "zone", "area", "world", "island", "region", "lobby", "biome", "level", "stage", "lokasi", "location" }
-			local function kwHit(s: string): boolean
-				s = string.lower(s)
-				for _, w in ipairs(KW) do
-					if string.find(s, w, 1, true) then return true end
-				end
-				return false
-			end
-			local kids = workspace:GetChildren()
-			local names, hits = {}, {}
-			for i, c in ipairs(kids) do
-				if i <= 40 then names[#names + 1] = c.Name end
-				if kwHit(c.Name) and #hits < 20 then hits[#hits + 1] = c.Name .. " (" .. c.ClassName .. ")" end
-			end
-			add("  Workspace: " .. #kids .. " objek. Kandidat nama area: " .. (#hits > 0 and table.concat(hits, ", ") or "(tidak ada)"))
-			add("  Isi Workspace (40 pertama): " .. table.concat(names, ", "))
-			-- teks di layar yang menyebut map/zona (banyak game menampilkan nama area di UI)
-			local pg = player:FindFirstChild("PlayerGui")
-			local found = 0
-			if pg then
-				for _, d in ipairs(pg:GetDescendants()) do
-					maybeYield()
-					if found >= 8 then break end
-					if d:IsA("TextLabel") and d.Visible and d.Text ~= "" and #d.Text <= 40
-						and not (gui and d:IsDescendantOf(gui)) and not d:FindFirstAncestor("UU_ZONE") and kwHit(d.Text) then
-						found += 1
-						add("  Teks UI: \"" .. d.Text .. "\" (" .. d.Name .. ")")
-					end
-				end
-			end
-		end)
-		if not okLoc then add("  (bagian lokasi error: " .. tostring(errLoc) .. ")") end
-
-		-- ---------- [PATCH] 5b) ZONA & TEMPAT BAWAAN GAME (WorldConfig.zoneAt / RootData.placeAt) ----------
-		local okZ, errZ = pcall(function()
-			add("")
-			add("[5b] ZONA & TEMPAT BAWAAN GAME")
-			local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
-			if not hrp then
-				add("  (karakter belum siap)")
-				return
-			end
-			local pos = (hrp :: BasePart).Position
-			local lim = 8 -- batas isi per tabel (dinaikkan untuk daftar ZONES / PLACES supaya tidak terpotong)
-			local function desc(v: any, depth: number): string
-				if type(v) == "table" then
-					if depth <= 0 then return "{...}" end
-					local parts, n = {}, 0
-					for k, x in pairs(v) do
-						n += 1
-						if n > lim then
-							parts[#parts + 1] = "..."
-							break
-						end
-						parts[#parts + 1] = tostring(k) .. "=" .. desc(x, depth - 1)
-					end
-					return "{" .. table.concat(parts, ", ") .. "}"
-				end
-				return tostring(v)
-			end
-			local function getMod(nm: string): any
-				for _, d in ipairs(ReplicatedStorage:GetDescendants()) do
-					if d:IsA("ModuleScript") and d.Name == nm then
-						local done, res = false, nil
-						task.spawn(function()
-							local ok, r = pcall(require, d)
-							if ok then res = r end
-							done = true
-						end)
-						local t0 = os.clock()
-						while not done and os.clock() - t0 < 1.5 do task.wait() end
-						return res
-					end
-				end
-				return nil
-			end
-			local function try(label: string, tbl: any, fn: string)
-				if type(tbl) ~= "table" or type(tbl[fn]) ~= "function" then
-					add("  " .. label .. ": (fungsi tidak ada)")
-					return
-				end
-				local tries = { { pos }, { pos.X, pos.Z }, { tbl, pos } }
-				for i, args in ipairs(tries) do
-					local ok, r = pcall(tbl[fn], table.unpack(args))
-					if ok then
-						add("  " .. label .. " (cara " .. i .. "): " .. desc(r, 2))
-						return
-					elseif i == #tries then
-						add("  " .. label .. ": error di semua cara (" .. tostring(r) .. ")")
-					end
-				end
-			end
-			local W, R = getMod("WorldConfig"), getMod("RootData")
-			if type(W) == "table" then
-				try("WorldConfig.zoneAt", W, "zoneAt")
-				try("WorldConfig.inGloam", W, "inGloam")
-				try("WorldConfig.inWild", W, "inWild")
-				try("WorldConfig.inLongHall", W, "inLongHall")
-				try("WorldConfig.inPlayArea", W, "inPlayArea")
-				lim = 40
-				add("  WorldConfig.ZONES: " .. desc(W.ZONES, 3))
-				lim = 8
-			else
-				add("  Modul WorldConfig tidak ditemukan / gagal dimuat")
-			end
-			if type(R) == "table" then
-				try("RootData.placeAt", R, "placeAt")
-				lim = 60
-				add("  RootData.PLACES: " .. desc(R.PLACES, 3))
-				add("  RootData.PLACE: " .. desc(R.PLACE, 2))
-				lim = 8
-			else
-				add("  Modul RootData tidak ditemukan / gagal dimuat")
-			end
-			-- cadangan: atribut Zone pada jamur di sekitar (contoh di data Anda: Meadow, Hollow)
-			local tally, nearest, nd = {}, nil, math.huge
-			for _, m in ipairs(workspace:GetDescendants()) do
-				maybeYield()
-				if m:IsA("Model") then
-					local z = m:GetAttribute("Zone")
-					if type(z) == "string" then
-						local okp, pv = pcall(function() return (m :: Model):GetPivot().Position end)
-						if okp then
-							local d = (pv - pos).Magnitude
-							if d <= 300 then tally[z] = (tally[z] or 0) + 1 end
-							if d < nd then
-								nd, nearest = d, z
-							end
-						end
-					end
-				end
-			end
-			local tl = {}
-			for z, c in pairs(tally) do tl[#tl + 1] = z .. "=" .. c end
-			add("  Zona jamur terdekat: " .. (nearest and (nearest .. " (" .. math.floor(nd) .. " st)") or "-")
-				.. " | dalam 300 st: " .. (#tl > 0 and table.concat(tl, ", ") or "-"))
-		end)
-		if not okZ then add("  (bagian 5b error: " .. tostring(errZ) .. ")") end
-
-		-- ---------- KESIMPULAN ----------
-		local hint = withEv > 0 or #groups > 0 or #rsHits > 0
-		local verdict, col
-		if apiErr then
-			verdict = "ERROR SCRIPT: loader rarity gagal (" .. apiErr .. "). Ini bug script, bukan keterbatasan game. Salin hasilnya."
-			col = T.danger
-		elseif api and api.ready then
-			verdict = "TERDETEKSI: " .. tostring(api.count) .. " entri rarity terbaca dari data game. Dropdown Rarity & warna label memakai data yang sama." .. (api.tierGuess and " Catatan: nomor tier diterjemahkan dengan urutan standar (tebakan), cek hasilnya." or "")
-			col = T.good
-		elseif hint then
-			verdict = "SEBAGIAN: ada info rarity di item/folder/ReplicatedStorage, tapi loader belum bisa membacanya, jadi dropdown Rarity belum bekerja di game ini. Salin hasilnya untuk dicek."
-			col = Color3.fromRGB(255, 176, 72)
-		else
-			verdict = "TIDAK TERDETEKSI: game tampaknya menyembunyikan rarity sampai item dipetik. Ini keterbatasan game, bukan bug."
-			col = T.danger
-		end
-		add("")
-		add("KESIMPULAN: " .. verdict)
-
-		lastReport = table.concat(lines, "\n")
-		setStatus(verdict .. "\n" .. stLine .. (locLine ~= "" and ("\n" .. locLine) or ""), col)
-		print(lastReport)
-		if writefile then
-			pcall(function()
-				if makefolder and isfolder and not isfolder(settings.saveFolder) then
-					makefolder(settings.saveFolder)
-				end
-				writefile(settings.path("rarity_scan_" .. tostring(game.GameId) .. ".txt"), lastReport)
-			end)
-		end
-
-		scanB.Text = "🔎 SCAN RARITY"
-		busy = false
-	end
-
-	scanB.MouseButton1Click:Connect(function()
-		task.spawn(function()
-			local ok, err = pcall(run)
-			if not ok then
-				busy = false
-				scanB.Text = "🔎 SCAN RARITY"
-				setStatus("Scan error: " .. tostring(err), T.danger)
-				warn("[RarityScan] " .. tostring(err))
-			end
-		end)
-	end)
-
-	copyB.MouseButton1Click:Connect(function()
-		local clip = setclipboard or toclipboard
-		if lastReport == "" then
-			toast("Belum ada hasil scan")
-		elseif clip then
-			pcall(clip, lastReport)
-			toast("Hasil disalin")
-		else
-			toast("Executor tidak bisa menyalin; lihat file rarity_scan_" .. tostring(game.GameId) .. ".txt")
-		end
-	end)
+	local zoneCard = makeCard(configPage, 44, 23)
 	-- ---------- [PATCH] LABEL DAERAH: selalu tampil, bisa digeser, ada tombol ✕ ----------
 	-- Nama daerah dibaca dari fungsi bawaan game (WorldConfig.zoneAt / RootData.placeAt) berdasarkan posisimu.
 	-- Kalau fungsi itu tidak memberi nama, dipakai cadangan: atribut Zone pada jamur terdekat (diberi tanda "perkiraan").
@@ -9749,7 +13321,7 @@ xpcall(function()
 
 		-- tombol tampil/sembunyi di kartu Config
 		local zoneTog = new("TextButton", {
-			Position = UDim2.fromOffset(14, 150),
+			Position = UDim2.fromOffset(14, 8),
 			Size = UDim2.new(1, -28, 0, 28),
 			BackgroundColor3 = T.bg,
 			Text = "",
@@ -9758,7 +13330,7 @@ xpcall(function()
 			TextSize = 12,
 			AutoButtonColor = false,
 			BorderSizePixel = 0,
-		}, card)
+		}, zoneCard)
 		round(zoneTog, 8)
 		stroke(zoneTog, T.stroke, 1, 0.3)
 		local function refreshTog()
@@ -9942,6 +13514,7 @@ local function unload()
 	pcall(settings.flush) -- [FIX] simpan semua dulu sebelum apa pun dimatikan
 	unloaded = true
 
+	if settings.scanShutdown then pcall(settings.scanShutdown) end
 	disableAllFeatures()
 	destroyPlatform()
 	clearEsp()
@@ -9958,7 +13531,11 @@ local function unload()
 	end
 	table.clear(conns)
 
-	for _, n in ipairs({ "UU_ITEMS", "UU_NPC", "UU_RARITY", "UU_ZONE" }) do
+	do
+		local hf = workspace:FindFirstChild("UU_NPC_HL")
+		if hf then hf:Destroy() end
+	end
+	for _, n in ipairs({ "UU_ITEMS", "UU_NPC", "UU_RARITY", "UU_ZONE", "UU_CHESS" }) do
 		local f = playerGui:FindFirstChild(n)
 		if f then f:Destroy() end
 	end
