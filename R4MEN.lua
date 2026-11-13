@@ -233,6 +233,7 @@ local state: { [string]: boolean } = {
 	autoCut = false, -- Mini Game: Auto Cut jamur (mati saat script dijalankan)
 	autoMinigame = false, -- Mini Game: Auto Minigame universal (mati saat script dijalankan)
 	chess = false, -- Mini Game: saran langkah catur dari papan in-game (mati saat script dijalankan)
+	chessApi = false, -- Mini Game: Stockfish online untuk saran catur (opsional)
 }
 
 local values: { [string]: number } = {
@@ -738,6 +739,7 @@ local effects: { [string]: (boolean) -> () } = {
 	autoCut = function() end, -- diisi blok GUI Mini Game
 	autoMinigame = function() end, -- diisi blok GUI Auto Minigame universal
 	chess = function() end, -- diisi blok GUI Catur
+	chessApi = function() end,
 	fullbright = function(on) ext.light(on) end,
 	noFog = function(on) ext.fog(on) end,
 	fov = function(on) ext.fov(on) end,
@@ -10395,7 +10397,7 @@ local function makeEngine()
 				st.abort = true
 				return
 			end
-			if now - st.lastYield > 0.03 then
+			if now - st.lastYield > 0.014 then
 				wait()
 				st.lastYield = os.clock()
 				if st.cancel and st.cancel() then st.abort = true end
@@ -10450,7 +10452,7 @@ local function makeEngine()
 		local h = hashPos(pos)
 		if ply > 0 then
 			-- pengulangan posisi (di jalur pencarian ini atau yang sudah terjadi di partai) = remis
-			if st.path[h] or (st.game[h] or 0) >= 1 then return 0 end
+			if st.path[h] or (st.game[h] or 0) >= 2 then return 0 end
 		end
 		local inCheck = attacked(pos.b, kingSq(pos, turn), -turn)
 		if inCheck and ply < 12 then depth = depth + 1 end
@@ -10577,7 +10579,7 @@ local function makeEngine()
 				local sc = -negamax(st, root[i].np, d - 1, -INF, -alpha, 1, true)
 				if st.abort then break end
 				-- bonus kecil untuk promosi supaya promosi tidak ditunda tanpa alasan
-				local adj = sc + (root[i].m.p == 5 and 25 or 0)
+				local adj = sc + ((root[i].m.p == 5 and sc > alpha) and 25 or 0)
 				if not itAdj or adj > itAdj then itBest, itScore, itIdx, itAdj = root[i], sc, i, adj end
 				if sc > alpha then alpha = sc end
 			end
@@ -10587,7 +10589,7 @@ local function makeEngine()
 			table.insert(root, 1, itBest)
 			if abs(itScore) > MATE - 100 then break end
 			-- iterasi berikutnya biasanya >2x lebih lama: kalau sudah lewat ~40% waktu, cukup
-			if d >= 4 and os.clock() - t0 > timeLimit * 0.4 then break end
+			if d >= 4 and os.clock() - t0 > timeLimit * 0.6 then break end
 		end
 		if cancelFn and cancelFn() then return nil end
 		return bestMove, bestScore, doneDepth
@@ -10666,7 +10668,7 @@ local function makeEngine()
 		"e2e4 c7c5 g1f3 e7e6 d2d4 c5d4 f3d4 a7a6 f1d3 g8f6 e1g1 d8c7 f2f4 b8c6",
 		-- Prancis
 		"e2e4 e7e6 d2d4 d7d5 b1c3 g8f6 c1g5 f8e7 e4e5 f6d7 g5e7 d8e7 f2f4 e8g8 g1f3 c7c5",
-		"e2e4 e7e6 d2d4 d7d5 b1c3 f8b4 e4e5 c7c5 a2a3 b4c3 b2c3 g8e7 d1g4 d8c7 g4g7 h8g8 g7h7 c5d4",
+		"e2e4 e7e6 d2d4 d7d5 b1c3 f8b4 e4e5 c7c5 a2a3 b4c3 b2c3 g8e7 d1g4 d8c7",
 		"e2e4 e7e6 d2d4 d7d5 b1d2 g8f6 e4e5 f6d7 f1d3 c7c5 c2c3 b8c6 g1e2 c5d4 c3d4 f7f6",
 		"e2e4 e7e6 d2d4 d7d5 e4e5 c7c5 c2c3 b8c6 g1f3 d8b6 a2a3 c5c4",
 		-- Caro-Kann
@@ -10704,6 +10706,59 @@ local function makeEngine()
 		if not ok and warn then warn("[Catur] buku: langkah tidak valid " .. tostring(bad)) end
 	end
 
+	-- Posisi -> FEN (untuk dikirim ke mesin eksternal)
+	function CH.toFen(pos)
+		local letters = { "p", "n", "b", "r", "q", "k" }
+		local rows = {}
+		for r = 7, 0, -1 do
+			local row, empty = "", 0
+			for f = 0, 7 do
+				local pc = pos.b[r * 8 + f + 1]
+				if pc == 0 then
+					empty = empty + 1
+				else
+					if empty > 0 then row = row .. tostring(empty); empty = 0 end
+					local ch = letters[abs(pc)]
+					if pc > 0 then ch = ch:upper() end
+					row = row .. ch
+				end
+			end
+			if empty > 0 then row = row .. tostring(empty) end
+			rows[#rows + 1] = row
+		end
+		local cr, cs = pos.cr, ""
+		if cr % 2 == 1 then cs = cs .. "K" end
+		if (cr // 2) % 2 == 1 then cs = cs .. "Q" end
+		if (cr // 4) % 2 == 1 then cs = cs .. "k" end
+		if (cr // 8) % 2 == 1 then cs = cs .. "q" end
+		if cs == "" then cs = "-" end
+		local ep = "-"
+		if pos.ep and pos.ep > 0 then
+			local s = pos.ep - 1
+			ep = string.char(97 + s % 8) .. tostring(s // 8 + 1)
+		end
+		return table.concat(rows, "/") .. " " .. ((pos.turn == 1) and "w" or "b") .. " " .. cs .. " " .. ep .. " " .. tostring(pos.hm or 0) .. " " .. tostring(pos.fm or 1)
+	end
+
+	-- Cocokkan langkah teks ("e2e4", "e7e8q") ke langkah legal; nil bila tidak cocok.
+	function CH.parseMove(pos, str)
+		if type(str) ~= "string" or #str < 4 then return nil end
+		str = str:lower()
+		local f, t = sqOf(str:sub(1, 2)), sqOf(str:sub(3, 4))
+		if f < 1 or f > 64 or t < 1 or t > 64 then return nil end
+		local pmap = { n = 2, b = 3, r = 4, q = 5 }
+		local want = pmap[str:sub(5, 5)]
+		local found
+		for _, m in ipairs(CH.legal(pos)) do
+			if m.f == f and m.t == t then
+				if not m.p then return m end
+				if want == m.p then return m end
+				if not want and m.p == 5 then found = m end
+			end
+		end
+		return found
+	end
+
 	return CH
 end
 
@@ -10717,6 +10772,7 @@ local function buildChess()
 	sectionLabel(page, 9, "Catur")
 	local descLbl = addToggleCard(page, 10, "Saran Langkah Catur", BASE_DESC, "chess")
 	addSliderCard(page, 11, "Waktu Berpikir Saran", "Batas detik sebelum saran muncul (1-10). Kecil = cepat, besar = lebih akurat", "chessTime", 1, 10, 10, true)
+	addToggleCard(page, 12, "Stockfish Online (opsional)", "Kirim posisi papan (FEN) ke server Stockfish untuk saran lebih kuat. Jika gagal atau lambat, memakai mesin lokal.", "chessApi")
 
 	local A: any = {
 		pos = nil, mine = nil, info = nil, hint = nil, hintTxt = "", lastOpp = nil, threat = {},
@@ -10747,7 +10803,7 @@ local function buildChess()
 	-- ---------- baca papan in-game ----------
 	-- Papan: PlayerGui["2DBoard"].Main.Board.<a1..h8> (kotak), Main.Pieces.<Warna>_<Jenis> (bidak, ImageButton).
 	-- Kotak & bidak dicocokkan lewat posisi layar (titik tengah), jadi tidak peduli papan diputar / dibalik.
-	local function scan()
+	local function scanOld()
 		local g = playerGui:FindFirstChild("2DBoard")
 		local main = g and g:FindFirstChild("Main")
 		local board = main and main:FindFirstChild("Board")
@@ -10796,6 +10852,155 @@ local function buildChess()
 		return b, { cen = cen, size = size, inset = inset }
 	end
 
+	-- ---------- papan game "ChessUI" (kotak bernama "Cell", bidak bernama "Piece", jenis bidak dikenali dari gambar) ----------
+	-- Papan: PlayerGui.ChessUI.Screen.Root.Board.Squares.<Cell x64>, Board.Pieces.<Piece x32 (ImageLabel)>.
+	-- Kotak tidak punya nama a1..h8, jadi posisinya dihitung dari koordinat layar. Arah papan (putih/hitam di bawah)
+	-- dibaca dari label angka "Rank" di kotak. Jenis bidak dibaca dari id gambar: tabel awal (CI_SEED) lalu dipelajari
+	-- ulang otomatis dari posisi awal partai (ciMap), jadi tetap benar walau gaya bidak berubah.
+	local ciFlip: boolean? = nil -- true = hitam di bawah layar (papan terbalik)
+	local ciMap: { [string]: number } = {}
+	local CI_SEED: { [string]: number } = {
+		["115225807911302"] = 1, ["89764885361194"] = 2, ["80281927019132"] = 3,
+		["103391638779841"] = 4, ["118620401880741"] = 5, ["115164967554779"] = 6,
+		["70452849677091"] = -1, ["136899428984320"] = -2, ["101214090182304"] = -3,
+		["110879867494108"] = -4, ["94821738771746"] = -5, ["139566358250123"] = -6,
+	}
+
+	local function ciShown(o: Instance): boolean
+		local x: Instance? = o
+		while x and x ~= playerGui do
+			if x:IsA("GuiObject") and not x.Visible then return false end
+			if x:IsA("ScreenGui") and not x.Enabled then return false end
+			x = x.Parent
+		end
+		return true
+	end
+
+	local function scanChessUI()
+		local g = playerGui:FindFirstChild("ChessUI")
+		local screen = g and g:FindFirstChild("Screen")
+		local root = screen and screen:FindFirstChild("Root")
+		local board = root and root:FindFirstChild("Board")
+		local squares = board and board:FindFirstChild("Squares")
+		local pieces = board and board:FindFirstChild("Pieces")
+		if not (g and squares and pieces) then return nil, "nogui" end
+		if not ciShown(squares) then return nil, "nogui" end
+
+		-- 64 kotak -> grid (baris 0 = paling atas layar, kolom 0 = paling kiri layar)
+		local cells = {}
+		local minX, minY, size = math.huge, math.huge, 0
+		for _, c in ipairs(squares:GetChildren()) do
+			if c.Name == "Cell" and c:IsA("GuiObject") then
+				cells[#cells + 1] = c
+				minX = math.min(minX, c.AbsolutePosition.X)
+				minY = math.min(minY, c.AbsolutePosition.Y)
+				size = c.AbsoluteSize.X
+			end
+		end
+		if #cells ~= 64 or size < 8 then return nil, "nogui" end
+		local grid = {}
+		for _, c in ipairs(cells) do
+			local col = math.floor((c.AbsolutePosition.X - minX) / size + 0.5)
+			local row = math.floor((c.AbsolutePosition.Y - minY) / size + 0.5)
+			if col < 0 or col > 7 or row < 0 or row > 7 then return nil, "nogui" end
+			local k = row * 8 + col
+			if grid[k] then return nil, "nogui" end
+			grid[k] = c
+		end
+
+		-- arah papan dari label angka "Rank" (8 di baris atas = putih di bawah; 1 di baris atas = hitam di bawah)
+		local flip = nil
+		for k, c in pairs(grid) do
+			local lab = c:FindFirstChild("Rank")
+			local n = lab and lab:IsA("TextLabel") and tonumber(string.match(lab.Text, "%d+"))
+			if n and n >= 1 and n <= 8 then
+				local row = k // 8
+				if n == 8 - row then flip = false elseif n == row + 1 then flip = true end
+				if flip ~= nil then break end
+			end
+		end
+		if flip == nil then flip = ciFlip or false end
+		ciFlip = flip
+
+		local cen = {}
+		for k, c in pairs(grid) do
+			local row, col = k // 8, k % 8
+			local f, r
+			if flip then f, r = 8 - col, row + 1 else f, r = col + 1, 8 - row end
+			cen[(r - 1) * 8 + f] = c.AbsolutePosition + c.AbsoluteSize / 2
+		end
+
+		-- bidak -> kotak grid terdekat
+		local list, occ = {}, {}
+		for _, p in ipairs(pieces:GetChildren()) do
+			if (p:IsA("ImageLabel") or p:IsA("ImageButton")) and p.Visible then
+				local img = string.match(p.Image, "%d+") or p.Image
+				local pc = p.AbsolutePosition + p.AbsoluteSize / 2
+				local best, bd = nil, math.huge
+				for k, c in pairs(grid) do
+					local d = (c.AbsolutePosition + c.AbsoluteSize / 2 - pc).Magnitude
+					if d < bd then best, bd = k, d end
+				end
+				if bd <= size * 0.3 then
+					if occ[best] then return nil, "dup" end -- dua bidak di satu kotak = animasi tangkap
+					occ[best] = true
+					list[#list + 1] = { img = img, k = best }
+				elseif bd <= size * 0.75 then
+					return nil, "anim" -- bidak sedang meluncur
+				end -- lebih jauh dari itu: bidak di luar papan (tertangkap), diabaikan
+			end
+		end
+		if #list < 2 then return nil, "nogui" end
+
+		-- posisi awal penuh (32 bidak di baris 0,1,6,7): pelajari pemetaan gambar -> jenis & warna
+		if #list == 32 then
+			local at = {}
+			for _, it in ipairs(list) do at[it.k] = it.img end
+			local types = flip and { 4, 2, 3, 6, 5, 3, 2, 4 } or { 4, 2, 3, 5, 6, 3, 2, 4 }
+			local bs = flip and -1 or 1 -- tanda warna bidak di sisi bawah layar
+			local learned, ok = {}, true
+			local function put(img: string?, code: number)
+				if not img then ok = false return end
+				if learned[img] and learned[img] ~= code then ok = false end
+				learned[img] = code
+			end
+			for col = 0, 7 do
+				put(at[7 * 8 + col], bs * types[col + 1])
+				put(at[0 * 8 + col], -bs * types[col + 1])
+				put(at[6 * 8 + col], bs)
+				put(at[1 * 8 + col], -bs)
+			end
+			if ok then
+				for img, code in pairs(learned) do ciMap[img] = code end
+			end
+		end
+
+		local b = {}
+		for i = 1, 64 do b[i] = 0 end
+		local kw, kb = 0, 0
+		for _, it in ipairs(list) do
+			local code = ciMap[it.img] or CI_SEED[it.img]
+			if not code then return nil, "anim" end -- gambar bidak belum dikenal
+			local row, col = it.k // 8, it.k % 8
+			local f, r
+			if flip then f, r = 8 - col, row + 1 else f, r = col + 1, 8 - row end
+			b[(r - 1) * 8 + f] = code
+			if code == 6 then kw += 1 elseif code == -6 then kb += 1 end
+		end
+		if kw ~= 1 or kb ~= 1 then return nil, "anim" end
+
+		local inset = false
+		if g:IsA("ScreenGui") then inset = g.IgnoreGuiInset end
+		return b, { cen = cen, size = size, inset = inset }
+	end
+
+	-- coba susunan game pertama (2DBoard) dulu; kalau tidak ada, coba game kedua (ChessUI)
+	local function scan()
+		local b, info = scanOld()
+		if b or info ~= "nogui" then return b, info end
+		return scanChessUI()
+	end
+
 	local function sameBoard(a: any, c: any): boolean
 		for i = 1, 64 do
 			if a[i] ~= c[i] then return false end
@@ -10803,8 +11008,15 @@ local function buildChess()
 		return true
 	end
 
-	-- warna milikku = sisi yang rajanya ada di BAWAH layar
-	local function myColorOf(b: any, cen: any): number?
+	-- warna milikku = sisi yang ada di BAWAH layar. Ditentukan dari orientasi papan (kotak a1 vs a8),
+	-- BUKAN dari posisi raja: di endgame raja putih bisa lebih tinggi dari raja hitam dan itu membuat warna salah terdeteksi.
+	local function myColorOf(b: any, cen: any, size: number?): number?
+		local a1, a8 = cen[1], cen[57]
+		if a1 and a8 and math.abs(a1.Y - a8.Y) > (size or 8) * 3 then
+			return (a1.Y > a8.Y) and 1 or -1
+		end
+		-- papan miring / orientasi tidak jelas: pertahankan warna yang sudah dikenal; kalau belum ada, tebak dari posisi raja
+		if A.mine then return A.mine end
 		local yw, yb = nil, nil
 		for s = 1, 64 do
 			if b[s] == 6 then yw = cen[s].Y elseif b[s] == -6 then yb = cen[s].Y end
@@ -10902,8 +11114,181 @@ local function buildChess()
 		return string.format(" [%+.1f]", sc / 100)
 	end
 
+	-- Stockfish online (chess-api.com). Mengembalikan langkah legal + skor, atau nil bila gagal/timeout.
+	-- ---------- Stockfish online: beberapa server + coba ulang + cadangan HttpGet ----------
+	-- Prioritas: 1) chess-api.com (Stockfish kedalaman penuh), 2) Lichess cloud eval, 3) stockfish.online.
+	-- Semua server ditanya BERSAMAAN. Tiap server dicoba sampai 3x (jeda bertambah) dan dicoba lewat semua
+	-- fungsi request yang tersedia di executor (syn/http_request/request/fluxus/http), lalu game:HttpGet untuk GET.
+	-- Setiap langkah divalidasi legal lewat CH.parseMove, jadi jawaban rusak tidak pernah dipakai.
+	local function collectRequesters()
+		local list = {}
+		local function add(f)
+			if type(f) ~= "function" then return end
+			for _, x in ipairs(list) do
+				if x == f then return end
+			end
+			list[#list + 1] = f
+		end
+		pcall(function() if syn and syn.request then add(syn.request) end end)
+		pcall(function() add(http_request) end)
+		pcall(function() add(request) end)
+		pcall(function() if fluxus and fluxus.request then add(fluxus.request) end end)
+		pcall(function() if http and http.request then add(http.request) end end)
+		local canGet = false
+		pcall(function() canGet = type(game.HttpGet) == "function" end)
+		return list, canGet
+	end
+
+	-- Mengembalikan body (string) atau nil, plus kode status bila diketahui (404 = server tidak punya datanya)
+	local function httpCall(reqs, canGet, opts)
+		for _, rq in ipairs(reqs) do
+			local ok, res = pcall(rq, opts)
+			if ok and type(res) == "table" then
+				local code = res.StatusCode or res.status_code or res.Status
+				local body = res.Body or res.body
+				if code == 404 then return nil, 404 end
+				if (code == nil or code == 200) and type(body) == "string" and #body > 0 then return body, 200 end
+			end
+		end
+		if opts.Method ~= "POST" and canGet then
+			local ok, body = pcall(function() return game:HttpGet(opts.Url) end)
+			if ok and type(body) == "string" and #body > 0 then return body, 200 end
+		end
+		return nil, nil
+	end
+
+	-- Teks langkah (mis. "e2e4", "e7e8q", "bestmove e2e4 ponder e7e5") -> langkah legal, atau nil
+	local function parseUci(pos, mv)
+		if type(mv) ~= "string" then return nil end
+		local low = mv:lower()
+		local x = low:match("bestmove%s+(%S+)") or low:match("^%s*(%S+)")
+		if not x then return nil end
+		x = x:match("^%a%d%a%d%a?")
+		if not x then return nil end
+		local m = CH.parseMove(pos, x)
+		if m then return m end
+		-- sebagian server menulis rokade sebagai raja-makan-benteng
+		local alt = ({ e1h1 = "e1g1", e1a1 = "e1c1", e8h8 = "e8g8", e8a8 = "e8c8" })[x:sub(1, 4)]
+		if alt then return CH.parseMove(pos, alt) end
+		return nil
+	end
+
+	local function parseChessApi(HS, body, pos)
+		local ok, data = pcall(function() return HS:JSONDecode(body) end)
+		if not ok or type(data) ~= "table" then return nil end
+		local mv = data.move or data.lan or data.bestmove or data.best_move
+		if type(mv) ~= "string" and type(data.from) == "string" and type(data.to) == "string" then
+			mv = data.from .. data.to .. (type(data.promotion) == "string" and data.promotion or "")
+		end
+		local m = parseUci(pos, mv)
+		if not m then return nil end
+		return m, tonumber(data.eval)
+	end
+
+	local function parseLichess(HS, body, pos)
+		local ok, data = pcall(function() return HS:JSONDecode(body) end)
+		if not ok or type(data) ~= "table" or type(data.pvs) ~= "table" then return nil end
+		local pv = data.pvs[1]
+		if type(pv) ~= "table" or type(pv.moves) ~= "string" then return nil end
+		local m = parseUci(pos, pv.moves)
+		if not m then return nil end
+		local ev = nil
+		if type(pv.cp) == "number" then ev = pv.cp / 100 end
+		if type(pv.mate) == "number" then ev = (pv.mate > 0) and 99 or -99 end
+		return m, ev
+	end
+
+	local function parseSFOnline(HS, body, pos)
+		local ok, data = pcall(function() return HS:JSONDecode(body) end)
+		if not ok or type(data) ~= "table" then return nil end
+		local m = parseUci(pos, data.bestmove)
+		if not m then return nil end
+		return m, nil
+	end
+
+	local SF_ENDPOINTS = {
+		{
+			label = "Stockfish", needsReq = true, parse = parseChessApi,
+			build = function(HS, fen, depth)
+				return {
+					Url = "https://chess-api.com/v1", Method = "POST",
+					Headers = { ["Content-Type"] = "application/json" },
+					Body = HS:JSONEncode({ fen = fen, depth = depth, variants = 1 }),
+				}
+			end,
+		},
+		{
+			label = "Lichess Cloud", parse = parseLichess,
+			build = function(HS, fen, depth)
+				return { Url = "https://lichess.org/api/cloud-eval?multiPv=1&fen=" .. HS:UrlEncode(fen), Method = "GET" }
+			end,
+		},
+		{
+			label = "Stockfish", parse = parseSFOnline,
+			build = function(HS, fen, depth)
+				return { Url = "https://stockfish.online/api/s/v2.php?depth=" .. tostring(math.min(depth, 15)) .. "&fen=" .. HS:UrlEncode(fen), Method = "GET" }
+			end,
+		},
+	}
+
+	-- Mengembalikan: langkah legal, skor (bisa nil), label sumber  --  atau nil,nil,nil,alasan bila semua gagal
+	local function fetchStockfish(pos, stale, maxWait)
+		local HS = game:GetService("HttpService")
+		local reqs, canGet = collectRequesters()
+		if #reqs == 0 and not canGet then return nil, nil, nil, "executor tidak punya fungsi request" end
+		local fen = CH.toFen(pos)
+		local fastMode = maxWait ~= nil
+		local depth = fastMode and 10 or math.clamp(10 + (values.chessTime or 3), 12, 18)
+		local t0 = os.clock()
+		local deadline = t0 + (maxWait or 8)
+		local grace = fastMode and 0.3 or 3.5
+		local results, finished, cancelled = {}, {}, false
+		for i, ep in ipairs(SF_ENDPOINTS) do
+			if ep.needsReq and #reqs == 0 then
+				finished[i] = true
+			else
+				task.spawn(function()
+					for attempt = 1, 3 do
+						if cancelled or os.clock() > deadline then break end
+						local okB, opts = pcall(ep.build, HS, fen, depth)
+						if not okB then break end
+						local body, code = httpCall(reqs, canGet, opts)
+						if cancelled then break end
+						if body then
+							local okP, m, ev = pcall(ep.parse, HS, body, pos)
+							if okP and m then
+								results[i] = { m = m, ev = ev, label = ep.label }
+								break
+							end
+						end
+						if code == 404 then break end
+						task.wait(0.4 * attempt)
+					end
+					finished[i] = true
+				end)
+			end
+		end
+		-- jawaban chess-api (kedalaman penuh) diutamakan; server lain dipakai bila chess-api gagal/lambat (>3.5 dtk)
+		while os.clock() < deadline do
+			if stale and stale() then break end
+			if results[1] then break end
+			local allDone = true
+			for i = 1, #SF_ENDPOINTS do
+				if not finished[i] then allDone = false end
+			end
+			if allDone then break end
+			if (results[2] or results[3]) and (finished[1] or os.clock() - t0 >= grace) then break end
+			task.wait(0.05)
+		end
+		cancelled = true
+		local r = results[1] or results[2] or results[3]
+		if r then return r.m, r.ev, r.label end
+		return nil, nil, nil, "semua server gagal atau timeout"
+	end
+
 	local function think()
 		local sid, pos = A.sid, A.pos
+		local fast = (values.chessTime or 3) <= 1 -- MODE CEPAT (slider 1): Stockfish kedalaman rendah (cepat); mesin lokal hanya bila semua server gagal
 		setDesc("Giliranmu - menghitung saran...")
 		-- 1) buku pembukaan (langkah teori master)
 		local okB, bm = pcall(CH.bookMove, pos)
@@ -10915,21 +11300,50 @@ local function buildChess()
 			toast("Saran: " .. CH.describe(pos, bm))
 			return
 		end
-		-- 2) mesin: iterative deepening sampai 12 ply / 4 detik, sadar pengulangan posisi
+		-- 2a) opsional: Stockfish online (toggle "Stockfish Online") berjalan paralel; menimpa saran lokal bila valid
+		local sfState = state.chessApi and "pending" or "off"
+		local sfWhy = nil
+		if state.chessApi then
+			task.spawn(function()
+				local okA, mv, ev, label, why = pcall(fetchStockfish, pos, function()
+					return unloaded or A.sid ~= sid or not state.chess
+				end, fast and 4 or nil)
+				if unloaded or A.sid ~= sid or not state.chess then return end
+				if not (okA and mv) then
+					sfState = "fail"
+					sfWhy = okA and tostring(why or "gagal") or tostring(mv)
+				end
+				if okA and mv then
+					sfState = "ok"
+					A.sfSid = sid
+					A.hint = mv
+					local lbl = label or "Stockfish"
+					A.hintTxt = CH.describe(pos, mv) .. (type(ev) == "number" and string.format(" [%+.1f]", ev) or "") .. " [" .. lbl .. "]"
+					A.sig = nil
+					setDesc("Saran: " .. A.hintTxt)
+					toast("Saran: " .. CH.describe(pos, mv) .. " (" .. lbl .. ")")
+				end
+			end)
+		end
+		-- 2b) mesin lokal: iterative deepening sampai 12 ply / 4 detik, sadar pengulangan posisi
 		task.spawn(function()
-			local m, sc, dd = CH.search(pos, 16, math.clamp(values.chessTime or 3, 1, 10), function()
+			-- [FIX] kalau Stockfish Online aktif, mesin lokal hanya cadangan (tidak jalan bersamaan -> tidak patah-patah)
+			while sfState == "pending" and not (unloaded or A.sid ~= sid or not state.chess) do task.wait(0.1) end
+			if sfState == "ok" then return end
+			local m, sc, dd = CH.search(pos, 16, fast and 0.4 or math.clamp(values.chessTime or 3, 1, 10), function()
 				return unloaded or A.sid ~= sid or not state.chess
 			end, A.hist)
 			if unloaded or A.sid ~= sid or not state.chess then return end
+			if A.sfSid == sid then return end -- Stockfish sudah menjawab; jangan ditimpa saran lokal
 			if not m then
 				setDesc("Tidak ada langkah legal.")
 				return
 			end
 			A.hint = m
-			A.hintTxt = CH.describe(pos, m) .. evalText(sc) .. " d" .. tostring(dd or 0)
+			A.hintTxt = CH.describe(pos, m) .. evalText(sc) .. " d" .. tostring(dd or 0) .. " [MESIN LOKAL - lemah, hati-hati]"
 			A.sig = nil
 			setDesc("Saran: " .. A.hintTxt)
-			toast("Saran: " .. CH.describe(pos, m))
+			toast((sfWhy and ("Stockfish gagal (" .. sfWhy .. ") - saran lokal: ") or "Saran lokal: ") .. CH.describe(pos, m))
 		end)
 	end
 
@@ -11050,7 +11464,7 @@ local function buildChess()
 				A.pos, A.info, A.hint, A.lastOpp = nil, nil, nil, nil
 				A.sid += 1
 				clearAll()
-				setDesc("Papan 2DBoard tidak terlihat. Buka game catur dulu.")
+				setDesc("Papan catur tidak terlihat. Buka game catur dulu.")
 			end
 			return
 		end
@@ -11063,7 +11477,7 @@ local function buildChess()
 		if A.stableN < 2 then return end -- papan harus diam dulu (animasi gerak bidak selesai)
 
 		A.info = info
-		local mine = myColorOf(b, info.cen) or A.mine or 1
+		local mine = myColorOf(b, info.cen, info.size) or A.mine or 1
 		if A.mine ~= mine then
 			A.mine = mine
 			A.pos = nil -- warna/arah berubah (game baru): lacak ulang
@@ -11112,7 +11526,7 @@ local function buildChess()
 		A.stableKey, A.stableN = nil, 0
 		clearAll()
 		ov.Enabled = on
-		setDesc(on and "Menunggu papan 2DBoard..." or BASE_DESC)
+		setDesc(on and "Menunggu papan catur..." or BASE_DESC)
 	end
 
 	local acc = 0
@@ -11124,7 +11538,7 @@ local function buildChess()
 		end
 		if not A.on then effects.chess(true) end
 		acc += dt
-		if acc < 0.12 then return end
+		if acc < ((values.chessTime or 3) <= 1 and 0.05 or 0.12) then return end
 		acc = 0
 		local ok, err = pcall(step)
 		if not ok and not A.warned then
@@ -13713,7 +14127,7 @@ task.spawn(function()
 	TweenService:Create(menuScale, BACK_OUT, { Scale = 1 }):Play()
 end)
 ]==]
-
+    
 if writefile then pcall(writefile, "R4MEN_auto.lua", SRC) end
 local fn, err = loadstring(SRC)
 if fn then
