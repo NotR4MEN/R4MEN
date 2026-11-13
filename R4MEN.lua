@@ -234,6 +234,7 @@ local state: { [string]: boolean } = {
 	autoMinigame = false, -- Mini Game: Auto Minigame universal (mati saat script dijalankan)
 	chess = false, -- Mini Game: saran langkah catur dari papan in-game (mati saat script dijalankan)
 	chessApi = false, -- Mini Game: Stockfish online untuk saran catur (opsional)
+	chessDouble = false, -- Mini Game: Double Move (saran 2 langkah sekaligus untuk premove, mode bullet)
 }
 
 local values: { [string]: number } = {
@@ -740,6 +741,7 @@ local effects: { [string]: (boolean) -> () } = {
 	autoMinigame = function() end, -- diisi blok GUI Auto Minigame universal
 	chess = function() end, -- diisi blok GUI Catur
 	chessApi = function() end,
+	chessDouble = function() end, -- diisi blok GUI Catur
 	fullbright = function(on) ext.light(on) end,
 	noFog = function(on) ext.fog(on) end,
 	fov = function(on) ext.fov(on) end,
@@ -10030,6 +10032,8 @@ local function makeEngine()
 	CH.apply = apply
 
 	local function kingSq(pos, color) return (color == 1) and pos.kw or pos.kb end
+	-- [FIX] apakah raja warna `color` sedang diskak? (dipakai untuk menebak giliran saat script baru dinyalakan)
+	function CH.inCheck(pos, color) return attacked(pos.b, kingSq(pos, color), -color) end
 
 	-- Daftar langkah legal
 	function CH.legal(pos)
@@ -10773,6 +10777,7 @@ local function buildChess()
 	local descLbl = addToggleCard(page, 10, "Saran Langkah Catur", BASE_DESC, "chess")
 	addSliderCard(page, 11, "Waktu Berpikir Saran", "Batas detik sebelum saran muncul (1-10). Kecil = cepat, besar = lebih akurat", "chessTime", 1, 10, 10, true)
 	addToggleCard(page, 12, "Stockfish Online (opsional)", "Kirim posisi papan (FEN) ke server Stockfish untuk saran lebih kuat. Jika gagal atau lambat, memakai mesin lokal.", "chessApi")
+	addToggleCard(page, 13, "Double Move (Bullet / Premove)", "Tampilkan 2 langkah sekaligus: langkahmu (hijau), tebakan balasan musuh (oranye redup), lalu langkah ke-2 (biru) supaya bisa premove. Kalau musuh benar main sesuai tebakan, saran berikutnya muncul instan.", "chessDouble")
 
 	local A: any = {
 		pos = nil, mine = nil, info = nil, hint = nil, hintTxt = "", lastOpp = nil, threat = {},
@@ -11025,6 +11030,11 @@ local function buildChess()
 		return nil
 	end
 
+	-- Bangun posisi hanya dari papan (dipakai bila tidak ada riwayat & tidak ada FEN server).
+	-- Yang TIDAK bisa diketahui dari gambar papan: en passant yang sedang terbuka (ep = 0) dan hitungan 50 langkah (hm = 0).
+	-- [FIX] Giliran tidak lagi asal dianggap giliranmu: sisi yang TIDAK sedang jalan mustahil sedang diskak,
+	-- jadi kalau satu raja sedang diskak, gilirannya pasti milik raja itu. Kalau tidak ada skak, giliran ditebak = giliranmu
+	-- dan posisi diberi tanda guess supaya saran diberi label "[giliran ditebak]".
 	local function fromScan(b: any, turn: number): any
 		local kw, kb = 0, 0
 		for s = 1, 64 do
@@ -11040,55 +11050,80 @@ local function buildChess()
 			if b[64] == -4 then cr += 4 end
 			if b[57] == -4 then cr += 8 end
 		end
-		return { b = b, turn = turn, cr = cr, ep = 0, hm = 0, fm = 1, kw = kw, kb = kb }
+		local np = { b = b, turn = turn, cr = cr, ep = 0, hm = 0, fm = 1, kw = kw, kb = kb, guess = true }
+		local wChk, bChk = CH.inCheck(np, 1), CH.inCheck(np, -1)
+		if wChk and not bChk then
+			np.turn, np.guess = 1, nil
+		elseif bChk and not wChk then
+			np.turn, np.guess = -1, nil
+		end
+		return np
+	end
+
+	local function gtag(pos: any): string
+		return (pos and pos.guess) and " [giliran ditebak]" or ""
+	end
+
+	-- Jumlah kotak yang berbeda antara dua papan (berhenti menghitung setelah melewati limit).
+	local function diffCount(a: any, c: any, limit: number): number
+		local n = 0
+		for i = 1, 64 do
+			if a[i] ~= c[i] then
+				n += 1
+				if n > limit then return n end
+			end
+		end
+		return n
+	end
+
+	-- Cari 1 lalu 2 langkah legal dari posisi P yang menghasilkan papan b. Mengembalikan posisi baru dan langkah musuh (atau nil).
+	-- [FIX] Versi lama mencoba semua langkah x semua balasan tanpa penyaringan. Sekarang:
+	--   * satu langkah paling banyak mengubah 4 kotak (rokade), dua langkah 8 kotak -> selisih lebih besar = langsung batal;
+	--   * kotak asal sebuah langkah harus kosong di papan hasil -> langkah yang mustahil dibuang tanpa apply();
+	--   * setelah langkah pertama, sisa selisih harus <= 4, kalau tidak balasan tidak perlu dibangkitkan.
+	local function matchFrom(P: any, b: any, mine: number): (any, any)
+		if diffCount(P.b, b, 8) > 8 then return nil, nil end
+		local sides = { P.turn, -P.turn }
+		local function variant(t: number): any
+			if t == P.turn then return P end
+			local S = table.clone(P)
+			S.turn, S.ep = t, 0
+			return S
+		end
+		for _, t in ipairs(sides) do
+			local S = variant(t)
+			for _, m in ipairs(CH.legal(S)) do
+				if b[m.f] == 0 then
+					local np = CH.apply(S, m)
+					if sameBoard(np.b, b) then return np, (t ~= mine) and m or nil end
+				end
+			end
+		end
+		for _, t in ipairs(sides) do
+			local S = variant(t)
+			for _, m1 in ipairs(CH.legal(S)) do
+				local n1 = CH.apply(S, m1)
+				if diffCount(n1.b, b, 4) <= 4 then
+					for _, m2 in ipairs(CH.legal(n1)) do
+						if b[m2.f] == 0 then
+							local n2 = CH.apply(n1, m2)
+							if sameBoard(n2.b, b) then return n2, (t ~= mine) and m1 or m2 end
+						end
+					end
+				end
+			end
+		end
+		return nil, nil
 	end
 
 	-- Lacak posisi: cari langkah legal (1 lalu 2 langkah) yang mengubah posisi lama jadi papan sekarang.
 	-- Dari sini giliran, hak rokade, en passant, dan langkah terakhir musuh diketahui pasti.
+	-- [FIX] Bila tidak ada posisi lama (script baru dinyalakan), FEN terakhir dari server (A.remotePos) ikut dipakai sebagai
+	-- titik awal pelacakan: selama papan hanya berbeda 1-2 langkah darinya, ep/hm/giliran/rokade tetap pasti, bukan tebakan.
 	local function trackTo(b: any, mine: number)
 		local P = A.pos
 		local newPos, oppMove = nil, nil
-		if P then
-			local sides = { P.turn, -P.turn }
-			for _, t in ipairs(sides) do
-				local S = P
-				if t ~= P.turn then
-					S = table.clone(P)
-					S.turn, S.ep = t, 0
-				end
-				for _, m in ipairs(CH.legal(S)) do
-					local np = CH.apply(S, m)
-					if sameBoard(np.b, b) then
-						newPos = np
-						if t ~= mine then oppMove = m end
-						break
-					end
-				end
-				if newPos then break end
-			end
-			if not newPos then
-				for _, t in ipairs(sides) do
-					local S = P
-					if t ~= P.turn then
-						S = table.clone(P)
-						S.turn, S.ep = t, 0
-					end
-					for _, m1 in ipairs(CH.legal(S)) do
-						local n1 = CH.apply(S, m1)
-						for _, m2 in ipairs(CH.legal(n1)) do
-							local n2 = CH.apply(n1, m2)
-							if sameBoard(n2.b, b) then
-								newPos = n2
-								oppMove = (t ~= mine) and m1 or m2
-								break
-							end
-						end
-						if newPos then break end
-					end
-					if newPos then break end
-				end
-			end
-		end
+		if P then newPos, oppMove = matchFrom(P, b, mine) end
 		if not newPos then
 			-- tidak cocok (script baru jalan di tengah game / game baru): bangun dari papan
 			A.lastOpp = nil
@@ -11101,7 +11136,8 @@ local function buildChess()
 			elseif rp and sameBoard(rp.b, b) then
 				newPos = rp -- FEN dari server: giliran & hak rokade pasti
 			else
-				newPos = fromScan(b, mine) -- anggap sekarang giliranmu
+				if rp then newPos, oppMove = matchFrom(rp, b, mine) end
+				if not newPos then newPos = fromScan(b, mine) end
 			end
 		end
 		if oppMove then A.lastOpp = oppMove end
@@ -11286,18 +11322,84 @@ local function buildChess()
 		return nil, nil, nil, "semua server gagal atau timeout"
 	end
 
+	-- ===== DOUBLE MOVE: prediksi langkahmu -> balasan musuh -> langkah ke-2 (untuk premove di bullet) =====
+	local C_NEXT = Color3.fromRGB(80, 170, 255)
+	local function bestFor(p: any, stale: any): any
+		local okB, bm = pcall(CH.bookMove, p)
+		if okB and bm then return bm end
+		if state.chessApi then
+			local okA, mv = pcall(fetchStockfish, p, stale, 4)
+			if okA and mv then return mv end
+		end
+		if stale() then return nil end
+		return (CH.search(p, 16, 0.3, stale, nil))
+	end
+	local function planNext(sid: number, pos: any, m1: any)
+		if not state.chessDouble or not m1 then return end
+		A.planTok = (A.planTok or 0) + 1
+		local tok = A.planTok
+		-- [FIX] simpan kunci posisi setelah langkahmu (m1). Perhitungan jalan terus kalau kamu main m1,
+		-- dibatalkan hanya lewat A.planTok (lihat onNewPosition), bukan lagi lewat A.sid.
+		do
+			local okK, k = pcall(function() return CH.key(CH.apply(pos, m1)) end)
+			A.planKey = okK and k or nil
+		end
+		local function stale(): boolean
+			return unloaded or A.planTok ~= tok or not state.chess or not state.chessDouble
+		end
+		task.spawn(function()
+			local ok, err = pcall(function()
+				local function over(p: any): boolean
+					local st = CH.status(p)
+					return st == "mate" or st == "stalemate" or st == "draw50" or st == "insufficient"
+				end
+				local p1 = CH.apply(pos, m1)
+				if over(p1) then return end
+				local r = bestFor(p1, stale)
+				if not r or stale() then return end
+				A.reply = r
+				A.sig = nil
+				local p2 = CH.apply(p1, r)
+				if over(p2) then return end
+				local m2 = bestFor(p2, stale)
+				if not m2 or stale() then return end
+				A.hint2 = m2
+				A.txt2 = CH.describe(p1, r) .. " > " .. CH.describe(p2, m2)
+				A.cache = { key = CH.key(p2), m = m2 }
+				A.sig = nil
+			end)
+			if not ok and not A.warned then
+				A.warned = true
+				warn("[Catur] double move: " .. tostring(err))
+			end
+		end)
+	end
+
 	local function think()
 		local sid, pos = A.sid, A.pos
 		local fast = (values.chessTime or 3) <= 1 -- MODE CEPAT (slider 1): Stockfish kedalaman rendah (cepat); mesin lokal hanya bila semua server gagal
 		setDesc("Giliranmu - menghitung saran...")
+		do -- Double Move: musuh main sesuai tebakan -> saran langsung siap (tanpa menunggu mesin)
+			local c = A.cache
+			A.cache = nil
+			if state.chessDouble and c and c.m and c.key == CH.key(pos) then
+				A.hint = c.m
+				A.hintTxt = CH.describe(pos, c.m) .. " [prediksi premove]" .. gtag(pos)
+				A.sig = nil
+				setDesc("Saran: " .. A.hintTxt)
+				planNext(sid, pos, c.m)
+				return
+			end
+		end
 		-- 1) buku pembukaan (langkah teori master)
 		local okB, bm = pcall(CH.bookMove, pos)
 		if okB and bm then
 			A.hint = bm
-			A.hintTxt = CH.describe(pos, bm) .. " [buku pembukaan]"
+			A.hintTxt = CH.describe(pos, bm) .. " [buku pembukaan]" .. gtag(pos)
 			A.sig = nil
 			setDesc("Saran: " .. A.hintTxt)
 			toast("Saran: " .. CH.describe(pos, bm))
+			planNext(sid, pos, bm)
 			return
 		end
 		-- 2a) opsional: Stockfish online (toggle "Stockfish Online") berjalan paralel; menimpa saran lokal bila valid
@@ -11318,10 +11420,11 @@ local function buildChess()
 					A.sfSid = sid
 					A.hint = mv
 					local lbl = label or "Stockfish"
-					A.hintTxt = CH.describe(pos, mv) .. (type(ev) == "number" and string.format(" [%+.1f]", ev) or "") .. " [" .. lbl .. "]"
+					A.hintTxt = CH.describe(pos, mv) .. (type(ev) == "number" and string.format(" [%+.1f]", ev) or "") .. " [" .. lbl .. "]" .. gtag(pos)
 					A.sig = nil
 					setDesc("Saran: " .. A.hintTxt)
 					toast("Saran: " .. CH.describe(pos, mv) .. " (" .. lbl .. ")")
+					planNext(sid, pos, mv)
 				end
 			end)
 		end
@@ -11340,17 +11443,27 @@ local function buildChess()
 				return
 			end
 			A.hint = m
-			A.hintTxt = CH.describe(pos, m) .. evalText(sc) .. " d" .. tostring(dd or 0) .. " [MESIN LOKAL - lemah, hati-hati]"
+			A.hintTxt = CH.describe(pos, m) .. evalText(sc) .. " d" .. tostring(dd or 0) .. " [MESIN LOKAL - lemah, hati-hati]" .. gtag(pos)
 			A.sig = nil
 			setDesc("Saran: " .. A.hintTxt)
 			toast((sfWhy and ("Stockfish gagal (" .. sfWhy .. ") - saran lokal: ") or "Saran lokal: ") .. CH.describe(pos, m))
+			planNext(sid, pos, m)
 		end)
 	end
 
 	local function onNewPosition()
 		A.sid += 1
 		A.hint, A.hintTxt, A.sig = nil, "", nil
+		A.hint2, A.reply, A.txt2 = nil, nil, nil
 		local pos = A.pos
+		-- [FIX] kalau posisi baru = posisi setelah langkah saranmu, biarkan perhitungan langkah ke-2 lanjut
+		do
+			local okK, k = pcall(CH.key, pos)
+			if not (okK and A.planKey and A.planKey == k) then
+				A.planTok = (A.planTok or 0) + 1
+				A.planKey = nil
+			end
+		end
 		do
 			local okH, hk = pcall(CH.hash, pos)
 			if okH then A.hist[hk] = (A.hist[hk] or 0) + 1 end
@@ -11378,9 +11491,10 @@ local function buildChess()
 		local hint, opp = A.hint, A.lastOpp
 		local thr = A.threat or {}
 		local c1, c64 = cen[1], cen[64]
-		local sig = string.format("%.1f|%.1f|%.1f|%.1f|%.1f|%.1f|%d|%d|%d|%d|%d",
+		local sig = string.format("%.1f|%.1f|%.1f|%.1f|%.1f|%.1f|%d|%d|%d|%d|%d|%d|%d|%d|%d",
 			lo.X, lo.Y, c1.X, c1.Y, c64.X, c64.Y,
-			hint and hint.f or 0, hint and hint.t or 0, opp and opp.f or 0, opp and opp.t or 0, #thr)
+			hint and hint.f or 0, hint and hint.t or 0, opp and opp.f or 0, opp and opp.t or 0, #thr,
+			A.hint2 and A.hint2.f or 0, A.hint2 and A.hint2.t or 0, A.reply and A.reply.f or 0, A.reply and A.reply.t or 0)
 		if sig == A.sig then return end
 		A.sig = sig
 		layer:ClearAllChildren()
@@ -11433,6 +11547,44 @@ local function buildChess()
 			end
 		end
 
+		-- Double Move: tebakan balasan musuh (oranye redup) + langkah ke-2 (biru, bertanda "2")
+		if hint and state.chessDouble then
+			local rp, h2 = A.reply, A.hint2
+			if rp then
+				sqBox(rp.f, C_OPP, 0.88, 1)
+				sqBox(rp.t, C_OPP, 0.8, 2)
+			end
+			if h2 then
+				sqBox(h2.f, C_NEXT, 0.7, 3)
+				sqBox(h2.t, C_NEXT, 0.4, 4)
+				local q1, q2 = cen[h2.f] - lo, cen[h2.t] - lo
+				local dv = q2 - q1
+				local ln = dv.Magnitude
+				if ln > 1 then
+					local u = dv / ln
+					local ang = math.deg(math.atan2(dv.Y, dv.X))
+					local sP, hP = q1 + u * s * 0.25, q2 - u * s * 0.22
+					local L = math.max(2, (hP - sP).Magnitude)
+					new("Frame", {
+						AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset((sP.X + hP.X) / 2, (sP.Y + hP.Y) / 2),
+						Size = UDim2.fromOffset(L, 6), Rotation = ang, BackgroundColor3 = C_NEXT,
+						BackgroundTransparency = 0.2, BorderSizePixel = 0, Active = false, ZIndex = 9,
+					}, layer)
+					new("Frame", {
+						AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset(hP.X, hP.Y),
+						Size = UDim2.fromOffset(s * 0.24, s * 0.24), Rotation = ang + 45, BackgroundColor3 = C_NEXT,
+						BackgroundTransparency = 0.2, BorderSizePixel = 0, Active = false, ZIndex = 9,
+					}, layer)
+				end
+				new("TextLabel", {
+					AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset((cen[h2.t] - lo).X, (cen[h2.t] - lo).Y),
+					Size = UDim2.fromOffset(s * 0.4, s * 0.4), BackgroundTransparency = 1, Text = "2",
+					TextColor3 = WHITE, Font = Enum.Font.GothamBold, TextSize = math.max(12, math.floor(s * 0.4)),
+					Active = false, ZIndex = 10,
+				}, layer)
+			end
+		end
+
 		-- teks saran di atas papan
 		if hint and A.hintTxt ~= "" then
 			local minY, sx, n = math.huge, 0, 0
@@ -11441,7 +11593,7 @@ local function buildChess()
 				sx += c.X
 				n += 1
 			end
-			hud.Text = "Saran: " .. A.hintTxt
+			hud.Text = "Saran: " .. A.hintTxt .. ((state.chessDouble and A.txt2) and ("   |   Lanjut: " .. A.txt2) or "")
 			hud.Position = UDim2.fromOffset(sx / n - lo.X, math.max(30, minY - s / 2 - lo.Y - 6))
 			hud.Visible = true
 		else
@@ -11522,11 +11674,21 @@ local function buildChess()
 		A.sid += 1
 		A.on = on
 		A.pos, A.info, A.hint, A.lastOpp, A.sig = nil, nil, nil, nil, nil
+		A.hint2, A.reply, A.txt2, A.cache = nil, nil, nil, nil
+		A.planTok = (A.planTok or 0) + 1
+		A.planKey = nil
 		A.threat = {}
 		A.stableKey, A.stableN = nil, 0
 		clearAll()
 		ov.Enabled = on
 		setDesc(on and "Menunggu papan catur..." or BASE_DESC)
+	end
+
+	effects.chessDouble = function(on: boolean)
+		A.planTok = (A.planTok or 0) + 1
+		A.planKey = nil
+		A.hint2, A.reply, A.txt2, A.cache, A.sig = nil, nil, nil, nil, nil
+		if on and A.pos and A.hint and A.pos.turn == A.mine then planNext(A.sid, A.pos, A.hint) end
 	end
 
 	local acc = 0
