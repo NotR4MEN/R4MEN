@@ -12296,6 +12296,27 @@ do
 		local d = ddOpen
 		if d then d.close() end
 	end
+
+	-- Kunci scroll halaman selama dropdown terbuka (sama seperti dropdown Grup/Rarity di menu ESP):
+	-- roda mouse hanya menggulir daftar popup, halaman di belakangnya tidak ikut bergeser.
+	local ddLocked: { [any]: boolean } = {}
+	local function ddLockPages(lock: boolean, extra: any?)
+		if lock then
+			local function add(sf: any)
+				if sf and sf:IsA("ScrollingFrame") and ddLocked[sf] == nil then
+					ddLocked[sf] = sf.ScrollingEnabled
+					sf.ScrollingEnabled = false
+				end
+			end
+			for _, pg in pairs(pages) do add(pg) end
+			add(extra)
+		else
+			for sf, was in pairs(ddLocked) do
+				if sf.Parent then sf.ScrollingEnabled = was end
+			end
+			table.clear(ddLocked)
+		end
+	end
 	ddCatcher.MouseButton1Click:Connect(closeDropdown)
 	track(main:GetPropertyChangedSignal("Visible"):Connect(function()
 		if not main.Visible then closeDropdown() end
@@ -12363,6 +12384,9 @@ do
 		}, main)
 		round(pop, 8)
 		stroke(pop, T.stroke, 1, 0.1)
+		-- roda mouse di atas popup hanya menggulir daftar popup; di luar popup halaman tetap bisa di-scroll
+		pop.MouseEnter:Connect(function() ddLockPages(true) end)
+		pop.MouseLeave:Connect(function() ddLockPages(false) end)
 
 		local list = new("ScrollingFrame", {
 			Position = UDim2.fromOffset(4, 4),
@@ -12455,13 +12479,16 @@ do
 			pop.Size = UDim2.fromOffset(ss.X, popH)
 		end
 
+		local scrollConn: any = nil
 		local function close()
 			opened = false
 			arrow.Text = "v"
 			pop.Visible = false
+			if scrollConn then scrollConn:Disconnect(); scrollConn = nil end
 			if ddOpen == handle then
 				ddOpen = nil
 				ddCatcher.Visible = false
+				ddLockPages(false)
 			end
 		end
 		handle.close = close
@@ -12474,6 +12501,21 @@ do
 			pop.Visible = true
 			ddOpen = handle
 			ddCatcher.Visible = true
+			-- popup mengikuti tombol saat halaman di-scroll (seperti dropdown Rarity di menu ESP);
+			-- ditutup kalau tombolnya sudah keluar dari area terlihat halaman
+			local parentPage: any = sel:FindFirstAncestorWhichIsA("ScrollingFrame")
+			if parentPage then
+				scrollConn = parentPage:GetPropertyChangedSignal("CanvasPosition"):Connect(function()
+					if not opened then return end
+					local pp, ps = parentPage.AbsolutePosition, parentPage.AbsoluteSize
+					local sp, ss = sel.AbsolutePosition, sel.AbsoluteSize
+					if sp.Y < pp.Y or sp.Y + ss.Y > pp.Y + ps.Y then
+						close()
+					else
+						place()
+					end
+				end)
+			end
 			-- gulung ke pilihan yang aktif (untuk daftar panjang)
 			task.defer(function()
 				if not opened then return end
@@ -13346,9 +13388,36 @@ end
 -- makin menjauh ke arah posisi yang dipilih (atas/bawah/depan/belakang).
 -- "Depan" = sisi yang menghadap karakter saat batu dipilih, "Belakang" = sisi seberangnya.
 -- "Tengah" = selalu di tengah batu (jarak diabaikan).
+-- [BARU] Auto Kritikal: batu yang masih utuh punya Part "RockCritical" (atribut RockCritical=true) yang membawa Decal
+-- retakan putih. Posisi Part itu = titik kritikal. Karakter berdiri di sisi luar titik itu (tegak lurus permukaan,
+-- sumbu paling tipis Part) dan menghadap ke titik tersebut. Tidak ada titik aktif -> posisi normal dari dropdown.
+-- Disimpan sebagai field MINE (bukan local baru) supaya tidak menambah jatah 200 variabel lokal.
+MINE.critStand = 3   -- jarak berdiri dari titik kritikal (stud); jangkauan pukul sekitar 7
+MINE.critGoal = function(rock: Model, center: Vector3): (Vector3?, Vector3?)
+	local part = rock:FindFirstChild("RockCritical")
+	if not (part and part:IsA("BasePart")) or part:GetAttribute("RockCritical") ~= true then return nil, nil end
+	local decal = part:FindFirstChildOfClass("Decal")
+	if not decal or decal.Transparency > 0.95 then return nil, nil end   -- retakan tidak tampil: bukan titik aktif
+	local pos = part.Position
+	if (pos - center).Magnitude > 60 then return nil, nil end
+	local sz, cfp = part.Size, part.CFrame
+	local axis = cfp.UpVector
+	if sz.X <= sz.Y and sz.X <= sz.Z then
+		axis = cfp.RightVector
+	elseif sz.Z <= sz.Y and sz.Z <= sz.X then
+		axis = cfp.LookVector
+	end
+	if (pos - center):Dot(axis) < 0 then axis = -axis end   -- pilih sisi yang menghadap keluar batu
+	return pos + axis * MINE.critStand, pos
+end
+
 local function rockGoal(rock: Model, approach: Vector3): (Vector3, Vector3)
 	local cf = rock:GetBoundingBox()
 	local c = cf.Position
+	if state.autocrit then
+		local cg, cp = MINE.critGoal(rock, c)
+		if cg and cp then return cg, cp end
+	end
 	local off = math.max(0, (values.mineDist or 1) - 1)
 	local goal = c
 	if minePosMode == "up" then
@@ -13570,6 +13639,10 @@ addToggleCard(miningPage, 1, "Auto Mine", "Terbang / TP ke batu terdekat sesuai 
 		end
 		task.spawn(mineLoop, mineToken)
 	end
+end)
+
+addToggleCard(miningPage, 4, "Auto Kritikal", "Saat Auto Mine ON: pindah langsung ke titik retakan putih (kritikal) di batu dan pukul dari situ. Kalau tidak ada retakan, pakai posisi biasa.", "autocrit", function(on)
+	toast(on and "Auto Kritikal ON" or "Auto Kritikal OFF")
 end)
 
 -- Serang mob sambil mining: ikut memanggil ToolActivated("Weapon") bergantian dengan Pickaxe.
@@ -13929,7 +14002,9 @@ local function findRaidMob(pos: Vector3): Model?
 				local m = h.Parent
 				if m and m:IsA("Model") and not Players:GetPlayerFromCharacter(m) and not (mobBlacklist[m] and mobBlacklist[m] > now) then
 					local r = mobRootOf(m)
-					if r and (r.Position - center).Magnitude <= MOBCFG.raidRadius then
+					-- [FIX wave 2] mob diterima kalau dekat pusat raid ATAU dekat posisi pemain saat ini
+					-- (musuh yang mendatangi kita / pemain dipindah game ke arena wave berikutnya)
+					if r and ((r.Position - center).Magnitude <= MOBCFG.raidRadius or (r.Position - pos).Magnitude <= MOBCFG.raidRadius) then
 						local d = (r.Position - pos).Magnitude
 						if d < bestD then best, bestD = m, d end
 					end
@@ -13940,6 +14015,13 @@ local function findRaidMob(pos: Vector3): Model?
 	local living = workspace:FindFirstChild("Living")
 	if living then scan(living) end
 	if not best then scan(workspace) end
+	if not best and next(mobBlacklist) ~= nil then
+		-- [FIX wave 2] model mob bisa dipakai ulang (pooling) antar wave: kalau semua yang tersisa masuk blacklist,
+		-- buang blacklist dan coba lagi sekali supaya wave baru tidak dilewati
+		table.clear(mobBlacklist)
+		if living then scan(living) end
+		if not best then scan(workspace) end
+	end
 	return best
 end
 
@@ -14036,6 +14118,7 @@ local function mobLoop(token: number, raid: boolean?)
 	end)
 
 	local wasDead = false
+	local flyStart = 0   -- [FIX wave 2] kapan mulai terbang ke target (Auto Raid): target yang tak kunjung terjangkau dilepas
 	while (if raid then state.autoraid else state.automob) and token == mineToken and not unloaded do
 		local char = player.Character
 		local hrp = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
@@ -14060,6 +14143,19 @@ local function mobLoop(token: number, raid: boolean?)
 			if not target.Parent or not th or th.Health <= 0 then
 				target = nil
 				mobTarget = nil
+			elseif raid and (function()
+				-- [FIX wave 2] Auto Raid: lepas target yang sudah keluar dari area raid / jauh dari kita (mob sisa wave lama
+				-- yang dipindah game, atau tidak terjangkau) supaya mob wave baru bisa dipilih
+				local tr = mobRootOf(target)
+				if not tr then return true end
+				local cen: Vector3? = MINE.raidPos
+				local inArea = (cen and (tr.Position - cen).Magnitude <= MOBCFG.raidRadius) or (tr.Position - hrp.Position).Magnitude <= MOBCFG.raidRadius
+				if not inArea then return true end
+				return th.Health >= lastHp - 0.01 and flyStart > 0 and os.clock() - flyStart > 12
+			end)() then
+				mobBlacklist[target] = os.clock() + 5
+				target = nil
+				mobTarget = nil
 			elseif th.Health < lastHp - 0.01 then
 				-- mob kena damage: masih dalam proses dibunuh, jangan pindah
 				lastHp = th.Health
@@ -14081,11 +14177,12 @@ local function mobLoop(token: number, raid: boolean?)
 			mobTarget = target
 			startedAt = os.clock()
 			pickedAt = os.clock()
+			flyStart = os.clock()
 			local nh = target and target:FindFirstChildOfClass("Humanoid")
 			lastHp = nh and nh.Health or 0
 			if not target then
 				note(raid and "Menunggu mob di area raid..." or whyNoMob(hrp.Position))
-				task.wait(raid and 1 or 1.5)
+				task.wait(raid and 0.4 or 1.5)
 				continue
 			end
 		end
@@ -14101,6 +14198,7 @@ local function mobLoop(token: number, raid: boolean?)
 			startedAt = os.clock()
 			task.wait(0.1)
 		else
+			flyStart = os.clock()   -- sudah sampai: reset penghitung terbang
 			local ok, res = pcall(remote.InvokeServer, remote, "Weapon", nil)
 			pushSwing("M:" .. (ok and tostring(res) or ("ERR " .. tostring(res))))
 			task.wait(MINE.swingDelay())
@@ -14739,6 +14837,337 @@ settings.forgeShutdown = function()
 	fxStop(false)
 end
 -- =====================================================
+
+-- =====================================================
+-- AUTO FORGING (halaman Mini Game)
+-- Urutan & isi data diambil dari LOG FORGE MANUAL (Remote Logger), bukan dari tebakan:
+--   Melt {ItemType, Ores, FastForge=false} -> Pour {ClientTime} -> Hammer {ClientTime} -> Water {ClientTime} -> Showcase {}
+-- Tiap tahap dikirim SATU kali. "Showcase" adalah langkah penutup (tidak ada di script lama -> itulah yang bikin ending nyangkut).
+-- Jeda & ClientTime meniru log script lain yang berhasil: Melt, +0,1s Pour, +0,1s Hammer, +6,1s Water (ClientTime = Pour - 1,83s), +14,2s Showcase.
+-- Setelah Showcase: tunggu EndScreen, tekan Accept (AUTO_ACCEPT), pastikan EndScreen tertutup; keadaan UI dicatat di jejak.
+-- Berhenti sendiri kalau server menolak 3x berturut-turut / ore habis. Semua langkah punya batas waktu, tidak ada loop tanpa ujung.
+-- =====================================================
+;(function()
+	local MG = pages["Mini Game"]
+	if not MG then return end
+
+	local REMOTE_PATH = "ReplicatedStorage.Shared.Packages.Knit.Services.ForgeService.RF.ChangeSequence"
+	local ITEM_TYPE = "Weapon"       -- ganti ke "Armor" kalau mau forge armor
+	-- Jeda & isi ClientTime DISALIN dari Remote Logger script lain yang berhasil forging sampai selesai:
+	--   Melt -> (+0,1s) Pour -> (+0,1s) Hammer -> (+6,1s) Water -> (+14,2s) Showcase
+	--   Pour/Hammer: ClientTime = waktu saat dikirim. Water: ClientTime LEBIH LAMA ~1,83 dtk dari ClientTime Pour (bukan waktu sekarang).
+	local TIMING = { melt = 0.1, pour = 0.1, hammer = 6.1, water = 14.2 } -- detik setelah tahap itu dikirim
+	local WATER_CT_BACK = 1.83       -- Water.ClientTime = Pour.ClientTime - WATER_CT_BACK (dari 2 log: 1,829 dan 1,830)
+	local HAMMER_CT_AFTER = 0.125    -- Hammer.ClientTime = Pour.ClientTime + ini (dari 2 log: 0,120 dan 0,129)
+	local CYCLE_GAP = 1.5            -- jeda antar forge
+
+	local forgeToken = 0
+	local lastFail = ""
+	local trace: { string } = {}
+	local oresText: string = (type(SAVED.forgeOres) == "string" and SAVED.forgeOres ~= "") and SAVED.forgeOres or "Cardboardite=5"
+
+	local function parseOres(s: string): { [string]: number }
+		local out: { [string]: number } = {}
+		for part in string.gmatch(s, "[^,;]+") do
+			local name, n = string.match(part, "^%s*(.-)%s*=%s*(%d+)%s*$")
+			if name and name ~= "" then out[name] = tonumber(n) or 1 end
+		end
+		return out
+	end
+
+	-- waktu klien: satu sumber saja, dijamin naik terus
+	local lastT = 0
+	local function clientTime(): number
+		local ok, t = pcall(function() return workspace:GetServerTimeNow() end)
+		local v = (ok and type(t) == "number") and t or os.time()
+		if v <= lastT then v = lastT + 0.001 end
+		lastT = v
+		return v
+	end
+
+	local function stopForge(msg: string?)
+		forgeToken += 1
+		state.autoforge = false
+		if switches.autoforge then switches.autoforge.Set(false) end
+		refreshActive()
+		if msg then toast(msg) end
+	end
+
+	local function alive(token: number): boolean
+		return state.autoforge == true and token == forgeToken and not unloaded
+	end
+
+	-- tunggu `sec` detik, tapi putus kalau dimatikan di tengah jalan
+	local function waitAlive(token: number, sec: number): boolean
+		local t0 = os.clock()
+		while os.clock() - t0 < sec do
+			if not alive(token) then return false end
+			task.wait(0.05)
+		end
+		return alive(token)
+	end
+
+	-- ===== PENUTUP FORGE (tambahan): tunggu EndScreen, lalu tekan Accept =====
+	local AUTO_ACCEPT = true          -- true: setelah Showcase script menunggu EndScreen & menekan tombol Accept
+	local END_APPEAR_MAX = 20         -- detik: batas menunggu EndScreen muncul setelah Showcase
+	local ACCEPT_DELAY_DEFAULT = 10.5 -- detik: dipakai kalau atribut WaitTime tombol Accept tidak terbaca
+	local ACCEPT_TRIES = 3            -- berapa kali mencoba menekan Accept
+
+	local VIM = nil
+	pcall(function() VIM = game:GetService("VirtualInputManager") end)
+
+	local function note(msg)
+		if #trace < 14 then table.insert(trace, msg) end
+	end
+
+	-- sama dengan pola shown() di blok Rekam Minigame: GuiObject & ancestor Visible, LayerCollector Enabled
+	local function isShown(inst)
+		if not inst then return false end
+		local cur = inst
+		while cur and cur ~= playerGui do
+			if cur:IsA("GuiObject") and not cur.Visible then return false end
+			if cur:IsA("LayerCollector") then return cur.Enabled end
+			cur = cur.Parent
+		end
+		return false
+	end
+
+	local function forgeGui()
+		return playerGui:FindFirstChild("Forge")
+	end
+
+	local function endRoot()
+		local fg = forgeGui()
+		return fg and fg:FindFirstChild("EndScreen") or nil
+	end
+
+	local function endShown()
+		local root = endRoot()
+		if not root then return false end
+		return isShown(root:FindFirstChild("Stats") or root)
+	end
+
+	-- ringkasan keadaan UI untuk diagnosa (1 = tampil, 0 = tersembunyi, - = tidak ada)
+	local function uiState()
+		local fg = forgeGui()
+		if not fg then return "Forge=-" end
+		local function f(name)
+			local o = fg:FindFirstChild(name)
+			return o and (isShown(o) and "1" or "0") or "-"
+		end
+		local root = endRoot()
+		local e = "-"
+		if root then e = endShown() and "1" or "0" end
+		return "Melt=" .. f("MeltMinigame") .. " Pour=" .. f("PourMinigame") .. " Hammer=" .. f("HammerMinigame") .. " End=" .. e
+	end
+
+	local function clickGui(obj)
+		if not (VIM and obj and obj:IsA("GuiObject")) then return false end
+		local pos = obj.AbsolutePosition + obj.AbsoluteSize / 2
+		local inset = Vector2.new(0, 0)
+		local sg = obj:FindFirstAncestorOfClass("ScreenGui")
+		if sg and not sg.IgnoreGuiInset then
+			local okI, v = pcall(function() return game:GetService("GuiService"):GetGuiInset() end)
+			if okI and typeof(v) == "Vector2" then inset = v end
+		end
+		local x, y = pos.X + inset.X, pos.Y + inset.Y
+		return pcall(function()
+			VIM:SendMouseMoveEvent(x, y, game)
+			task.wait(0.05)
+			VIM:SendMouseButtonEvent(x, y, 0, true, game, 1)
+			task.wait(0.06)
+			VIM:SendMouseButtonEvent(x, y, 0, false, game, 1)
+		end)
+	end
+
+	-- ubah balasan server (tabel) jadi teks pendek supaya isinya terbaca di console
+	local function dump(v: any, depth: number?): string
+		depth = depth or 0
+		if type(v) ~= "table" then return tostring(v) end
+		if depth >= 2 then return "{...}" end
+		local parts: { string } = {}
+		local n = 0
+		for k, x in pairs(v) do
+			n += 1
+			if n > 12 then table.insert(parts, "...") break end
+			table.insert(parts, tostring(k) .. "=" .. dump(x, depth + 1))
+		end
+		return "{" .. table.concat(parts, ", ") .. "}"
+	end
+
+	local function send(remote: any, step: string, payload: any): (boolean, any)
+		local ok, res, extra = pcall(remote.InvokeServer, remote, step, payload)
+		local line = step .. "=" .. (ok and (typeof(res) .. ":" .. dump(res) .. (extra ~= nil and (" | " .. dump(extra)) or "")) or ("ERR " .. tostring(res))) .. " {" .. uiState() .. "}"
+		if #trace < 14 then table.insert(trace, line) end
+		-- tampil LANGSUNG di console (F9) tiap tahap, tidak menunggu satu siklus selesai
+		print("[AutoForge] " .. line)
+		if not ok then lastFail = step .. " error: " .. tostring(res) return false, res end
+		if res == false then lastFail = step .. " ditolak server" return false, res end
+		return true, res
+	end
+
+	-- setelah Showcase: tunggu EndScreen tampil, tunggu tombol Accept siap, tekan, pastikan EndScreen tertutup.
+	-- true = selesai (atau EndScreen memang tidak muncul), false = macet di EndScreen
+	local function finishEnding(token)
+		local t0 = os.clock()
+		while not endShown() do
+			if not alive(token) then return true end
+			if os.clock() - t0 > END_APPEAR_MAX then
+				note("EndScreen tidak muncul dalam " .. END_APPEAR_MAX .. " dtk, lanjut {" .. uiState() .. "}")
+				return true
+			end
+			task.wait(0.1)
+		end
+		local shownAt = os.clock()
+		note("EndScreen tampil +" .. string.format("%.1f", shownAt - t0) .. "s")
+
+		local function findBtn()
+			local root = endRoot()
+			return root and root:FindFirstChild("AcceptButton", true) or nil
+		end
+
+		local btn = findBtn()
+		local delay = ACCEPT_DELAY_DEFAULT
+		if btn then
+			local w = btn:GetAttribute("WaitTime")
+			if type(w) == "number" then delay = w end
+		end
+
+		while true do
+			if not alive(token) then return true end
+			if not endShown() then return true end -- sudah tertutup sendiri
+			btn = findBtn()
+			local elapsed = os.clock() - shownAt
+			if btn and btn:IsA("GuiObject") and isShown(btn) then
+				local sizeOk = btn.AbsoluteSize.X >= 100
+				if (sizeOk and elapsed >= delay) or elapsed >= delay + 4 then break end
+			end
+			if elapsed > delay + 15 then
+				note("tombol Accept tidak siap, lanjut")
+				return true
+			end
+			task.wait(0.2)
+		end
+
+		for attempt = 1, ACCEPT_TRIES do
+			if not alive(token) then return true end
+			if not endShown() then return true end
+			btn = findBtn()
+			local clicked = clickGui(btn)
+			note("Accept#" .. attempt .. (clicked and " diklik" or " GAGAL klik"))
+			local c0 = os.clock()
+			while os.clock() - c0 < 4 do
+				if not alive(token) then return true end
+				if not endShown() then return true end
+				task.wait(0.1)
+			end
+		end
+		if endShown() then
+			lastFail = "EndScreen tidak tertutup setelah Accept"
+			return false
+		end
+		return true
+	end
+
+	-- satu forge penuh. true = lanjut/selesai, false = ditolak server
+	local function runOnce(remote: any, token: number): boolean
+		local ores = parseOres(oresText)
+		if next(ores) == nil then
+			lastFail = "ore belum diisi"
+			toast("Isi ore dulu, contoh: Cardboardite=5")
+			return false
+		end
+
+		if not send(remote, "Melt", { ItemType = ITEM_TYPE, Ores = ores, FastForge = false }) then return false end
+		if not waitAlive(token, TIMING.melt) then return true end
+
+		-- Isi payload sama persis dengan log: Pour membawa InContact=true, dan SEMUA tahap membawa FastForge=false
+		local pourCT = clientTime()
+		if not send(remote, "Pour", { ClientTime = pourCT, InContact = true, FastForge = false }) then return false end
+		if not waitAlive(token, TIMING.pour) then return true end
+
+		if not send(remote, "Hammer", { ClientTime = pourCT + HAMMER_CT_AFTER, FastForge = false }) then return false end
+		if not waitAlive(token, TIMING.hammer) then return true end
+
+		if not send(remote, "Water", { ClientTime = pourCT - WATER_CT_BACK, FastForge = false }) then return false end
+		if not waitAlive(token, TIMING.water) then return true end
+
+		if not send(remote, "Showcase", { FastForge = false }) then return false end
+		if AUTO_ACCEPT then return finishEnding(token) end
+		return true
+	end
+
+	local function forgeLoop(token: number)
+		print("[AutoForge] mulai. ore=" .. oresText .. " item=" .. ITEM_TYPE)
+		local remote = resolvePath(REMOTE_PATH)
+		if not remote then
+			print("[AutoForge] remote tidak ditemukan: " .. REMOTE_PATH)
+			stopForge("Remote ForgeService.ChangeSequence tidak ditemukan")
+			return
+		end
+		print("[AutoForge] remote ketemu: " .. remote.ClassName .. " " .. remote:GetFullName())
+		local fails, done = 0, 0
+		while alive(token) do
+			table.clear(trace)
+			local ok = runOnce(remote, token)
+			if (done == 0 and fails == 0) or not ok then
+				local msg = "[AutoForge] hasil server: " .. table.concat(trace, " | ")
+				print(msg)
+				toast(msg)
+			end
+			if not alive(token) then return end
+			if ok then
+				fails = 0
+				done += 1
+				toast("Auto Forging: selesai " .. done .. "x")
+			else
+				fails += 1
+				toast("Auto Forging gagal (" .. fails .. "/3): " .. lastFail)
+				if fails >= 3 then
+					stopForge("Auto Forging berhenti. Terakhir: " .. lastFail)
+					return
+				end
+			end
+			if not waitAlive(token, CYCLE_GAP) then return end
+		end
+	end
+
+	addToggleCard(MG, 3, "Auto Forging", "Melt, Pour, Hammer, Water, Showcase otomatis (sekitar 21 dtk per forge, urutan & waktu meniru script yang berhasil). Berhenti sendiri kalau ore habis atau ditolak server.", "autoforge", function(on)
+		forgeToken += 1
+		if on then task.spawn(forgeLoop, forgeToken) end
+	end)
+
+	local oreInput = addInputCard(MG, 4, "Ore Auto Forging", "Nama=jumlah, pisah koma. Contoh: Cardboardite=5", "Simpan", function(q)
+		if q == "" then q = "Cardboardite=5" end
+		if next(parseOres(q)) == nil then
+			toast("Format salah. Contoh: Cardboardite=5")
+			return
+		end
+		oresText = q
+		saveSoon()
+		toast("Ore forging: " .. q)
+	end)
+	oreInput.Text = oresText
+
+	-- simpan ore bersama data Forge lainnya
+	local prevExtra = saveExtra
+	saveExtra = function()
+		local t = prevExtra()
+		t.forgeOres = oresText
+		return t
+	end
+
+	-- Matikan Semua / Unload
+	local prevDisable, prevShutdown = settings.forgeDisable, settings.forgeShutdown
+	settings.forgeDisable = function()
+		forgeToken += 1
+		if prevDisable then prevDisable() end
+	end
+	settings.forgeShutdown = function()
+		forgeToken += 1
+		if prevShutdown then prevShutdown() end
+	end
+end)()
 
 saveReady = true   -- seluruh UI sudah dibuat: mulai simpan perubahan
 
@@ -15489,7 +15918,7 @@ local function buildScan()
 
 
 	-- Recorder V2: bounded independent evidence; legacy five-column samples stay compatible.
-	local V2 = {lines={}, bytes=0, count=0, limit=90000, full=false, held={}, last={}}
+	local V2 = {lines={}, bytes=0, count=0, limit=(settings.forgeOk and 220000 or 90000), full=false, held={}, last={}}
 	function V2.reset()
 		V2.lines={}; V2.bytes=0; V2.count=0; V2.full=false; V2.held={}; V2.last={}
 	end
@@ -15656,6 +16085,7 @@ local function buildScan()
 	local function consider(inst: Instance)
 		if R.objs[inst] or R.nObjs >= CFG.maxObjs or not R.rec then return end
 		if not inst:IsA("GuiObject") or V2.own(inst) then return end
+		if settings.forgeOk and (inst:FindFirstAncestor("OreSelect") or inst:FindFirstAncestor("Extra")) and inst:IsDescendantOf(playerGui) then return end
 		local cls = inst.ClassName
 		if cls == "ScrollingFrame" or cls == "ViewportFrame" then return end
 		local i: any = inst
@@ -15803,6 +16233,10 @@ local function buildScan()
 	local function stopRec() end -- diisi di bawah (butuh buildMini)
 	local function hookValue(inst: Instance)
 		if not inst:IsA("ValueBase") or V2.held[inst] or R.nValueHooks>=450 then return end
+		if settings.forgeOk then
+			-- The Forge: ratusan nilai aset/dialog menghabiskan jatah detail rekaman, bukan data minigame
+			if not string.find(inst:GetFullName(), "Forge", 1, true) then return end
+		end
 		V2.held[inst]=true
 		R.nValueHooks+=1
 		local ok,value=pcall(function() return (inst :: any).Value end)
@@ -15917,7 +16351,7 @@ local function buildScan()
 		addConn(workspace.DescendantAdded:Connect(function(d)
 			if d:IsA("ProximityPrompt") then R.prompts[d] = true end
 			hookValue(d)
-			if d:IsA("GuiObject") then task.defer(function() if R.rec then consider(d) end end) end
+			if d:IsA("GuiObject") and not settings.forgeOk then task.defer(function() if R.rec then consider(d) end end) end
 		end))
 		local function pname(pr: ProximityPrompt): string
 			local m = pr:FindFirstAncestorOfClass("Model")
@@ -15981,13 +16415,32 @@ local function buildScan()
 			for _, sg in ipairs(playerGui:GetChildren()) do
 				if R.rec then connectVis(sg) end
 			end
+			if settings.forgeOk and R.rec then
+				-- tahap Forge: STATUS awal + TAMPIL/SEMBUNYI tiap kali tahap berganti
+				local function watchStage(ch: Instance)
+					if not (ch:IsA("GuiObject") and string.find(ch.Name, "Minigame", 1, true)) then return end
+					connectVis(ch)
+					addEvent(shown(ch) and "TAMPIL" or "SEMBUNYI", relPath(ch) .. " (status awal)", "forge-awal:" .. ch.Name)
+				end
+				local fg = playerGui:FindFirstChild("Forge")
+				if fg then
+					for _, ch in ipairs(fg:GetChildren()) do watchStage(ch) end
+					addConn(fg.ChildAdded:Connect(function(ch) task.defer(function() if R.rec then watchStage(ch) end end) end))
+				end
+				addConn(playerGui.ChildAdded:Connect(function(ch)
+					if R.rec and ch.Name == "Forge" then
+						for _, c2 in ipairs(ch:GetChildren()) do watchStage(c2) end
+						addConn(ch.ChildAdded:Connect(function(c3) task.defer(function() if R.rec then watchStage(c3) end end) end))
+					end
+				end))
+			end
 		end)
 		task.spawn(function()
 			for _, d in ipairs(workspace:GetDescendants()) do
 				if not R.rec then return end
 				if d:IsA("ProximityPrompt") then R.prompts[d] = true end
 				hookValue(d)
-				if d:IsA("GuiObject") then consider(d) end -- SurfaceGui/BillboardGui minigames in the 3D world
+				if d:IsA("GuiObject") and not settings.forgeOk then consider(d) end -- SurfaceGui/BillboardGui minigames in the 3D world (dilewati di The Forge: isinya papan nama, bukan minigame)
 				maybeYield()
 			end
 		end)
@@ -16123,7 +16576,7 @@ local function buildScan()
 		add("== REKAM MINIGAME: EVIDENCE ==")
 		add("POSE columns: object id | time seconds | centerX | centerY | width | height | Rotation degrees | AbsoluteRotation degrees")
 		add("Rotation/vertical evidence is independent from legacy horizontal marker detection. Zero active marker trials does NOT prove minigame inactive.")
-		add("Bounded detail: 90000 bytes; JSON max depth 7, 100 keys/table, 2500 nodes, 14000 chars/event. Truncation may occur.")
+		add("Bounded detail: " .. tostring(V2.limit) .. " bytes; JSON max depth 7, 100 keys/table, 2500 nodes, 14000 chars/event. Truncation may occur.")
 		add("V2 samples: "..tostring(V2.count).." | detail full: "..tostring(V2.full).." | raw file write: "..tostring(R.fileOk))
 		local v3ok,v3report=pcall(buildV3Analysis,full,CFG.reportMaxChars)
 		if v3ok then add(v3report) else add("V3 analysis unavailable: "..tostring(v3report)) end
