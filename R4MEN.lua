@@ -29,7 +29,7 @@
   * Menambah/menghapus tab: ubah newPage(...) DAN daftar nama di loop sidebar.
   * Urutan LayoutOrder yang dipakai: Settings = Keybind 0-9, Config 20-60 (slot save 30+i),
     Utilitas 200, tombol Matikan Semua 300, Unload 301-302.
-    Mini Game = Auto Minigame universal 0-1, Auto Cut 2, Catur 9-10, Scan 100-106. ESP = ESP Chams -2/-1, NPC 1-2, Item 4-5.
+    Mini Game = Auto Minigame universal 0-1, Auto Cut 2, Catur 9-14, Scan 100-106. ESP = ESP Chams -2/-1, NPC 1-2, Item 4-5.
     Visual = Pencahayaan 0-4, Kamera 5-7.
 
  PETA BAGIAN (judul komentar "-- GUI: ..." di dalam script)
@@ -129,6 +129,7 @@ local settings: { [string]: any } = {
 	toggleKey = Enum.KeyCode.K,
 	miniGameIds = {}, -- opsional: GameId Mushrooming untuk pengecekan paling pasti, mis. { 123456789 }
 	autoMiniGameIds = {}, -- GameId game yang punya Lockpick / Safe Dial. Kartu "Auto Minigame" HANYA muncul di game ini. Isi mis. { 123456789 } (lihat GameId di Scan / print(game.GameId))
+	chessGameIds = {}, -- opsional: GameId game catur (kartu Catur HANYA dibuat di game ini). Selain daftar ini, kartu Catur juga otomatis dibuat bila game punya GUI papan catur (ChessUI / 2DBoard). Di game lain tab Mini Game tidak berisi Catur.
 	saveKey = Enum.KeyCode.LeftBracket,
 	tpKey = Enum.KeyCode.RightBracket,
 	cycleKey = Enum.KeyCode.Quote,
@@ -10871,6 +10872,37 @@ local function buildChess()
 		["110879867494108"] = -4, ["94821738771746"] = -5, ["139566358250123"] = -6,
 	}
 
+	-- [FIX] peta gambar bidak -> jenis disimpan ke file per game, supaya tidak hilang saat pindah server / script dimuat ulang
+	local ciHttp = game:GetService("HttpService")
+	local ciSavedSig = ""
+	local function ciMapFile(): string
+		return "chessmap_" .. tostring(game.GameId) .. ".json"
+	end
+	do
+		local okL, d = pcall(settings.load, ciMapFile())
+		if okL and type(d) == "table" and type(d.map) == "table" then
+			for k, val in pairs(d.map) do
+				if type(k) == "string" and type(val) == "number" then ciMap[k] = val end
+			end
+			if d.c == 1 then ciMap["#c"] = 1 end
+		end
+	end
+	local function ciSaveMap()
+		local keys = {}
+		for k in pairs(ciMap) do keys[#keys + 1] = k end
+		table.sort(keys)
+		local parts = {}
+		for _, k in ipairs(keys) do parts[#parts + 1] = k .. "=" .. tostring(ciMap[k]) end
+		local sig = table.concat(parts, ";")
+		if sig == ciSavedSig then return end
+		ciSavedSig = sig
+		local copy = {}
+		for _, k in ipairs(keys) do
+			if k ~= "#c" then copy[k] = ciMap[k] end
+		end
+		pcall(settings.save, ciMapFile(), ciHttp:JSONEncode({ v = 1, c = ciMap["#c"], map = copy }))
+	end
+
 	local function ciShown(o: Instance): boolean
 		local x: Instance? = o
 		while x and x ~= playerGui do
@@ -10883,56 +10915,96 @@ local function buildChess()
 
 	local function scanChessUI()
 		local g = playerGui:FindFirstChild("ChessUI")
+		-- [FIX] susunan GUI bisa ChessUI.Screen.Root.Board (lama) atau ChessUI.Root.Board (tanpa "Screen")
 		local screen = g and g:FindFirstChild("Screen")
-		local root = screen and screen:FindFirstChild("Root")
+		local root = (screen and screen:FindFirstChild("Root")) or (g and g:FindFirstChild("Root"))
 		local board = root and root:FindFirstChild("Board")
-		local squares = board and board:FindFirstChild("Squares")
 		local pieces = board and board:FindFirstChild("Pieces")
-		if not (g and squares and pieces) then return nil, "nogui" end
-		if not ciShown(squares) then return nil, "nogui" end
+		if not (g and board and pieces) then return nil, "nogui" end
+		if not ciShown(board) then return nil, "nogui" end
 
-		-- 64 kotak -> grid (baris 0 = paling atas layar, kolom 0 = paling kiri layar)
-		local cells = {}
+		-- 64 kotak: folder "Squares" (anak bernama "Cell"), atau folder apa pun di dalam Board yang berisi tepat 64 objek GUI
+		local function collect(parent)
+			local named, all = {}, {}
+			for _, c in ipairs(parent:GetChildren()) do
+				if c:IsA("GuiObject") then
+					all[#all + 1] = c
+					if c.Name == "Cell" then named[#named + 1] = c end
+				end
+			end
+			if #named == 64 then return named end
+			if #all == 64 then return all end
+			return nil
+		end
+		local squares = board:FindFirstChild("Squares")
+		local cells = squares and collect(squares) or nil
+		if not cells then
+			for _, d in ipairs(board:GetDescendants()) do
+				if d ~= pieces and not d:IsDescendantOf(pieces) then
+					local r = collect(d)
+					if r then
+						cells = r
+						break
+					end
+				end
+			end
+		end
+
+		-- grid: k = baris*8 + kolom (baris 0 = paling atas layar, kolom 0 = paling kiri layar) -> titik tengah kotak di layar
 		local minX, minY, size = math.huge, math.huge, 0
-		for _, c in ipairs(squares:GetChildren()) do
-			if c.Name == "Cell" and c:IsA("GuiObject") then
-				cells[#cells + 1] = c
+		local grid = {}
+		if cells then
+			for _, c in ipairs(cells) do
 				minX = math.min(minX, c.AbsolutePosition.X)
 				minY = math.min(minY, c.AbsolutePosition.Y)
 				size = c.AbsoluteSize.X
 			end
-		end
-		if #cells ~= 64 or size < 8 then return nil, "nogui" end
-		local grid = {}
-		for _, c in ipairs(cells) do
-			local col = math.floor((c.AbsolutePosition.X - minX) / size + 0.5)
-			local row = math.floor((c.AbsolutePosition.Y - minY) / size + 0.5)
-			if col < 0 or col > 7 or row < 0 or row > 7 then return nil, "nogui" end
-			local k = row * 8 + col
-			if grid[k] then return nil, "nogui" end
-			grid[k] = c
-		end
-
-		-- arah papan dari label angka "Rank" (8 di baris atas = putih di bawah; 1 di baris atas = hitam di bawah)
-		local flip = nil
-		for k, c in pairs(grid) do
-			local lab = c:FindFirstChild("Rank")
-			local n = lab and lab:IsA("TextLabel") and tonumber(string.match(lab.Text, "%d+"))
-			if n and n >= 1 and n <= 8 then
-				local row = k // 8
-				if n == 8 - row then flip = false elseif n == row + 1 then flip = true end
-				if flip ~= nil then break end
+			if size < 8 then return nil, "nogui" end
+			for _, c in ipairs(cells) do
+				local col = math.floor((c.AbsolutePosition.X - minX) / size + 0.5)
+				local row = math.floor((c.AbsolutePosition.Y - minY) / size + 0.5)
+				if col < 0 or col > 7 or row < 0 or row > 7 then return nil, "nogui" end
+				local k = row * 8 + col
+				if grid[k] then return nil, "nogui" end
+				grid[k] = c.AbsolutePosition + c.AbsoluteSize / 2
+			end
+		else
+			-- [FIX] tidak ada kotak terpisah: papan dibagi 8x8 sama besar
+			local bp, bsz = board.AbsolutePosition, board.AbsoluteSize
+			size = math.min(bsz.X, bsz.Y) / 8
+			if size < 8 then return nil, "nogui" end
+			minX, minY = bp.X, bp.Y
+			for row = 0, 7 do
+				for col = 0, 7 do
+					grid[row * 8 + col] = Vector2.new(minX + (col + 0.5) * size, minY + (row + 0.5) * size)
+				end
 			end
 		end
-		if flip == nil then flip = ciFlip or false end
+
+		-- arah papan dari label angka 1-8 di dalam Board (nama label bebas, dihitung dari posisinya di layar)
+		-- 8 di baris atas = putih di bawah; 1 di baris atas = hitam di bawah
+		local vf, vt = 0, 0
+		for _, d in ipairs(board:GetDescendants()) do
+			if d:IsA("TextLabel") and not d:IsDescendantOf(pieces) then
+				local n = tonumber(string.match(d.Text, "^%s*([1-8])%s*$"))
+				if n then
+					local row = math.floor((d.AbsolutePosition.Y + d.AbsoluteSize.Y / 2 - minY) / size)
+					if row >= 0 and row <= 7 then
+						if n == 8 - row then vf += 1 elseif n == row + 1 then vt += 1 end
+					end
+				end
+			end
+		end
+		local flip
+		if vf > vt then flip = false elseif vt > vf then flip = true else flip = ciFlip or false end
 		ciFlip = flip
 
 		local cen = {}
-		for k, c in pairs(grid) do
+		for k, pos in pairs(grid) do
 			local row, col = k // 8, k % 8
 			local f, r
 			if flip then f, r = 8 - col, row + 1 else f, r = col + 1, 8 - row end
-			cen[(r - 1) * 8 + f] = c.AbsolutePosition + c.AbsoluteSize / 2
+			cen[(r - 1) * 8 + f] = pos
 		end
 
 		-- bidak -> kotak grid terdekat
@@ -10940,16 +11012,18 @@ local function buildChess()
 		for _, p in ipairs(pieces:GetChildren()) do
 			if (p:IsA("ImageLabel") or p:IsA("ImageButton")) and p.Visible then
 				local img = string.match(p.Image, "%d+") or p.Image
+				local c3 = p.ImageColor3
+				local imgc = img .. "|" .. math.floor(c3.R * 255 + 0.5) .. "," .. math.floor(c3.G * 255 + 0.5) .. "," .. math.floor(c3.B * 255 + 0.5)
 				local pc = p.AbsolutePosition + p.AbsoluteSize / 2
 				local best, bd = nil, math.huge
 				for k, c in pairs(grid) do
-					local d = (c.AbsolutePosition + c.AbsoluteSize / 2 - pc).Magnitude
+					local d = (c - pc).Magnitude
 					if d < bd then best, bd = k, d end
 				end
 				if bd <= size * 0.3 then
 					if occ[best] then return nil, "dup" end -- dua bidak di satu kotak = animasi tangkap
 					occ[best] = true
-					list[#list + 1] = { img = img, k = best }
+					list[#list + 1] = { img = img, imgc = imgc, k = best }
 				elseif bd <= size * 0.75 then
 					return nil, "anim" -- bidak sedang meluncur
 				end -- lebih jauh dari itu: bidak di luar papan (tertangkap), diabaikan
@@ -10957,34 +11031,53 @@ local function buildChess()
 		end
 		if #list < 2 then return nil, "nogui" end
 
-		-- posisi awal penuh (32 bidak di baris 0,1,6,7): pelajari pemetaan gambar -> jenis & warna
+		-- posisi awal penuh (32 bidak): pelajari pemetaan gambar -> jenis & warna
+		-- [FIX] kalau putih & hitam memakai gambar yang sama (hanya beda warna), pelajari dengan kunci gambar+warna
 		if #list == 32 then
-			local at = {}
-			for _, it in ipairs(list) do at[it.k] = it.img end
+			local at, atc = {}, {}
+			for _, it in ipairs(list) do
+				at[it.k] = it.img
+				atc[it.k] = it.imgc
+			end
 			local types = flip and { 4, 2, 3, 6, 5, 3, 2, 4 } or { 4, 2, 3, 5, 6, 3, 2, 4 }
 			local bs = flip and -1 or 1 -- tanda warna bidak di sisi bawah layar
-			local learned, ok = {}, true
-			local function put(img: string?, code: number)
-				if not img then ok = false return end
-				if learned[img] and learned[img] ~= code then ok = false end
-				learned[img] = code
+			local function learn(src)
+				local learned, ok = {}, true
+				local function put(key, code)
+					if not key then ok = false return end
+					if learned[key] and learned[key] ~= code then ok = false end
+					learned[key] = code
+				end
+				for col = 0, 7 do
+					put(src[7 * 8 + col], bs * types[col + 1])
+					put(src[0 * 8 + col], -bs * types[col + 1])
+					put(src[6 * 8 + col], bs)
+					put(src[1 * 8 + col], -bs)
+				end
+				if ok then return learned end
+				return nil
 			end
-			for col = 0, 7 do
-				put(at[7 * 8 + col], bs * types[col + 1])
-				put(at[0 * 8 + col], -bs * types[col + 1])
-				put(at[6 * 8 + col], bs)
-				put(at[1 * 8 + col], -bs)
+			local L = learn(at)
+			if L then
+				ciMap["#c"] = nil
+				for key, code in pairs(L) do ciMap[key] = code end
+			else
+				L = learn(atc)
+				if L then
+					ciMap["#c"] = 1
+					for key, code in pairs(L) do ciMap[key] = code end
+				end
 			end
-			if ok then
-				for img, code in pairs(learned) do ciMap[img] = code end
-			end
+			if L then ciSaveMap() end
 		end
 
+		local useC = ciMap["#c"] == 1
 		local b = {}
 		for i = 1, 64 do b[i] = 0 end
 		local kw, kb = 0, 0
 		for _, it in ipairs(list) do
-			local code = ciMap[it.img] or CI_SEED[it.img]
+			local code
+			if useC then code = ciMap[it.imgc] else code = ciMap[it.img] or CI_SEED[it.img] end
 			if not code then return nil, "anim" end -- gambar bidak belum dikenal
 			local row, col = it.k // 8, it.k % 8
 			local f, r
@@ -11618,8 +11711,17 @@ local function buildChess()
 				clearAll()
 				setDesc("Papan catur tidak terlihat. Buka game catur dulu.")
 			end
+			-- [FIX] papan terbaca tapi bidak tidak dikenal > 4 detik: beri tahu di deskripsi (sebelumnya diam saja)
+			if info == "anim" and not A.pos then
+				A.animSince = A.animSince or os.clock()
+				if os.clock() - A.animSince > 4 and not A.animWarned then
+					A.animWarned = true
+					setDesc("Papan terbaca tapi gambar bidak belum dikenal. Mulai dari posisi awal partai (32 bidak), atau tekan Scan Papan Catur.")
+				end
+			end
 			return
 		end
+		A.animSince, A.animWarned = nil, nil
 		local key = table.concat(b, ",")
 		if key == A.stableKey then
 			A.stableN += 1
@@ -11691,6 +11793,329 @@ local function buildChess()
 		if on and A.pos and A.hint and A.pos.turn == A.mine then planNext(A.sid, A.pos, A.hint) end
 	end
 
+	-- ---------- SCAN PAPAN CATUR: diagnostik 1 tombol, hasil otomatis disalin ke clipboard + disimpan ke file ----------
+	do
+		local OWN: { [string]: boolean } = {
+			UniversalUrbee = true, ControlPanel = true, UU_ITEMS = true, UU_NPC = true,
+			UU_RARITY = true, UU_ZONE = true, UU_CHESS = true,
+		}
+		local ENVX: any = _G
+		do
+			local okG, e = pcall(function() return (getgenv :: any)() end)
+			if okG and type(e) == "table" then ENVX = e end
+		end
+		local clipFn: any = ENVX.setclipboard or ENVX.toclipboard
+
+		local function chessReport(): string
+			local H: { string } = {}
+			local L: { string } = {}
+			local verdict: { string } = {}
+			local function add(s: string) L[#L + 1] = s end
+			local function v(s: string) verdict[#verdict + 1] = s end
+			local function rel(o: Instance): string
+				return (string.gsub(o:GetFullName(), "^Players%.[^%.]+%.PlayerGui%.", ""))
+			end
+
+			local has2D = playerGui:FindFirstChild("2DBoard") ~= nil
+			local hasCUI = playerGui:FindFirstChild("ChessUI") ~= nil
+
+			-- 1) daftar ScreenGui game
+			add("## ScreenGui di PlayerGui (selain UI script)")
+			for _, g in ipairs(playerGui:GetChildren()) do
+				if g:IsA("ScreenGui") and not OWN[g.Name] then
+					add(string.format("%s | Enabled=%s | isi=%d", g.Name, tostring(g.Enabled), #g:GetDescendants()))
+				end
+			end
+
+			-- 2) hasil baca script
+			add("")
+			add("## HASIL BACA SCRIPT")
+			local okS, b, info = pcall(scan)
+			local scanOk, failReason = false, nil
+			if not okS then
+				add("scan() ERROR: " .. tostring(b))
+				v("scan() melempar error (lihat baris 'scan() ERROR').")
+			elseif b then
+				scanOk = true
+				local sym = { [1] = "P", [2] = "N", [3] = "B", [4] = "R", [5] = "Q", [6] = "K" }
+				for r = 8, 1, -1 do
+					local row = {}
+					for f = 1, 8 do
+						local c = b[(r - 1) * 8 + f]
+						if c == 0 then
+							row[#row + 1] = "."
+						elseif c > 0 then
+							row[#row + 1] = sym[c] or "?"
+						else
+							row[#row + 1] = string.lower(sym[-c] or "?")
+						end
+					end
+					add(r .. "  " .. table.concat(row, " "))
+				end
+				add("   a b c d e f g h   (huruf besar = putih, kecil = hitam)")
+				add(string.format("ukuran kotak: %.1f px", info.size))
+			else
+				failReason = tostring(info)
+				add("scan() GAGAL, alasan: " .. failReason .. "  (nogui = papan tidak ketemu | anim = bidak bergerak atau gambar bidak belum dikenal | dup = dua bidak di satu kotak)")
+			end
+			add(string.format("fitur Catur: %s | Double Move: %s | Stockfish Online: %s | state script: pos=%s hint=%s",
+				tostring(state.chess == true), tostring(state.chessDouble == true), tostring(state.chessApi == true),
+				A.pos and "ada" or "belum", A.hint and "ada" or "belum"))
+
+			-- 3) detail ChessUI
+			local cui = playerGui:FindFirstChild("ChessUI")
+			if cui then
+				add("")
+				add("## ChessUI")
+				local screen = cui:FindFirstChild("Screen")
+				local root = (screen and screen:FindFirstChild("Root")) or cui:FindFirstChild("Root")
+				local board = root and root:FindFirstChild("Board")
+				local pieces = board and board:FindFirstChild("Pieces")
+				add("papan: " .. (board and rel(board) or "TIDAK KETEMU (jalur ChessUI.Root.Board / ChessUI.Screen.Root.Board tidak ada)"))
+				if not board then v("ChessUI ada, tapi Board tidak ditemukan di jalur yang dikenal script.") end
+				if board then
+					local sq = board:FindFirstChild("Squares")
+					if sq then
+						local nc, nn = 0, 0
+						for _, c in ipairs(sq:GetChildren()) do
+							nc += 1
+							if c.Name == "Cell" then nn += 1 end
+						end
+						add(string.format("Squares: anak=%d, bernama Cell=%d", nc, nn))
+					else
+						add("Squares: tidak ada (script membagi papan 8x8 dari ukuran Board)")
+					end
+					local nd, sample = 0, {}
+					for _, d in ipairs(board:GetDescendants()) do
+						if d:IsA("TextLabel") and not (pieces and d:IsDescendantOf(pieces)) and string.match(d.Text, "^%s*[1-8]%s*$") then
+							nd += 1
+							if #sample < 3 then sample[#sample + 1] = rel(d) .. "=" .. d.Text end
+						end
+					end
+					add(string.format("label angka 1-8 di papan: %d  %s", nd, table.concat(sample, "; ")))
+				end
+				if pieces then
+					local ids: { [string]: any } = {}
+					local order: { string } = {}
+					local total, vis, other = 0, 0, {}
+					for _, p in ipairs(pieces:GetChildren()) do
+						if p:IsA("ImageLabel") or p:IsA("ImageButton") then
+							total += 1
+							if p.Visible then vis += 1 end
+							local img = string.match(p.Image, "%d+") or p.Image
+							local c3 = p.ImageColor3
+							local cs = math.floor(c3.R * 255 + 0.5) .. "," .. math.floor(c3.G * 255 + 0.5) .. "," .. math.floor(c3.B * 255 + 0.5)
+							local e = ids[img]
+							if not e then
+								e = { n = 0, cols = {}, nc = 0 }
+								ids[img] = e
+								order[#order + 1] = img
+							end
+							e.n += 1
+							if not e.cols[cs] then
+								e.cols[cs] = true
+								e.nc += 1
+							end
+						else
+							other[#other + 1] = p.ClassName .. " " .. p.Name
+						end
+					end
+					add(string.format("Pieces: %s | gambar=%d (tampil=%d) | id gambar berbeda=%d (normal: 12)", rel(pieces), total, vis, #order))
+					if #other > 0 then add("anak non-gambar di Pieces: " .. table.concat(other, ", ")) end
+					local useC = ciMap["#c"] == 1
+					local unknown = 0
+					for _, img in ipairs(order) do
+						local e = ids[img]
+						local codeTxt
+						if useC then
+							local parts = {}
+							for cs in pairs(e.cols) do
+								local cd = ciMap[img .. "|" .. cs]
+								if not cd then unknown += 1 end
+								parts[#parts + 1] = cs .. "=" .. (cd and tostring(cd) or "BELUM")
+							end
+							codeTxt = table.concat(parts, " ")
+						else
+							local cd = ciMap[img] or CI_SEED[img]
+							if not cd then unknown += 1 end
+							codeTxt = cd and tostring(cd) or "BELUM"
+						end
+						add(string.format("  id %s x%d | warna berbeda=%d | kode dikenal: %s", img, e.n, e.nc, codeTxt))
+					end
+					local nMap = 0
+					for k in pairs(ciMap) do
+						if k ~= "#c" then nMap += 1 end
+					end
+					add("peta gambar tersimpan: " .. nMap .. " entri (file " .. ciMapFile() .. ")")
+					add(string.format("mode warna gambar: %s | arah papan terakhir: %s", useC and "ya" or "tidak",
+						ciFlip == nil and "belum dibaca" or (ciFlip and "hitam di bawah" or "putih di bawah")))
+					if unknown > 0 then
+						v(string.format("%d id gambar bidak BELUM dikenal. Mulai script di posisi awal partai (32 bidak lengkap) supaya dipelajari otomatis, lalu scan lagi.", unknown))
+					end
+					if total ~= 32 then
+						v("jumlah gambar di Pieces = " .. total .. " (bukan 32): bukan posisi awal, ada bidak tertangkap, atau ada objek tambahan dari skin.")
+					end
+					if #order == 6 then
+						v("hanya 6 id gambar berbeda: putih & hitam kemungkinan satu gambar yang diberi warna berbeda.")
+					end
+				elseif board then
+					v("Board ada, tapi folder Pieces tidak ditemukan.")
+				end
+			end
+
+			-- 4) detail 2DBoard
+			local old = playerGui:FindFirstChild("2DBoard")
+			if old then
+				add("")
+				add("## 2DBoard")
+				local main = old:FindFirstChild("Main")
+				local pcs = main and main:FindFirstChild("Pieces")
+				local brd = main and main:FindFirstChild("Board")
+				if not (pcs and brd) then
+					add("Main.Pieces / Main.Board tidak lengkap")
+					v("2DBoard ada tapi Main.Board / Main.Pieces tidak ditemukan.")
+				else
+					local nameCnt, names, bad = {}, {}, {}
+					for _, p in ipairs(pcs:GetChildren()) do
+						if p:IsA("GuiObject") then
+							local col, typ = string.match(p.Name, "^(%a+)_(%a+)$")
+							if col and typ then
+								if not nameCnt[p.Name] then
+									nameCnt[p.Name] = 0
+									names[#names + 1] = p.Name
+								end
+								nameCnt[p.Name] += 1
+							else
+								bad[#bad + 1] = p.ClassName .. " " .. p.Name
+							end
+						end
+					end
+					table.sort(names)
+					local parts = {}
+					for _, nm in ipairs(names) do parts[#parts + 1] = nm .. "x" .. nameCnt[nm] end
+					add("bidak (nama x jumlah): " .. table.concat(parts, ", "))
+					if #bad > 0 then add("objek dengan nama tidak dikenal: " .. table.concat(bad, ", ")) end
+					local cells = 0
+					for _, c in ipairs(brd:GetChildren()) do
+						if string.match(c.Name, "^[a-h][1-8]$") then cells += 1 end
+					end
+					add(string.format("kotak a1..h8 di Board: %d (harus 64)", cells))
+					if cells ~= 64 then v("2DBoard: kotak a1..h8 tidak lengkap (" .. cells .. " dari 64).") end
+				end
+			end
+
+			-- 5) kandidat papan (untuk game dengan susunan lain)
+			add("")
+			add("## KANDIDAT PAPAN (folder dengan 64 anak, atau 20-40 gambar)")
+			local seen, nCand = {}, 0
+			for _, g in ipairs(playerGui:GetChildren()) do
+				if g:IsA("ScreenGui") and not OWN[g.Name] then
+					for _, o in ipairs(g:GetDescendants()) do
+						local p = o.Parent
+						if p and not seen[p] and nCand < 12 then
+							seen[p] = true
+							local total, nimg = 0, 0
+							for _, c in ipairs(p:GetChildren()) do
+								total += 1
+								if c:IsA("ImageLabel") or c:IsA("ImageButton") then nimg += 1 end
+							end
+							if total == 64 or (nimg >= 20 and nimg <= 40) then
+								nCand += 1
+								add(string.format("%s | anak=%d | gambar=%d", rel(p), total, nimg))
+								local k = 0
+								for _, c in ipairs(p:GetChildren()) do
+									k += 1
+									if k > 3 then break end
+									local img = (c:IsA("ImageLabel") or c:IsA("ImageButton")) and c.Image or ""
+									add("     " .. c.ClassName .. " " .. c.Name .. " " .. img)
+								end
+							end
+						end
+					end
+				end
+			end
+			if nCand == 0 then add("(tidak ada)") end
+
+			-- ringkasan di atas
+			if not (has2D or hasCUI) then
+				v("Tidak ada ChessUI maupun 2DBoard: game ini memakai susunan GUI lain (lihat KANDIDAT PAPAN).")
+			end
+			if failReason == "nogui" and (has2D or hasCUI) and #verdict == 0 then
+				v("Papan ditemukan tapi script gagal membacanya (nogui): kirim hasil ini apa adanya.")
+			end
+			if failReason == "dup" then v("dua bidak terbaca di satu kotak: coba scan lagi saat tidak ada animasi.") end
+			if failReason == "anim" and #verdict == 0 then
+				v("bidak sedang bergerak, atau gambar bidak belum dikenal. Coba scan lagi saat papan diam.")
+			end
+			if scanOk then table.insert(verdict, 1, "OK: papan terbaca script (papan ada di bawah).") end
+
+			H[#H + 1] = "== SCAN PAPAN CATUR =="
+			H[#H + 1] = string.format("GameId=%s PlaceId=%s | %s", tostring(game.GameId), tostring(game.PlaceId), os.date("%Y-%m-%d %H:%M:%S"))
+			H[#H + 1] = "ChessUI: " .. tostring(hasCUI) .. " | 2DBoard: " .. tostring(has2D) .. " | clipboard executor: " .. (clipFn and "ada" or "TIDAK ADA")
+			H[#H + 1] = "DIAGNOSIS:"
+			for _, s in ipairs(verdict) do H[#H + 1] = " - " .. s end
+			H[#H + 1] = ""
+			return table.concat(H, "\n") .. "\n" .. table.concat(L, "\n")
+		end
+
+		local sCard = makeCard(page, 156, 14)
+		text(sCard, {
+			Text = "Scan Papan Catur",
+			Font = Enum.Font.GothamBold,
+			TextSize = 14,
+			Position = UDim2.fromOffset(14, 10),
+			Size = UDim2.new(1, -28, 0, 18),
+		})
+		text(sCard, {
+			Text = "Diagnostik papan catur game ini (susunan GUI + hasil bacaan script). Hasil otomatis disalin ke clipboard dan disimpan ke file, tinggal tempel ke Claude.",
+			TextSize = 11,
+			TextColor3 = T.sub,
+			TextWrapped = true,
+			TextYAlignment = Enum.TextYAlignment.Top,
+			Position = UDim2.fromOffset(14, 30),
+			Size = UDim2.new(1, -28, 0, 42),
+		})
+		local sBtn = makeButton(sCard, 0, "🔎 SCAN PAPAN CATUR", T.accent, 30)
+		sBtn.Position = UDim2.fromOffset(14, 78)
+		sBtn.Size = UDim2.new(1, -28, 0, 30)
+		local sStatus = text(sCard, {
+			Text = "Belum ada hasil.",
+			TextSize = 10,
+			TextColor3 = T.sub,
+			TextWrapped = true,
+			TextYAlignment = Enum.TextYAlignment.Top,
+			Position = UDim2.fromOffset(14, 114),
+			Size = UDim2.new(1, -28, 0, 34),
+		})
+
+		local scanBusy = false
+		sBtn.MouseButton1Click:Connect(function()
+			if scanBusy or unloaded then return end
+			scanBusy = true
+			sBtn.Text = "⏳ Memindai..."
+			task.spawn(function()
+				local ok, rep = pcall(chessReport)
+				if unloaded then return end
+				if ok and type(rep) == "string" then
+					settings.chessScanReport = rep
+					local saved = settings.save("catur_scan_" .. tostring(game.GameId) .. ".txt", rep)
+					local copied = false
+					if clipFn then copied = (pcall(clipFn, rep)) end
+					local first = string.match(rep, "DIAGNOSIS:\n %- ([^\n]+)") or ""
+					sStatus.Text = (copied and "Disalin ke clipboard" or "TIDAK bisa menyalin") .. (saved and " + tersimpan ke file. " or ". ") .. first
+					sStatus.TextColor3 = copied and T.good or T.danger
+					toast(copied and "Hasil scan catur disalin" or "Scan selesai, tapi tidak bisa menyalin")
+				else
+					sStatus.Text = "Scan error: " .. tostring(rep)
+					sStatus.TextColor3 = T.danger
+					warn("[Catur] scan: " .. tostring(rep))
+				end
+				sBtn.Text = "🔎 SCAN PAPAN CATUR"
+				scanBusy = false
+			end)
+		end)
+	end
+
 	local acc = 0
 	track(RunService.Heartbeat:Connect(function(dt: number)
 		if unloaded then return end
@@ -11710,7 +12135,28 @@ local function buildChess()
 	end))
 end
 
-buildChess()
+do
+	-- Catur hanya dibuat di game catur (GameId ada di settings.chessGameIds ATAU PlayerGui punya ChessUI / 2DBoard).
+	-- Di game lain tab Mini Game bersih dari kartu Catur. Kalau papan baru muncul belakangan, kartu dibuat saat itu.
+	local function hasChessGui(): boolean
+		return playerGui:FindFirstChild("ChessUI") ~= nil or playerGui:FindFirstChild("2DBoard") ~= nil
+	end
+	if table.find(settings.chessGameIds, game.GameId) or hasChessGui() then
+		buildChess()
+	else
+		local built = false
+		local conn: RBXScriptConnection
+		conn = playerGui.ChildAdded:Connect(function(ch: Instance)
+			if built or unloaded then return end
+			if ch.Name == "ChessUI" or ch.Name == "2DBoard" then
+				built = true
+				conn:Disconnect()
+				task.defer(buildChess)
+			end
+		end)
+		track(conn)
+	end
+end
 end
 
 -- =====================================================
@@ -13751,10 +14197,13 @@ local function buildScan()
 	allBtn.MouseButton1Click:Connect(function()
 		if R.rec then setFeature("scanRec", false) end
 		local m = miniText()
-		if RARITY.report == "" and not m then toast("Belum ada hasil untuk disalin") return end
+		local chessRep = settings.chessScanReport
+		if type(chessRep) ~= "string" or chessRep == "" then chessRep = nil end
+		if RARITY.report == "" and not m and not chessRep then toast("Belum ada hasil untuk disalin") return end
 		local parts = {}
 		if RARITY.report ~= "" then parts[#parts + 1] = RARITY.report end
 		if m then parts[#parts + 1] = m end
+		if chessRep then parts[#parts + 1] = chessRep end
 		local all = table.concat(parts, "\n\n")
 		saveFile("semua_" .. tostring(game.GameId) .. ".txt", all)
 		doCopy(all, "Semua hasil")
