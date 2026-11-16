@@ -8,7 +8,7 @@
  kurung siku) di komentar atau kode apa pun di dalam SRC: itu memotong script.
  Cari bagian dengan pencarian teks (nomor baris cepat usang), pakai judul di bawah.
 
- SUSUNAN TAB (7 tab, urutan sidebar = daftar di  for i, name in ipairs({...})
+ SUSUNAN TAB (9 tab, urutan sidebar = daftar di  for i, name in ipairs({...})
  tepat di bawah "GUI: SIDEBAR TAB & HALAMAN"):
 
   1. Movement : Speed, Jump Power, Infinite Jump, Follow Player (+ slider Jarak Berhenti)
@@ -17,7 +17,9 @@
   4. ESP      : ESP Chams (pemain)  ->  ESP NPC / Hewan  ->  Loot & Item ESP (+ pop-up Pin)
   5. Teleport : TP ke Pemain (daftar pemain), Waypoint, Pindah Server (Hop)
   6. Mini Game: Auto Cut (Mushrooming) / Auto Minigame universal -> Catur -> Scan Rarity -> Rekam Minigame + Auto Minigame -> Hasil
-  7. Settings : Keybind, Ukuran Panel, Config (simpan/muat + toggle pop-up Pin/Daerah),
+  7. Mining   : Auto Mine, Attack Sambil Mining, Auto Mob, Auto Reroll Race (toggle di atas) -> Target Batu -> Target Mob -> Race yang Dicari -> Posisi & Gerak (Mode Pelan / TP via meriam, posisi meriam per map)
+  8. Debug    : Scan data game, Remote Logger, Perekam Efek Batu (blok "FORGE", dipindah dari script The Forge)
+  9. Settings : Keybind, Ukuran Panel, Config (simpan/muat + toggle pop-up Pin/Daerah),
                 Utilitas (Anti-AFK), Matikan Semua Fitur, Unload
 
  CARA MEMINDAHKAN FITUR KE TAB LAIN
@@ -30,7 +32,7 @@
   * Urutan LayoutOrder yang dipakai: Settings = Keybind 0-9, Config 20-60 (slot save 30+i),
     Utilitas 200, tombol Matikan Semua 300, Unload 301-302.
     Mini Game = Auto Minigame universal 0-1, Auto Cut 2, Catur 9-14, Scan 100-106. ESP = ESP Chams -2/-1, NPC 1-2, Item 4-5.
-    Visual = Pencahayaan 0-4, Kamera 5-7.
+    Visual = Pencahayaan 0-4, Kamera 5-7. Mining = toggle auto 0-4, Target Batu 10-12, Target Mob 20-22, Race 30-31, Posisi & Gerak 40-45. Debug = 0-11.
 
  PETA BAGIAN (judul komentar "-- GUI: ..." di dalam script)
   AUTO-RERUN        : antre queue_on_teleport supaya script jalan lagi setelah pindah server
@@ -42,7 +44,7 @@
   GRIP RESIZE, KOMPONEN (makeCard, addToggleCard, addSliderCard, makeButton)
   HALAMAN MOVEMENT & PHYSICS (+ FOLLOW PLAYER), HALAMAN VISUAL, ESP NPC / HEWAN,
   HALAMAN TELEPORT & ITEM DETECTOR, DATA RARITY, ITEM ESP (runScanner, pop-up Pin, SERVER HOP),
-  waypoint UI, HALAMAN SETTINGS (keybind, ukuran, Anti-AFK), CONFIG, HALAMAN MINI GAME (Auto Cut + Auto Minigame universal), GUI: CATUR (jendela catur + AI + saran langkah),
+  FORGE (tab Mining + Debug), waypoint UI, HALAMAN SETTINGS (keybind, ukuran, Anti-AFK), CONFIG, HALAMAN MINI GAME (Auto Cut + Auto Minigame universal), GUI: CATUR (jendela catur + AI + saran langkah),
   PENYIMPANAN FILE LOKAL, TAB SCAN (Rekam Minigame: capture/classifier/pattern evidence), KEYBIND, LABEL DAERAH, UNLOAD, START.
 
  ATURAN PENTING
@@ -144,6 +146,19 @@ settings.autoMiniOk = table.find(settings.autoMiniGameIds, game.GameId) ~= nil -
 settings.miniGameOk = table.find(settings.miniGameIds, game.GameId) ~= nil
 	or (ReplicatedStorage:FindFirstChild("WorldConfig", true) ~= nil
 		and ReplicatedStorage:FindFirstChild("RootData", true) ~= nil)
+
+-- Fitur The Forge (tab Mining + Debug) HANYA aktif di game The Forge.
+-- Isi forgeGameIds dengan GameId The Forge (lihat baris "GameId: ..." di scan, atau print(game.GameId)), mis. { 123456789 }.
+-- Kalau dibiarkan kosong, game dikenali otomatis lewat service khas The Forge (ToolService + RaceService di ReplicatedStorage.Shared).
+settings.forgeGameIds = { 7671049560 } -- GameId The Forge (hasil Scan Rarity; berlaku untuk semua pulau/place di dalam game ini)
+settings.forgeOk = table.find(settings.forgeGameIds, game.GameId) ~= nil
+if not settings.forgeOk and #settings.forgeGameIds == 0 then
+	local okForge, foundForge = pcall(function()
+		local shared = ReplicatedStorage:FindFirstChild("Shared")
+		return shared ~= nil and shared:FindFirstChild("ToolService", true) ~= nil and shared:FindFirstChild("RaceService", true) ~= nil
+	end)
+	settings.forgeOk = okForge and foundForge == true
+end
 
 -- =====================================================
 -- PENYIMPANAN TERPUSAT (path seragam, cadangan .bak, flush paksa)
@@ -780,6 +795,7 @@ local function disableAllFeatures()
 	ext.fov(false)
 	clearMarkings()
 	if effects.scanRec then pcall(effects.scanRec, false) end
+	if settings.forgeDisable then pcall(settings.forgeDisable) end -- Forge: hentikan logger & perekam
 	refreshActive()
 end
 
@@ -2010,11 +2026,14 @@ local movementPage = newPage("Movement")
 local physicsPage = newPage("Physics")
 local teleportPage = newPage("Teleport")
 newPage("Mini Game") -- halaman Mini Game (Auto Cut + Scan Rarity + Rekam Minigame); diisi blok GUI Mini Game & blok TAB SCAN
+newPage("Mining") -- Forge: Auto Mine / Auto Mob / Auto Reroll Race (diisi blok FORGE)
+newPage("Debug") -- Forge: scan data game + Remote Logger (diisi blok FORGE)
 newPage("ESP") -- halaman ESP sendiri (ESP NPC/Hewan + Loot & Item ESP); diakses lewat pages.ESP
 local settingsPage = newPage("Settings")
 local configPage = settingsPage -- Config tidak punya tab sendiri: kontennya ada di tab Settings (bagian "Config")
 
-for i, name in ipairs({ "Movement", "Physics", "Visual", "ESP", "Teleport", "Mini Game", "Settings" }) do
+for i, name in ipairs({ "Movement", "Physics", "Visual", "ESP", "Teleport", "Mini Game", "Mining", "Debug", "Settings" }) do
+	if (name == "Mining" or name == "Debug") and not settings.forgeOk then continue end   -- tab Forge hanya di game The Forge
 	local b = new("TextButton", {
 		LayoutOrder = i,
 		Size = UDim2.new(1, 0, 0, 38),
@@ -12160,6 +12179,2572 @@ end
 end
 
 -- =====================================================
+-- FORGE: MINING / AUTO MOB / AUTO REROLL RACE / DEBUG
+-- Dipindahkan dari script The Forge. Membuat 2 tab: "Mining" (toggle auto di atas, setelan custom di bawah)
+-- dan "Debug" (scan data game, Remote Logger, perekam efek batu).
+-- Dibungkus fungsi sendiri supaya variabel lokalnya TIDAK menambah jatah 200 local chunk utama.
+-- Data khusus (filter batu/mob/ore per map, mode gerak, posisi meriam per map, target race) disimpan
+-- di file forge_<GameId>.json lewat settings.save / settings.flushers; slider ikut tersimpan di settings.json.
+-- =====================================================
+;(function()
+if not settings.forgeOk then return end   -- bukan game The Forge: lewati seluruh blok fitur Forge
+local HttpService = game:GetService("HttpService")
+
+-- Adaptor: toggle di script ini memakai effects[key](on), bukan callback onChange
+local baseAddToggleCard = addToggleCard
+local function addToggleCard(page: Instance, order: number, title: string, desc: string, key: string, onChange: ((boolean) -> ())?)
+	state[key] = state[key] or false
+	effects[key] = onChange or function() end
+	return baseAddToggleCard(page, order, title, desc, key)
+end
+
+-- Penyimpanan data Forge
+local FORGE_FILE = "forge_" .. tostring(game.GameId) .. ".json"
+local SAVED: { [string]: any } = (settings.load and settings.load(FORGE_FILE)) or {}
+local saveReady = false
+local saveExtra: () -> { [string]: any } = function() return {} end
+local forgeSaveToken = 0
+local function writeForge()
+	local ok, enc = pcall(function() return HttpService:JSONEncode(saveExtra()) end)
+	if ok and type(enc) == "string" then pcall(settings.save, FORGE_FILE, enc) end
+end
+local function saveSoon()
+	if not saveReady then return end
+	forgeSaveToken += 1
+	local id = forgeSaveToken
+	task.delay(0.8, function()
+		if id ~= forgeSaveToken or unloaded then return end
+		writeForge()
+	end)
+end
+settings.flushers.forge = function()
+	if saveReady then writeForge() end
+end
+
+-- Kartu input teks + tombol aksi (contoh: "TP to Player")
+local function addInputCard(page: Instance, order: number, title: string, placeholder: string, btnText: string, onSubmit: (string) -> ())
+	local card = makeCard(page, 76, order)
+	text(card, {
+		Text = title,
+		Font = Enum.Font.GothamBold,
+		TextSize = 14,
+		Position = UDim2.fromOffset(14, 10),
+		Size = UDim2.new(1, -84, 0, 18),
+	})
+
+	local input = new("TextBox", {
+		Position = UDim2.fromOffset(14, 34),
+		Size = UDim2.new(1, -114, 0, 30),
+		BackgroundColor3 = T.bg,
+		Text = "",
+		PlaceholderText = placeholder,
+		PlaceholderColor3 = T.sub,
+		TextColor3 = T.text,
+		Font = Enum.Font.GothamMedium,
+		TextSize = 12,
+		ClearTextOnFocus = false,
+		BorderSizePixel = 0,
+	}, card)
+	round(input, 8)
+	stroke(input, T.stroke, 1, 0.3)
+
+	local btn = new("TextButton", {
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -14, 0, 49),
+		Size = UDim2.fromOffset(80, 30),
+		BackgroundColor3 = T.accent2,
+		Text = btnText,
+		TextColor3 = WHITE,
+		Font = Enum.Font.GothamBold,
+		TextSize = 13,
+		AutoButtonColor = false,
+	}, card)
+	round(btn, 8)
+	hover(btn, T.accent2)
+
+	btn.MouseButton1Click:Connect(function()
+		local q = string.match(input.Text, "^%s*(.-)%s*$") or ""
+		onSubmit(q)
+	end)
+
+	return input
+end
+
+-- =====================================================
+-- DROPDOWN MENGAMBANG
+-- Daftar pilihan muncul sebagai popup di atas konten (tidak memanjangkan kartu),
+-- ditutup lewat klik di luar popup, pilih item, ganti tab, atau saat panel disembunyikan.
+-- =====================================================
+local addDropdownCard: any
+do
+	local DD_ROW, DD_MAXROWS = 28, 6
+	local DD_CARD_H = 72
+
+	-- penangkap klik di belakang popup: klik di luar popup = tutup
+	local ddCatcher = new("TextButton", {
+		Name = "DropdownCatcher",
+		Size = UDim2.fromScale(1, 1),
+		BackgroundTransparency = 1,
+		Text = "",
+		AutoButtonColor = false,
+		Visible = false,
+		ZIndex = 40,
+	}, main)
+
+	local ddOpen: any = nil
+	local function closeDropdown()
+		local d = ddOpen
+		if d then d.close() end
+	end
+	ddCatcher.MouseButton1Click:Connect(closeDropdown)
+	track(main:GetPropertyChangedSignal("Visible"):Connect(function()
+		if not main.Visible then closeDropdown() end
+	end))
+
+	-- Satu dropdown (judul + tombol pilihan) di dalam `slot`.
+	-- spec = {
+	--   title, options = { {id=..., label=...}, ... },
+	--   Mode satu pilihan : defaultId, onSelect(id, label)
+	--   Mode multi-pilih  : multi = true, allId (id opsi "Semua"), selected = { [id] = true },
+	--                       onChange({ [id] = label })  -- tabel kosong = semua
+	-- }
+	-- Return: { Set = (id), SetOptions = (options, defaultId | selectedSet) }
+	local function createDropdown(slot: Instance, spec: any): any
+		local multi: boolean = spec.multi == true
+		local allId: string = spec.allId or "__all"
+
+		local titleLabel = text(slot, {
+			Text = spec.title,
+			Font = Enum.Font.GothamBold,
+			TextSize = 10,
+			TextScaled = true,
+			Position = UDim2.fromOffset(2, 10),
+			Size = UDim2.new(1, -4, 0, 16),
+		})
+		new("UITextSizeConstraint", { MaxTextSize = 10, MinTextSize = 8 }, titleLabel)
+
+		local sel = new("TextButton", {
+			Position = UDim2.fromOffset(0, 32),
+			Size = UDim2.new(1, 0, 0, 30),
+			BackgroundColor3 = T.bg,
+			Text = "",
+			AutoButtonColor = false,
+		}, slot)
+		round(sel, 8)
+		stroke(sel, T.stroke, 1, 0.3)
+		hover(sel, T.bg)
+
+		local selLabel = text(sel, {
+			Font = Enum.Font.GothamMedium,
+			TextSize = 11,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			Position = UDim2.fromOffset(10, 0),
+			Size = UDim2.new(1, -30, 1, 0),
+		})
+		local arrow = text(sel, {
+			Text = "v",
+			Font = Enum.Font.GothamBold,
+			TextSize = 11,
+			TextColor3 = T.sub,
+			TextXAlignment = Enum.TextXAlignment.Center,
+			AnchorPoint = Vector2.new(1, 0),
+			Position = UDim2.new(1, -4, 0, 0),
+			Size = UDim2.fromOffset(20, 30),
+		})
+
+		-- popup: anak `main` supaya tidak terpotong kartu/halaman, selalu di atas konten
+		local pop = new("Frame", {
+			Visible = false,
+			BackgroundColor3 = T.card,
+			BorderSizePixel = 0,
+			Active = true,
+			ClipsDescendants = true,
+			ZIndex = 50,
+		}, main)
+		round(pop, 8)
+		stroke(pop, T.stroke, 1, 0.1)
+
+		local list = new("ScrollingFrame", {
+			Position = UDim2.fromOffset(4, 4),
+			Size = UDim2.new(1, -8, 1, -8),
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			ScrollBarThickness = 3,
+			ScrollBarImageColor3 = T.stroke,
+			CanvasSize = UDim2.new(),
+			AutomaticCanvasSize = Enum.AutomaticSize.Y,
+			ScrollingDirection = Enum.ScrollingDirection.Y,
+		}, pop)
+		new("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }, list)
+
+		local handle: any = {}
+		local current = spec.defaultId
+		local selected: { [string]: boolean } = {}   -- hanya dipakai mode multi
+		if multi then
+			for id in pairs(spec.selected or {}) do
+				if id ~= allId then selected[id] = true end
+			end
+		end
+		local opened = false
+		local popH = DD_ROW + 8
+		local rows: { [string]: any } = {}
+		local boxes: { [string]: any } = {}
+		local boxStrokes: { [string]: any } = {}
+		local order: { string } = {}
+
+		local function isActive(id: string): boolean
+			if multi then
+				if id == allId then return next(selected) == nil end
+				return selected[id] == true
+			end
+			return id == current
+		end
+
+		local function refresh()
+			local found = false
+			for id, r in pairs(rows) do
+				local active = isActive(id)
+				r.BackgroundColor3 = T.cardSel
+				r.BackgroundTransparency = active and 0 or 1
+				r.TextColor3 = active and WHITE or T.sub
+				if boxes[id] then
+					boxes[id].BackgroundTransparency = active and 0 or 1
+					boxStrokes[id].Color = active and T.accent or T.stroke
+				end
+				if not multi and active then
+					selLabel.Text = r.Text
+					found = true
+				end
+			end
+			if multi then
+				local names: { string } = {}
+				for _, id in ipairs(order) do
+					if selected[id] and rows[id] then
+						table.insert(names, (rows[id].Text:gsub("%s+%(%d+%)$", "")))
+					end
+				end
+				if #names == 0 then
+					selLabel.Text = rows[allId] and rows[allId].Text or "-"
+				else
+					selLabel.Text = table.concat(names, ", ")
+				end
+			elseif not found then
+				selLabel.Text = "-"
+			end
+		end
+
+		local function fireMulti()
+			local map: { [string]: string } = {}
+			for id in pairs(selected) do
+				map[id] = rows[id] and rows[id].Text or id
+			end
+			spec.onChange(map)
+		end
+
+		-- posisikan popup tepat di bawah tombol (naik ke atas jika tidak muat)
+		local function place()
+			local mp, sp, ss = main.AbsolutePosition, sel.AbsolutePosition, sel.AbsoluteSize
+			local mainH = main.AbsoluteSize.Y
+			local x = sp.X - mp.X
+			local y = sp.Y - mp.Y + ss.Y + 4
+			if y + popH > mainH - 6 then
+				local up = sp.Y - mp.Y - 4 - popH
+				y = (up >= 6) and up or math.max(6, mainH - 6 - popH)
+			end
+			pop.Position = UDim2.fromOffset(x, y)
+			pop.Size = UDim2.fromOffset(ss.X, popH)
+		end
+
+		local function close()
+			opened = false
+			arrow.Text = "v"
+			pop.Visible = false
+			if ddOpen == handle then
+				ddOpen = nil
+				ddCatcher.Visible = false
+			end
+		end
+		handle.close = close
+
+		local function open()
+			closeDropdown()
+			opened = true
+			arrow.Text = "^"
+			place()
+			pop.Visible = true
+			ddOpen = handle
+			ddCatcher.Visible = true
+			-- gulung ke pilihan yang aktif (untuk daftar panjang)
+			task.defer(function()
+				if not opened then return end
+				for i, id in ipairs(order) do
+					if isActive(id) then
+						list.CanvasPosition = Vector2.new(0, math.max(0, (i - 2) * DD_ROW))
+						break
+					end
+				end
+			end)
+		end
+
+		local function build(opts: { { id: string, label: string } })
+			for _, c in ipairs(list:GetChildren()) do
+				if c:IsA("TextButton") then c:Destroy() end
+			end
+			table.clear(rows)
+			table.clear(boxes)
+			table.clear(boxStrokes)
+			table.clear(order)
+			popH = math.max(1, math.min(#opts, DD_MAXROWS)) * DD_ROW + 8
+			for i, o in ipairs(opts) do
+				local r = new("TextButton", {
+					LayoutOrder = i,
+					Size = UDim2.new(1, -4, 0, DD_ROW),
+					BackgroundColor3 = T.cardSel,
+					BackgroundTransparency = 1,
+					Text = o.label,
+					TextColor3 = T.sub,
+					Font = Enum.Font.GothamMedium,
+					TextSize = 11,
+					TextXAlignment = Enum.TextXAlignment.Left,
+					TextTruncate = Enum.TextTruncate.AtEnd,
+					AutoButtonColor = false,
+				}, list)
+				round(r, 6)
+				new("UIPadding", {
+					PaddingLeft = UDim.new(0, 8),
+					PaddingRight = UDim.new(0, multi and 26 or 8),
+				}, r)
+				rows[o.id] = r
+				order[i] = o.id
+				if multi then
+					-- kotak centang di kanan baris
+					local box = new("Frame", {
+						AnchorPoint = Vector2.new(1, 0.5),
+						Position = UDim2.new(1, 18, 0.5, 0),
+						Size = UDim2.fromOffset(12, 12),
+						BackgroundColor3 = T.accent,
+						BackgroundTransparency = 1,
+						BorderSizePixel = 0,
+					}, r)
+					round(box, 3)
+					boxes[o.id] = box
+					boxStrokes[o.id] = stroke(box, T.stroke, 1, 0)
+				end
+				r.MouseEnter:Connect(function()
+					r.BackgroundColor3 = isActive(o.id) and T.cardSel or T.card2
+					r.BackgroundTransparency = 0
+				end)
+				r.MouseLeave:Connect(function()
+					r.BackgroundColor3 = T.cardSel
+					r.BackgroundTransparency = isActive(o.id) and 0 or 1
+				end)
+				r.MouseButton1Click:Connect(function()
+					if multi then
+						-- toggle; "Semua" = kosongkan pilihan; popup tetap terbuka untuk memilih lagi
+						if o.id == allId then
+							table.clear(selected)
+						else
+							if selected[o.id] then selected[o.id] = nil else selected[o.id] = true end
+						end
+						refresh()
+						fireMulti()
+					else
+						current = o.id
+						refresh()
+						close()
+						spec.onSelect(o.id, o.label)
+					end
+				end)
+			end
+			if opened then place() end
+		end
+
+		sel.MouseButton1Click:Connect(function()
+			if opened then close() else open() end
+		end)
+		build(spec.options)
+		refresh()
+		if multi then
+			fireMulti()
+		else
+			spec.onSelect(current, rows[current] and rows[current].Text or "")
+		end
+
+		return {
+			Slot = slot,
+			Set = function(id: string)
+				if not multi and rows[id] then
+					current = id
+					refresh()
+					spec.onSelect(id, rows[id].Text)
+				end
+			end,
+			SetOptions = function(opts: { { id: string, label: string } }, keep: any)
+				if multi then
+					local k: { [string]: boolean } = {}   -- salin dulu (keep bisa tabel yang sama dengan milik pemanggil)
+					for id in pairs(keep or {}) do
+						if id ~= allId then k[id] = true end
+					end
+					build(opts)
+					table.clear(selected)
+					for id in pairs(k) do
+						if rows[id] then selected[id] = true end
+					end
+					refresh()
+					fireMulti()
+				else
+					build(opts)
+					current = keep
+					refresh()
+					spec.onSelect(current, rows[current] and rows[current].Text or "")
+				end
+			end,
+		}
+	end
+
+	-- Kartu dropdown. Hanya `a`: satu dropdown lebar penuh (return 1 dropdown).
+	-- Dengan `b`: DUA dropdown berdampingan dalam satu kotak (return kiri, kanan).
+	-- a / b = spec seperti pada createDropdown.
+	addDropdownCard = function(page: Instance, order: number, a: any, b: any?): (any, any)
+		local card = makeCard(page, DD_CARD_H, order)
+		if b then
+			local slotL = new("Frame", {
+				BackgroundTransparency = 1,
+				Position = UDim2.fromOffset(14, 0),
+				Size = UDim2.new(0.5, -21, 1, 0),
+			}, card)
+			local slotR = new("Frame", {
+				BackgroundTransparency = 1,
+				Position = UDim2.new(0.5, 7, 0, 0),
+				Size = UDim2.new(0.5, -21, 1, 0),
+			}, card)
+			local l = createDropdown(slotL, a)
+			local r = createDropdown(slotR, b)
+			return l, r
+		end
+		local slot = new("Frame", {
+			BackgroundTransparency = 1,
+			Position = UDim2.fromOffset(14, 0),
+			Size = UDim2.new(1, -28, 1, 0),
+		}, card)
+		return createDropdown(slot, a), nil
+	end
+end
+
+-- =====================================================
+-- TAB DEBUG / SCAN  (tempel ke template Urbee)
+-- =====================================================
+-- Hasil scan: disalin ke clipboard (setclipboard). Kalau executor tidak mendukung,
+-- otomatis disimpan ke file (writefile) di folder workspace executor, dan selalu dicetak di console (F9).
+
+local debugPage = pages["Debug"]
+
+-- ---------- Helper output ----------
+local function exportText(label: string, lines: { string })
+	local MAX_LINES = 400
+	local shown = {}
+	for i = 1, math.min(#lines, MAX_LINES) do
+		shown[i] = lines[i]
+	end
+	if #lines > MAX_LINES then
+		table.insert(shown, ("... (%d baris lagi dipotong)"):format(#lines - MAX_LINES))
+	end
+
+	local body = "=== " .. label .. " ===\n" .. table.concat(shown, "\n")
+	print(body)
+
+	local copied = false
+	if setclipboard then
+		copied = pcall(setclipboard, body)
+	end
+
+	if copied then
+		toast(("Disalin: %d baris"):format(#lines))
+		return
+	end
+
+	if writefile then
+		local fname = "scan_" .. label:gsub("[^%w]", "_") .. ".txt"
+		if pcall(writefile, fname, body) then
+			toast("Disimpan: " .. fname)
+			return
+		end
+	end
+
+	toast("Hasil dicetak di console (F9)")
+end
+
+-- Ringkas daftar instance: nama [Class] xJumlah
+local function summarize(list: { Instance }): { string }
+	local counts: { [string]: number } = {}
+	local order: { string } = {}
+	for _, inst in ipairs(list) do
+		local key = inst.Name .. " [" .. inst.ClassName .. "]"
+		if not counts[key] then
+			counts[key] = 0
+			table.insert(order, key)
+		end
+		counts[key] += 1
+	end
+	table.sort(order)
+	local out = {}
+	for _, k in ipairs(order) do
+		table.insert(out, counts[k] > 1 and (k .. "  x" .. counts[k]) or k)
+	end
+	return out
+end
+
+-- "Workspace.Rocks.Zone1" -> Instance (nama yang mengandung titik tidak didukung)
+local function resolvePath(path: string): Instance?
+	path = path:gsub("^%s+", ""):gsub("%s+$", "")
+	local cur: Instance = game
+	local first = true
+	for seg in string.gmatch(path, "[^%.]+") do
+		if not (first and seg:lower() == "game") then
+			local nxt = cur:FindFirstChild(seg)
+			if not nxt then return nil end
+			cur = nxt
+		end
+		first = false
+	end
+	return cur
+end
+
+-- ---------- Fungsi scan ----------
+local function scanRemotes()
+	local out = {}
+	local roots: { Instance } = { game:GetService("ReplicatedStorage"), workspace }
+	for _, root in ipairs(roots) do
+		for _, d in ipairs(root:GetDescendants()) do
+			if d:IsA("RemoteEvent") or d:IsA("RemoteFunction") or d:IsA("UnreliableRemoteEvent") then
+				table.insert(out, d.ClassName .. " | " .. d:GetFullName())
+			end
+		end
+	end
+	table.sort(out)
+	if #out == 0 then
+		toast("Remote tidak ditemukan")
+		return
+	end
+	exportText("Remotes", out)
+end
+
+local function scanWorkspaceTop()
+	local out = {}
+	for _, c in ipairs(workspace:GetChildren()) do
+		if c.ClassName ~= "Terrain" and c.ClassName ~= "Camera" then
+			table.insert(out, ("%s [%s]  (%d child)"):format(c.Name, c.ClassName, #c:GetChildren()))
+		end
+	end
+	table.sort(out)
+	exportText("Workspace_TopLevel", out)
+end
+
+local function scanFolder(path: string)
+	if path == "" then
+		toast("Isi path dulu, contoh: Workspace.Rocks")
+		return
+	end
+	local target = resolvePath(path)
+	if not target then
+		toast("Path tidak ditemukan")
+		return
+	end
+	local out = summarize(target:GetChildren())
+	table.insert(out, 1, ("Path: %s  (%d child, %d descendant)"):format(
+		target:GetFullName(), #target:GetChildren(), #target:GetDescendants()))
+	exportText("Folder_" .. target.Name, out)
+end
+
+local function scanNearby(radiusText: string)
+	local char = player.Character
+	local hrp = char and char:FindFirstChild("HumanoidRootPart")
+	if not hrp then
+		toast("Karakter belum siap")
+		return
+	end
+	local radius = tonumber(radiusText) or 60
+
+	local params = OverlapParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = { char }
+
+	local parts = workspace:GetPartBoundsInRadius((hrp :: any).Position, radius, params)
+	local groups: { [string]: { n: number, d: number } } = {}
+	local order: { string } = {}
+
+	for _, p in ipairs(parts) do
+		if p.ClassName ~= "Terrain" then
+			local holder: Instance = p.Parent or p
+			local key = holder:GetFullName() .. " [" .. holder.ClassName .. "]"
+			local dist = (p.Position - (hrp :: any).Position).Magnitude
+			local g = groups[key]
+			if not g then
+				g = { n = 0, d = dist }
+				groups[key] = g
+				table.insert(order, key)
+			end
+			g.n += 1
+			if dist < g.d then g.d = dist end
+		end
+	end
+
+	table.sort(order, function(a, b)
+		return groups[a].d < groups[b].d
+	end)
+
+	local out = {}
+	for _, k in ipairs(order) do
+		local g = groups[k]
+		table.insert(out, ("%s  | %d part | terdekat %.1f stud"):format(k, g.n, g.d))
+	end
+	if #out == 0 then
+		toast("Tidak ada objek di radius " .. radius)
+		return
+	end
+	exportText("Nearby_r" .. radius, out)
+end
+
+local function scanInventory()
+	local list: { Instance } = {}
+	local bp = player:FindFirstChildOfClass("Backpack")
+	if bp then
+		for _, t in ipairs(bp:GetChildren()) do table.insert(list, t) end
+	end
+	if player.Character then
+		for _, t in ipairs(player.Character:GetChildren()) do
+			if t:IsA("Tool") then table.insert(list, t) end
+		end
+	end
+	local out = summarize(list)
+
+	-- atribut & leaderstats (sering dipakai game untuk uang/level/stat)
+	local ls = player:FindFirstChild("leaderstats")
+	if ls then
+		table.insert(out, "--- leaderstats ---")
+		for _, v in ipairs(ls:GetChildren()) do
+			table.insert(out, v.Name .. " = " .. tostring((v :: any).Value))
+		end
+	end
+	local attrs = player:GetAttributes()
+	if next(attrs) then
+		table.insert(out, "--- attributes pemain ---")
+		for k, v in pairs(attrs) do
+			table.insert(out, k .. " = " .. tostring(v))
+		end
+	end
+	exportText("Inventory", out)
+end
+
+-- ---------- Remote Logger (rekam FireServer / InvokeServer) ----------
+local spyLog: { string } = {}
+local spyOn = false
+local spyHooked = false
+local spyT0 = os.clock()
+local MAX_SPY = 300
+-- remote berisik yang tidak perlu direkam (potongan nama path)
+local SPY_NOISE = { "Replica", "PerfReport", "ListenerService", "EffectService", "UpdateExpBar", "GetRemainingTime", "CheckCraftCompletions" }
+
+local function ser(v: any, depth: number): string
+	local t = typeof(v)
+	if t == "string" then
+		return '"' .. v .. '"'
+	elseif t == "Instance" then
+		return "<" .. v.ClassName .. " " .. v:GetFullName() .. ">"
+	elseif t == "table" then
+		if depth >= 2 then return "{...}" end
+		local parts = {}
+		local n = 0
+		for k, val in pairs(v) do
+			n += 1
+			if n > 8 then
+				table.insert(parts, "...")
+				break
+			end
+			table.insert(parts, "[" .. ser(k, depth + 1) .. "]=" .. ser(val, depth + 1))
+		end
+		return "{" .. table.concat(parts, ", ") .. "}"
+	end
+	return tostring(v)
+end
+
+local spyLastKey, spyLastT = "", 0
+local function logCall(method: string, remote: Instance, args: any)
+	local ok, line = pcall(function()
+		local path = remote:GetFullName()
+		path = path:gsub("ReplicatedStorage%.Shared%.Packages%.Knit%.Services%.", "")
+		for _, noise in ipairs(SPY_NOISE) do
+			if path:find(noise, 1, true) then return nil end
+		end
+		local parts = {}
+		for i = 1, args.n do
+			table.insert(parts, ser(args[i], 0))
+		end
+		local call = ("%s(%s)"):format(path, table.concat(parts, ", "))
+		-- panggilan sama yang tertangkap dua jalur hook (namecall + langsung) dalam 0.03 detik dicatat sekali
+		local now = os.clock()
+		if call == spyLastKey and now - spyLastT < 0.03 then return nil end
+		spyLastKey, spyLastT = call, now
+		return ("[%.1fs] %s %s"):format(now - spyT0, method, call)
+	end)
+	if ok and line then
+		table.insert(spyLog, line)
+		if #spyLog > MAX_SPY then table.remove(spyLog, 1) end
+	end
+end
+
+-- Dua jalur hook, supaya semua cara pemanggilan remote tertangkap:
+--   1) __namecall            -> remote:FireServer(...) / remote:InvokeServer(...)
+--   2) fungsi langsung       -> remote.FireServer(remote, ...) / pcall(remote.InvokeServer, remote, ...)
+--      (jalur ini TIDAK lewat __namecall; script lain sering memakainya, termasuk Auto Mine di script ini)
+local function installSpy(): boolean
+	if spyHooked then return true end
+	local wrap = newcclosure or function(f) return f end
+	local hooked = false
+
+	if hookmetamethod and getnamecallmethod then
+		local old
+		old = hookmetamethod(game, "__namecall", wrap(function(self, ...)
+			if spyOn and state.spy then
+				local method = getnamecallmethod()
+				if (method == "FireServer" or method == "InvokeServer") and typeof(self) == "Instance" then
+					local args = table.pack(...)
+					local remote = self
+					task.spawn(logCall, method, remote, args)
+				end
+			end
+			return old(self, ...)
+		end))
+		hooked = true
+	end
+
+	if hookfunction then
+		local function hookDirect(className: string, method: string)
+			local ok = pcall(function()
+				local inst: any = Instance.new(className)
+				local fn = inst[method]
+				inst:Destroy()
+				local old
+				old = hookfunction(fn, wrap(function(self, ...)
+					if spyOn and state.spy and typeof(self) == "Instance" then
+						task.spawn(logCall, method, self, table.pack(...))
+					end
+					return old(self, ...)
+				end))
+			end)
+			if ok then hooked = true end
+		end
+		hookDirect("RemoteEvent", "FireServer")
+		hookDirect("RemoteFunction", "InvokeServer")
+		hookDirect("UnreliableRemoteEvent", "FireServer")
+	end
+
+	if not hooked then return false end
+	spyHooked = true
+	return true
+end
+
+-- Catat juga tool yang di-equip / di-unequip karakter selama merekam (mis. pedang yang dipakai script lain)
+local spyToolConns: { RBXScriptConnection } = {}
+local function spyWatchTools(on: boolean)
+	for _, c in ipairs(spyToolConns) do c:Disconnect() end
+	table.clear(spyToolConns)
+	local char = player.Character
+	if not on or not char then return end
+	local function add(kind: string, inst: Instance)
+		if spyOn and state.spy and inst:IsA("Tool") then
+			table.insert(spyLog, ("[%.1fs] %s Tool \"%s\""):format(os.clock() - spyT0, kind, inst.Name))
+			if #spyLog > MAX_SPY then table.remove(spyLog, 1) end
+		end
+	end
+	table.insert(spyToolConns, char.ChildAdded:Connect(function(i) add("EQUIP", i) end))
+	table.insert(spyToolConns, char.ChildRemoved:Connect(function(i) add("UNEQUIP", i) end))
+	for _, t in ipairs(char:GetChildren()) do
+		if t:IsA("Tool") then add("HOLDING", t) end
+	end
+end
+
+-- ---------- UI tab Debug ----------
+sectionLabel(debugPage, 0, "Scan data game")
+
+local scanNearInput = addInputCard(debugPage, 1, "Scan sekitar karakter", "Radius (default 60)", "Scan", function(q)
+	scanNearby(q)
+end)
+
+addInputCard(debugPage, 2, "Scan isi folder", "Contoh: Workspace.Rocks", "Scan", function(q)
+	scanFolder(q)
+end)
+
+local btnWs = makeButton(debugPage, 3, "Scan Workspace (level atas)", T.accent2, 40)
+hover(btnWs, T.accent2)
+btnWs.MouseButton1Click:Connect(scanWorkspaceTop)
+
+local btnRem = makeButton(debugPage, 4, "Scan Remote (RemoteEvent/Function)", T.accent, 40)
+hover(btnRem, T.accent)
+btnRem.MouseButton1Click:Connect(scanRemotes)
+
+local btnInv = makeButton(debugPage, 5, "Scan Inventory & Stat", T.accent2, 40)
+hover(btnInv, T.accent2)
+btnInv.MouseButton1Click:Connect(scanInventory)
+
+addToggleCard(debugPage, 6, "Remote Logger", "ON, lakukan aksi di game, lalu OFF dan salin log.", "spy", function(on)
+	if on then
+		if not installSpy() then
+			toast("Executor tidak mendukung hook. Pakai SimpleSpy.")
+			spyOn = false
+			state.spy = false
+			if switches.spy then switches.spy.Set(false) end
+			refreshActive()
+			return
+		end
+		spyT0 = os.clock()
+		spyOn = true
+		spyWatchTools(true)
+		toast("Merekam remote...")
+	else
+		spyOn = false
+		spyWatchTools(false)
+	end
+end)
+
+local btnSpy = makeButton(debugPage, 7, "Salin & Kosongkan Log Remote", T.accent, 40)
+hover(btnSpy, T.accent)
+btnSpy.MouseButton1Click:Connect(function()
+	if #spyLog == 0 then
+		toast("Log kosong")
+		return
+	end
+	exportText("RemoteLog", spyLog)
+	table.clear(spyLog)
+end)
+
+text(debugPage, {
+	LayoutOrder = 8,
+	Text = "Hasil otomatis disalin ke clipboard. Tempel ke chat untuk dibaca. Detail argumen remote: pakai SimpleSpy.",
+	TextSize = 11,
+	TextColor3 = T.sub,
+	TextWrapped = true,
+	TextYAlignment = Enum.TextYAlignment.Top,
+	Size = UDim2.new(1, 0, 0, 40),
+})
+-- =====================================================
+
+-- Catatan: seluruh fitur Auto Mine dibungkus do ... end supaya tidak melewati batas 200 variabel lokal Luau.
+-- Hanya dua nama yang dipakai di luar blok ini, jadi dideklarasikan di sini.
+local mineToken = 0
+local findNearestRock: (Vector3, boolean?) -> Model?
+do
+-- =====================================================
+-- AUTO MINE (tab Main)
+-- Pola dari log: client memanggil ToolService.RF.ToolActivated("Pickaxe", nil)
+-- tiap ~0.1 detik. Script meniru ritme yang sama. Target dipilih server dari posisi & arah karakter.
+-- Deteksi batu hancur: (1) semua part transparan, (2) atribut/value Health <= 0,
+-- (3) tidak ada perubahan apa pun pada batu selama stallTime detik.
+-- =====================================================
+local MINE = {
+	rockRadius = math.huge, -- jarak cari batu (stud); math.huge = tanpa batas
+	reach = 7,            -- jarak ke batu sebelum mulai memukul (stud)
+	swingDelay = function(): number   -- jeda antar pukulan dari slider Kecepatan Pukul (bawaan 10/detik = 0.1 dtk, sama dengan client asli)
+		return 1 / math.clamp(values.hitRate or 10, 1, 40)
+	end,
+	stallTime = 5,        -- detik tanpa perubahan pada batu -> anggap selesai, pindah
+	targetTimeout = 40,   -- batas keras detik pada satu batu
+	respawnDelay = 3,   -- detik menunggu setelah karakter hidup lagi (respawn) sebelum lanjut TP ke target / meriam
+	blacklistTime = 45,   -- detik batu dilewati setelah selesai/macet
+	scanRadius = math.huge, -- radius scan jenis batu (stud); math.huge = seluruh batu yang termuat
+	mismatchBlacklist = 600, -- detik gundukan dilewati setelah ore di dalamnya tidak sesuai pilihan
+	arriveTol = 3,        -- toleransi jarak (stud) dianggap sudah sampai di posisi
+}
+
+-- Jenis batu (gundukan) yang diincar: kunci (huruf kecil) -> nama asli. Kosong = semua jenis.
+local mineFilters: { [string]: string } = {}
+if type(SAVED.mineFilters) == "table" then
+	for k, n in pairs(SAVED.mineFilters) do
+		if type(k) == "string" and type(n) == "string" then mineFilters[k] = n end
+	end
+elseif type(SAVED.mineFilter) == "string" and SAVED.mineFilter ~= "" then   -- format simpan lama (satu pilihan)
+	mineFilters[SAVED.mineFilter] = (type(SAVED.mineFilterName) == "string" and SAVED.mineFilterName ~= "") and SAVED.mineFilterName or SAVED.mineFilter
+end
+
+-- Jenis mob yang diincar Auto Mob: kunci (huruf kecil) -> nama asli. Kosong = semua mob.
+local mobFilters: { [string]: string } = {}
+if type(SAVED.mobFilters) == "table" then
+	for k, n in pairs(SAVED.mobFilters) do
+		if type(k) == "string" and type(n) == "string" then mobFilters[k] = n end
+	end
+end
+
+local function rockWanted(name: string): boolean
+	return next(mineFilters) == nil or mineFilters[name:lower()] ~= nil
+end
+
+-- Filter ore: isi gundukan (model "Ore" dengan atribut Ore = nama ore) muncul setelah gundukan dipukul.
+-- Daftar ore dibuat per pulau (nomor dari nama folder, mis. Island1CaveStart = pulau 1):
+-- daftar bawaan dari wiki (ORE_DB) + ore yang terbaca langsung dari game (dipelajari & disimpan).
+local ORE_DB: { [string]: { string } } = {
+	["1"] = { "Stone", "Sand Stone", "Copper", "Iron", "Tin", "Silver", "Gold", "Mushroomite", "Platinum", "Bananite", "Cardboardite", "Aite", "Poopite" },   -- Stonewake's Cross
+	["2"] = { "Cobalt", "Titanium", "Lapis Lazuli", "Volcanic Rock", "Quartz", "Amethyst", "Topaz", "Diamond", "Sapphire", "Boneite", "Slimite", "Dark Boneite", "Cuprite", "Obsidian", "Emerald", "Ruby", "Rivalite", "Uranium", "Mythril", "Eye Ore", "Fireite", "Magmaite", "Lightite", "Demonite", "Darkryte" },   -- Forgotten Kingdom
+	["3"] = { "Tungsten", "Sulfur", "Pumice", "Graphite", "Aetherit", "Scheelite", "Larimar", "Neurotite", "Frost Fossil", "Tide Carve", "Velchire", "Sanctis", "Snowite", "Iceite", "Prismatic Heart", "Gargantuan", "Heavenite", "Heart Of The Island", "Stolen Heart", "Suryafal", "Evil Eye", "Duranite", "Etherealite", "Golem Heart", "Gulabite", "Voidstar", "Mosasaursit", "Galestor", "Moon Stone", "Cryptex", "Aqujade", "Malachite", "Moltenfrost", "Frogite", "Voidfractal", "Yeti Heart", "Crimsonite", "Lgarite", "Mistvein", "Coinite", "Grass" },   -- Frostspire Expanse (termasuk The Peak & Raven Cave)
+	["4"] = { "Frost Star", "Kitsunite", "Bizzarite", "Galaxite", "Tetrinite", "Frost Core", "Echotite", "Vooite", "Vanegos", "Zephyte", "Marblite", "Supermassive Black Hole", "Aether Lotus", "Kyubite", "Fierce Jade", "Ceyite", "Sentira", "Ryuseki", "Wolfarite", "Heavenly Orb", "Kokorite", "Takiseki", "Oni Mask", "Meteorite", "Sakurite", "Roosite", "Dorabell", "Kyomutite", "Takenokoishi", "Yin-Yang", "Sun Stone", "Ancienite", "Azuryxite", "Yin", "Yang", "Viridite", "Singularity", "Seedheart", "Zenstone", "Sealed Curse", "Heat Steel", "Anti Matter", "Lucky Cat", "Blue Gem Quill", "Fruite", "Sakuranite", "Onyx", "Onite", "Aurelia-no-Ki", "Duquack", "Matter", "Magit", "Cyanite Jade", "Shikanite", "Tiger's Eye", "Wraith", "Rock Seed", "Melonite", "Earthite", "Water Stone", "Root Spire", "Bamboo", "Starite", "Star Dust", "Fichilliumorite" },   -- Crimson Sakura Isles (termasuk Tower of Hell, Void Cave, Jade Spirit Cave, Aurelia Hall, Holy Tree, Bamboo Forest)
+}
+
+local function oreKey(n: string): string   -- huruf kecil, tanpa spasi (agar "Sand Stone" = "Sandstone")
+	return (n:lower():gsub("%s+", ""))
+end
+
+-- Ore yang diincar: kunci (oreKey) -> nama asli. Kosong = semua ore.
+-- Pilihan ini hanya untuk pulau yang sedang aktif; pilihan pulau lain disimpan di MINE.oreByIsland[pulau]
+-- dan ditukar otomatis saat pindah pulau (setIsland), jadi daftar ore tiap pulau tidak bercampur.
+local oreFilters: { [string]: string } = {}
+MINE.oreByIsland = {}
+if type(SAVED.oreFiltersByIsland) == "table" then
+	for isl, list in pairs(SAVED.oreFiltersByIsland) do
+		if type(isl) == "string" and type(list) == "table" then
+			MINE.oreByIsland[isl] = {}
+			for k, n in pairs(list) do
+				if type(k) == "string" and type(n) == "string" then MINE.oreByIsland[isl][oreKey(k)] = n end
+			end
+		end
+	end
+	MINE.startIsland = (type(SAVED.oreIsland) == "string" and ORE_DB[SAVED.oreIsland]) and SAVED.oreIsland or "1"
+	for k, n in pairs(MINE.oreByIsland[MINE.startIsland] or {}) do oreFilters[k] = n end
+elseif type(SAVED.oreFilters) == "table" then   -- format simpan lama (satu daftar untuk semua pulau): dianggap milik pulau 1
+	for k, n in pairs(SAVED.oreFilters) do
+		if type(k) == "string" and type(n) == "string" then oreFilters[oreKey(k)] = n end
+	end
+elseif type(SAVED.oreFilter) == "string" and SAVED.oreFilter ~= "" then   -- format simpan lama (satu pilihan)
+	oreFilters[oreKey(SAVED.oreFilter)] = (type(SAVED.oreFilterName) == "string" and SAVED.oreFilterName ~= "") and SAVED.oreFilterName or SAVED.oreFilter
+end
+local learnedOres: { [string]: { [string]: string } } = {}   -- pulau -> kunci -> nama asli di game
+local curIsland = MINE.startIsland or "1"
+if type(SAVED.learnedOres) == "table" then
+	for isl, list in pairs(SAVED.learnedOres) do
+		if type(isl) == "string" and type(list) == "table" then
+			learnedOres[isl] = {}
+			for _, n in ipairs(list) do
+				if type(n) == "string" and n ~= "" then learnedOres[isl][oreKey(n)] = n end
+			end
+		end
+	end
+end
+local refreshOreList: () -> () = function() end
+
+-- nomor pulau dari folder induk batu di bawah Workspace.Rocks (nil jika tidak terbaca, mis. folder Roof)
+local function islandOf(rock: Instance): string?
+	local root = workspace:FindFirstChild("Rocks")
+	local cur: Instance? = rock
+	while cur and cur.Parent and cur.Parent ~= root do cur = cur.Parent end
+	return cur and cur.Name:match("^Island(%d+)") or nil
+end
+
+local function setIsland(isl: string?)
+	if isl and isl ~= curIsland then
+		-- simpan pilihan ore pulau lama, muat pilihan pulau baru
+		local keep: { [string]: string } = {}
+		for k, n in pairs(oreFilters) do keep[k] = n end
+		MINE.oreByIsland[curIsland] = keep
+		curIsland = isl
+		table.clear(oreFilters)
+		for k, n in pairs(MINE.oreByIsland[isl] or {}) do oreFilters[k] = n end
+		refreshOreList()
+		toast("Pulau " .. isl .. ": daftar ore diganti")
+	end
+end
+
+local function noteOre(name: string, isl: string?)
+	local island = isl or curIsland
+	local key = oreKey(name)
+	for _, n in ipairs(ORE_DB[island] or {}) do
+		if n == name then return end   -- sudah ada di daftar bawaan dengan nama yang sama
+	end
+	learnedOres[island] = learnedOres[island] or {}
+	if learnedOres[island][key] ~= name then
+		learnedOres[island][key] = name
+		if island == curIsland then refreshOreList() end
+		saveSoon()
+	end
+end
+
+local function oreOf(rock: Model): string?
+	local o = rock:FindFirstChild("Ore")
+	if o then
+		local n = o:GetAttribute("Ore")
+		if type(n) == "string" and n ~= "" then return n end
+	end
+	return nil
+end
+
+-- daftar ore untuk pulau tertentu (bawaan + dipelajari), urut abjad
+local function oreListFor(isl: string): { { key: string, name: string } }
+	local m: { [string]: string } = {}
+	for _, n in ipairs(ORE_DB[isl] or {}) do m[oreKey(n)] = n end
+	for k, n in pairs(learnedOres[isl] or {}) do m[k] = n end
+	for k, n in pairs(oreFilters) do   -- ore yang dipilih selalu tampil di daftar
+		if not m[k] then m[k] = n end
+	end
+	local out: { { key: string, name: string } } = {}
+	for k, n in pairs(m) do table.insert(out, { key = k, name = n }) end
+	table.sort(out, function(a, b) return a.name < b.name end)
+	return out
+end
+
+-- true jika ore di dalam gundukan sudah terlihat dan BUKAN yang diincar
+local function oreMismatch(rock: Model): boolean
+	if next(oreFilters) == nil then return false end
+	local o = oreOf(rock)
+	return o ~= nil and oreFilters[oreKey(o)] == nil
+end
+local minePosMode = "up"                    -- up | down | front | back | center
+if table.find({ "up", "down", "front", "back", "center" }, SAVED.minePos) then minePosMode = SAVED.minePos end
+local mineApproach = Vector3.new(0, 0, 1)   -- arah horizontal dari batu ke karakter saat batu dipilih (acuan depan/belakang)
+local mineTarget: Model? = nil
+local mineBlacklist: { [Instance]: number } = {}
+local lastSwings: { string } = {}
+local lastNote = 0
+
+local function note(msg: string)
+	if os.clock() - lastNote > 5 then
+		lastNote = os.clock()
+		toast(msg)
+	end
+end
+
+local function pushSwing(s: string)
+	table.insert(lastSwings, s)
+	if #lastSwings > 20 then table.remove(lastSwings, 1) end
+end
+
+-- tanda perubahan batu: jumlah descendant, total "keterlihatan" part, atribut angka
+local function rockSignature(rock: Model): (string, number)
+	local n, vis = 0, 0
+	for _, d in ipairs(rock:GetDescendants()) do
+		n += 1
+		if d:IsA("BasePart") then
+			vis += (1 - d.Transparency)
+		end
+	end
+	local attrs = {}
+	for k, v in pairs(rock:GetAttributes()) do
+		if type(v) == "number" then
+			table.insert(attrs, k .. "=" .. tostring(v))
+		end
+	end
+	table.sort(attrs)
+	return ("%d|%.2f|%s"):format(n, vis, table.concat(attrs, ",")), vis
+end
+
+local function isHealthName(name: string): boolean
+	local l = name:lower()
+	return l:find("health", 1, true) ~= nil or l == "hp" or l:find("durab", 1, true) ~= nil
+end
+
+local function healthDepleted(rock: Model): boolean
+	for k, v in pairs(rock:GetAttributes()) do
+		if type(v) == "number" and isHealthName(k) and v <= 0 then return true end
+	end
+	for _, c in ipairs(rock:GetChildren()) do
+		if (c:IsA("NumberValue") or c:IsA("IntValue")) and isHealthName(c.Name) and (c :: any).Value <= 0 then
+			return true
+		end
+	end
+	return false
+end
+
+local function rockAlive(rock: Model): boolean
+	if not rock.Parent then return false end
+	local _, vis = rockSignature(rock)
+	return vis >= 0.05 and not healthDepleted(rock)
+end
+
+function findNearestRock(pos: Vector3, includeDead: boolean?): Model?
+	local root = workspace:FindFirstChild("Rocks")
+	if not root then return nil end
+	local cands: { { m: Model, d: number } } = {}
+	local now = os.clock()
+	for _, m in ipairs(root:GetDescendants()) do
+		if m:IsA("Model") and m.Parent and m.Parent.Name == "SpawnLocation" then
+			local skip = mineBlacklist[m] and mineBlacklist[m] > now
+			if (includeDead or (not skip and not oreMismatch(m))) and rockWanted(m.Name) then
+				local d = (m:GetPivot().Position - pos).Magnitude
+				if d <= MINE.rockRadius then
+					table.insert(cands, { m = m, d = d })
+				end
+			end
+		end
+	end
+	table.sort(cands, function(a, b) return a.d < b.d end)
+	for _, c in ipairs(cands) do
+		if includeDead or rockAlive(c.m) then
+			return c.m
+		end
+	end
+	return nil
+end
+
+-- jarak ke part terdekat dari batu + posisinya
+local function rockReach(rock: Model, pos: Vector3): (number, Vector3)
+	local bestD, bestP = math.huge, rock:GetPivot().Position
+	for _, p in ipairs(rock:GetDescendants()) do
+		if p:IsA("BasePart") and p.Transparency < 0.95 then
+			local d = (p.Position - pos).Magnitude
+			if d < bestD then bestD, bestP = d, p.Position end
+		end
+	end
+	return bestD, bestP
+end
+
+local function hasPickaxeEquipped(char: Model): boolean
+	for _, t in ipairs(char:GetChildren()) do
+		if t:IsA("Tool") and t.Name:lower():find("pickaxe", 1, true) then return true end
+	end
+	return false
+end
+
+local function tryEquipPickaxe(char: Model)
+	local bp = player:FindFirstChildOfClass("Backpack")
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	if not (bp and hum) then return end
+	for _, t in ipairs(bp:GetChildren()) do
+		if t:IsA("Tool") and t.Name:lower():find("pickaxe", 1, true) then
+			hum:EquipTool(t)
+			task.wait(0.3)
+			return
+		end
+	end
+end
+
+-- Alasan kenapa tidak ada batu yang ditemukan (untuk pesan toast)
+local function whyNoRock(pos: Vector3): string
+	local root = workspace:FindFirstChild("Rocks")
+	if not root then return "Folder Workspace.Rocks tidak ada" end
+	local total, nearest, nearestName, skipped = 0, math.huge, "", 0
+	local now = os.clock()
+	for _, m in ipairs(root:GetDescendants()) do
+		if m:IsA("Model") and m.Parent and m.Parent.Name == "SpawnLocation" then
+			if rockWanted(m.Name) then
+				total += 1
+				if (mineBlacklist[m] and mineBlacklist[m] > now) or oreMismatch(m) then
+					skipped += 1
+				else
+					local d = (m:GetPivot().Position - pos).Magnitude
+					if d < nearest then nearest, nearestName = d, m.Name end
+				end
+			end
+		end
+	end
+	if total == 0 then
+		return next(mineFilters) == nil and "Tidak ada model batu di Workspace.Rocks" or "Tidak ada batu dari jenis yang dipilih"
+	end
+	if nearest == math.huge then
+		return ("Semua %d batu sedang dilewati (baru dipukul / ore tidak sesuai)"):format(skipped)
+	end
+	return ("Tidak ada batu aktif (terdekat: %s, %d stud, sudah hancur)"):format(nearestName, nearest)
+end
+
+-- Posisi tujuan karakter relatif ke batu, sesuai dropdown posisi + slider jarak.
+-- Jarak dihitung dari TENGAH batu: slider 1 = tepat di tengah batu (nempel), makin besar
+-- makin menjauh ke arah posisi yang dipilih (atas/bawah/depan/belakang).
+-- "Depan" = sisi yang menghadap karakter saat batu dipilih, "Belakang" = sisi seberangnya.
+-- "Tengah" = selalu di tengah batu (jarak diabaikan).
+local function rockGoal(rock: Model, approach: Vector3): (Vector3, Vector3)
+	local cf = rock:GetBoundingBox()
+	local c = cf.Position
+	local off = math.max(0, (values.mineDist or 1) - 1)
+	local goal = c
+	if minePosMode == "up" then
+		goal = c + Vector3.new(0, off, 0)
+	elseif minePosMode == "down" then
+		goal = c - Vector3.new(0, off, 0)
+	elseif minePosMode == "front" then
+		goal = c + approach * off
+	elseif minePosMode == "back" then
+		goal = c - approach * off
+	end
+	return goal, c
+end
+
+local function mineLoop(token: number)
+	local remote = resolvePath("ReplicatedStorage.Shared.Packages.Knit.Services.ToolService.RF.ToolActivated")
+	if not remote then
+		toast("Remote ToolActivated tidak ditemukan")
+		state.automine = false
+		if switches.automine then switches.automine.Set(false) end
+		refreshActive()
+		return
+	end
+
+	local target: Model? = nil
+	local startedAt = 0
+	local lastSig = ""
+	local lastChange = 0
+
+	-- Terbang ke posisi tujuan + tembus dinding, dijalankan tiap frame fisika selama ada target
+	local charParts: { BasePart } = {}
+	local partsChar: Instance? = nil
+	local partsAt = 0
+	local flyConn = RunService.Stepped:Connect(function(_, dt)
+		local rock = mineTarget
+		local char = player.Character
+		local hrp = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
+		if not (rock and rock.Parent and char and hrp) then return end
+		local fhum = char:FindFirstChildOfClass("Humanoid")
+		if not fhum or fhum.Health <= 0 then return end   -- karakter mati: jangan paksa TP
+
+		if partsChar ~= char or os.clock() - partsAt > 1 then
+			partsChar, partsAt = char, os.clock()
+			table.clear(charParts)
+			for _, d in ipairs(char:GetDescendants()) do
+				if d:IsA("BasePart") then table.insert(charParts, d) end
+			end
+		end
+		for _, p in ipairs(charParts) do p.CanCollide = false end
+
+		local goal, c = rockGoal(rock, mineApproach)
+		local pos = hrp.Position
+		local delta = goal - pos
+		local step = MINE.instant and 1e9 or (values.mineSpeed or 16) * dt   -- TP: langsung ke tujuan; Pelan: stud/detik dari slider
+		local newPos = (delta.Magnitude <= step) and goal or (pos + delta.Unit * step)
+
+		local look = c - newPos
+		if look.Magnitude < 0.5 then look = -mineApproach end   -- posisi "Tengah": hadap arah datang
+		local up = Vector3.yAxis
+		if math.abs(look.Unit.Y) > 0.99 then up = Vector3.new(0, 0, -1) end   -- hindari gimbal saat menghadap lurus atas/bawah
+		hrp.CFrame = CFrame.lookAt(newPos, newPos + look, up)
+		hrp.AssemblyLinearVelocity = Vector3.zero
+		hrp.AssemblyAngularVelocity = Vector3.zero
+	end)
+
+	local wasDead = false
+	while state.automine and token == mineToken and not unloaded do
+		local char = player.Character
+		local hrp = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+		if not (char and hrp and hum) or hum.Health <= 0 then
+			-- mati / sedang respawn: lepas target supaya tidak TP paksa, tunggu sampai hidup lagi
+			wasDead = true
+			target = nil
+			mineTarget = nil
+			task.wait(0.5)
+			continue
+		end
+		if wasDead then
+			wasDead = false
+			task.wait(MINE.respawnDelay)   -- beri waktu karakter siap, lalu cek ulang (bisa mati lagi)
+			continue
+		end
+
+		if target and (not target.Parent or os.clock() - startedAt > MINE.targetTimeout) then
+			mineBlacklist[target] = os.clock() + MINE.blacklistTime
+			target = nil
+		end
+
+		if not target then
+			target = findNearestRock(hrp.Position)
+			if target and MINE.mode == "cannon" then   -- selalu lewat meriam dulu untuk setiap target baru, berapa pun jaraknya
+				MINE.cannonHop(hrp)   -- mineTarget masih kosong, jadi TP ke target belum jalan saat terlontar
+			end
+			mineTarget = target
+			startedAt = os.clock()
+			lastSig = ""
+			lastChange = os.clock()
+			if not target then
+				note(whyNoRock(hrp.Position))
+				task.wait(1.5)
+				continue
+			end
+			local pc = target:GetPivot().Position
+			local d = Vector3.new(hrp.Position.X - pc.X, 0, hrp.Position.Z - pc.Z)
+			mineApproach = d.Magnitude > 0.1 and d.Unit or Vector3.new(0, 0, 1)
+		end
+
+		local rock = target
+		if not rock then continue end
+		local goal = rockGoal(rock, mineApproach)
+		if (hrp.Position - goal).Magnitude > MINE.arriveTol then
+			-- masih terbang ke posisi: jangan hitung sebagai macet maupun timeout
+			lastChange = os.clock()
+			startedAt = os.clock()
+			task.wait(0.1)
+		else
+			local sig, vis = rockSignature(rock)
+			if vis < 0.05 or healthDepleted(rock) then
+				-- batu sudah hancur: langsung pindah
+				mineBlacklist[rock] = os.clock() + MINE.blacklistTime
+				target = nil
+				mineTarget = nil
+				continue
+			end
+			-- cek isi gundukan: kalau ore sudah terlihat dan tidak sesuai pilihan, pindah ke gundukan lain
+			local ore = oreOf(rock)
+			if ore then noteOre(ore, islandOf(rock)) end
+			if ore and next(oreFilters) ~= nil and oreFilters[oreKey(ore)] == nil then
+				mineBlacklist[rock] = os.clock() + MINE.mismatchBlacklist
+				target = nil
+				mineTarget = nil
+				continue
+			end
+			if sig ~= lastSig then
+				lastSig = sig
+				lastChange = os.clock()
+			elseif os.clock() - lastChange > MINE.stallTime then
+				-- tidak ada perubahan: anggap selesai/macet, pindah
+				mineBlacklist[rock] = os.clock() + MINE.blacklistTime
+				target = nil
+				mineTarget = nil
+				continue
+			end
+
+			-- tanpa Pickaxe di tangan: langsung panggil remote
+			local ok, res = pcall(remote.InvokeServer, remote, "Pickaxe", nil)
+			pushSwing(ok and tostring(res) or ("ERR " .. tostring(res)))
+			if state.autoattack then
+				-- pola dari log Zenith: ToolActivated("Pickaxe") dan ("Weapon") bergantian,
+				-- masing-masing ~tiap 0.1 detik. Mob di dekat karakter ikut terserang oleh server.
+				task.wait(MINE.swingDelay() / 2)
+				local okW, resW = pcall(remote.InvokeServer, remote, "Weapon", nil)
+				pushSwing("W:" .. (okW and tostring(resW) or ("ERR " .. tostring(resW))))
+				task.wait(MINE.swingDelay() / 2)
+			else
+				task.wait(MINE.swingDelay())
+			end
+		end
+	end
+
+	flyConn:Disconnect()
+	mineTarget = nil
+end
+
+-- Diagnosa: salin kondisi batu target + hasil pukulan terakhir
+local function dumpMineStatus()
+	local out: { string } = {}
+	table.insert(out, "Hasil swing terakhir: " .. (#lastSwings > 0 and table.concat(lastSwings, " | ") or "(belum ada)"))
+	local char = player.Character
+	local hrp = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
+	local rock = mineTarget or (hrp and findNearestRock(hrp.Position, true))
+	if not rock then
+		table.insert(out, "Tidak ada batu terdekat.")
+		exportText("MineStatus", out)
+		return
+	end
+	local sig, vis = rockSignature(rock)
+	table.insert(out, "Batu: " .. rock:GetFullName())
+	table.insert(out, "Signature: " .. sig .. "  | vis=" .. ("%.2f"):format(vis))
+	for k, v in pairs(rock:GetAttributes()) do
+		table.insert(out, "attr " .. k .. " = " .. tostring(v))
+	end
+	for _, c in ipairs(rock:GetChildren()) do
+		local line = ("child %s [%s]"):format(c.Name, c.ClassName)
+		if c:IsA("Model") then
+			local cvis = 0
+			for _, d in ipairs(c:GetDescendants()) do
+				if d:IsA("BasePart") then cvis += (1 - d.Transparency) end
+			end
+			line ..= ("  vis=%.2f"):format(cvis)
+		elseif c:IsA("BasePart") then
+			line ..= ("  T=%.2f CanCollide=%s"):format(c.Transparency, tostring(c.CanCollide))
+		elseif c:IsA("ValueBase") then
+			line ..= "  Value=" .. tostring((c :: any).Value)
+		end
+		for k, v in pairs(c:GetAttributes()) do
+			line ..= (" {%s=%s}"):format(k, tostring(v))
+		end
+		table.insert(out, line)
+	end
+	exportText("MineStatus", out)
+end
+
+-- ---- Tab Mining ----
+local miningPage = pages["Mining"]
+sectionLabel(miningPage, 0, "Auto")
+addToggleCard(miningPage, 1, "Auto Mine", "Terbang / TP ke batu terdekat sesuai filter, lalu pukul sampai hancur.", "automine", function(on)
+	mineToken += 1
+	if on then
+		-- Auto Mine dan Auto Mob sama-sama menggerakkan karakter: tidak boleh jalan bersamaan
+		if state.automob then
+			state.automob = false
+			if switches.automob then switches.automob.Set(false) end
+		end
+		if state.autoraid then
+			state.autoraid = false
+			if switches.autoraid then switches.autoraid.Set(false) end
+		end
+		task.spawn(mineLoop, mineToken)
+	end
+end)
+
+-- Serang mob sambil mining: ikut memanggil ToolActivated("Weapon") bergantian dengan Pickaxe.
+-- Hanya berjalan selama Auto Mine ON (dibaca di mineLoop lewat state.autoattack).
+addToggleCard(miningPage, 2, "Attack Sambil Mining", "Ikut menyerang mob terdekat saat Auto Mine menyala.", "autoattack", function(on)
+	toast(on and "Attack ON" or "Attack OFF")
+end)
+
+-- Target batu: scan jenis batu di sekitar karakter (sesuai map sekarang), lalu pilih dari dropdown
+sectionLabel(miningPage, 10, "Target Batu")
+local ALL_ID = "__all"
+local targetDrop: any = nil
+saveExtra = function()
+	local learned: { [string]: { string } } = {}
+	for isl, m in pairs(learnedOres) do
+		learned[isl] = {}
+		for _, n in pairs(m) do table.insert(learned[isl], n) end
+		table.sort(learned[isl])
+	end
+	return {
+		minePos = minePosMode, mineFilters = mineFilters, oreIsland = curIsland, moveMode = MINE.mode or "slow", cannonByIsland = (function() local t: { [string]: any } = {}; for isl, v in pairs(MINE.cannonByIsland or {}) do t[isl] = { v.X, v.Y, v.Z } end; return t end)(), oreFiltersByIsland = (function() local t: { [string]: any } = {}; for isl, m in pairs(MINE.oreByIsland) do t[isl] = m end; t[curIsland] = oreFilters; return t end)(), learnedOres = learned,
+		mobFilters = mobFilters,
+		raidPos = MINE.raidPos and { MINE.raidPos.X, MINE.raidPos.Y, MINE.raidPos.Z } or nil,
+		rerollTargets = MINE.rerollText or "",
+	}
+end
+
+local function scanRockTypes()
+	local char = player.Character
+	local hrp = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
+	local root = workspace:FindFirstChild("Rocks")
+	if not hrp then toast("Karakter belum siap") return end
+	if not root then toast("Folder Workspace.Rocks tidak ada") return end
+
+	local nearest = findNearestRock(hrp.Position, true)
+	if nearest then setIsland(islandOf(nearest)) end
+	local counts: { [string]: number } = {}
+	for _, m in ipairs(root:GetDescendants()) do
+		if m:IsA("Model") and m.Parent and m.Parent.Name == "SpawnLocation" then
+			if (m:GetPivot().Position - hrp.Position).Magnitude <= MINE.scanRadius then
+				counts[m.Name] = (counts[m.Name] or 0) + 1
+				local o = oreOf(m)
+				if o then noteOre(o, islandOf(m)) end
+			end
+		end
+	end
+
+	local names: { string } = {}
+	for n in pairs(counts) do table.insert(names, n) end
+	table.sort(names)
+
+	local opts = { { id = ALL_ID, label = "Semua jenis" } }
+	local have: { [string]: boolean } = {}
+	for _, n in ipairs(names) do
+		have[n:lower()] = true
+		table.insert(opts, { id = n:lower(), label = ("%s  (%d)"):format(n, counts[n]) })
+	end
+	-- jenis yang sudah dipilih tetap ada di daftar walau tidak ditemukan di sekitar (mis. beda area)
+	local extra: { string } = {}
+	for k in pairs(mineFilters) do
+		if not have[k] then table.insert(extra, k) end
+	end
+	table.sort(extra)
+	for _, k in ipairs(extra) do
+		table.insert(opts, { id = k, label = mineFilters[k] })
+	end
+	targetDrop.SetOptions(opts, mineFilters)
+	toast(#names > 0 and (#names .. " jenis batu ditemukan") or "Tidak ada batu di sekitar")
+end
+
+local btnScan = makeButton(miningPage, 11, "Scan Jenis Batu & Ore", T.accent2, 36)
+hover(btnScan, T.accent2)
+btnScan.MouseButton1Click:Connect(scanRockTypes)
+
+-- jenis batu yang tersimpan tetap muncul di daftar sampai Scan berikutnya
+local targetOpts = { { id = ALL_ID, label = "Semua jenis" } }
+do
+	local keys: { string } = {}
+	for k in pairs(mineFilters) do table.insert(keys, k) end
+	table.sort(keys)
+	for _, k in ipairs(keys) do
+		table.insert(targetOpts, { id = k, label = mineFilters[k] })
+	end
+end
+-- Ore yang diincar: pilih ore, gundukan yang isinya tidak sesuai ditinggalkan
+local ORE_ALL = "__all"
+local oreDrop: any = nil
+local function buildOreOpts(): { { id: string, label: string } }
+	local opts = { { id = ORE_ALL, label = "Semua ore" } }
+	for _, o in ipairs(oreListFor(curIsland)) do
+		table.insert(opts, { id = o.key, label = o.name })
+	end
+	return opts
+end
+refreshOreList = function()
+	if oreDrop then oreDrop.SetOptions(buildOreOpts(), oreFilters) end
+	if MINE.mapBtn then MINE.mapBtn.Text = "Map " .. curIsland .. "  v" end
+end
+
+-- Jenis batu & ore dalam SATU kotak (dua dropdown berdampingan), keduanya multi-pilih
+targetDrop, oreDrop = addDropdownCard(miningPage, 12, {
+	title = "Jenis Batu yang Diincar",
+	options = targetOpts,
+	multi = true,
+	allId = ALL_ID,
+	selected = mineFilters,
+	onChange = function(picked)
+		table.clear(mineFilters)
+		for id, label in pairs(picked) do
+			mineFilters[id] = (label:gsub("%s+%(%d+%)$", ""))
+		end
+		table.clear(mineBlacklist)
+		saveSoon()
+	end,
+}, {
+	title = "Ore yang Diincar",
+	options = buildOreOpts(),
+	multi = true,
+	allId = ORE_ALL,
+	selected = oreFilters,
+	onChange = function(picked)
+		table.clear(oreFilters)
+		for id, label in pairs(picked) do
+			oreFilters[id] = label
+		end
+		table.clear(mineBlacklist)
+		saveSoon()
+	end,
+})
+
+-- Kotak kecil "Map N" di samping judul "Ore yang Diincar": klik untuk ganti 1 -> 2 -> 3 -> 4,
+-- daftar ore otomatis diganti sesuai map yang dipilih (pilihan ore tiap map disimpan sendiri-sendiri).
+do
+	local btn = new("TextButton", {
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, 0, 0, 8),
+		Size = UDim2.fromOffset(58, 20),
+		BackgroundColor3 = T.bg,
+		Text = "Map " .. curIsland .. "  v",
+		TextColor3 = T.text,
+		Font = Enum.Font.GothamBold,
+		TextSize = 11,
+		AutoButtonColor = false,
+	}, oreDrop.Slot)
+	round(btn, 6)
+	stroke(btn, T.accent, 1, 0.2)
+	hover(btn, T.bg)
+	MINE.mapBtn = btn
+	btn.MouseButton1Click:Connect(function()
+		local nxt = tostring((tonumber(curIsland) or 1) % 4 + 1)
+		setIsland(nxt)
+		saveSoon()
+	end)
+end
+
+sectionLabel(miningPage, 40, "Posisi & Gerak")
+addDropdownCard(miningPage, 41, {
+	title = "Posisi terhadap Batu",
+	options = {
+		{ id = "up", label = "Atas (Up)" },
+		{ id = "down", label = "Bawah (Down)" },
+		{ id = "front", label = "Depan (Front)" },
+		{ id = "back", label = "Belakang (Back)" },
+		{ id = "center", label = "Tengah (Center)" },
+	},
+	defaultId = minePosMode,
+	onSelect = function(id)
+		minePosMode = id
+		saveSoon()
+	end,
+}, {
+	title = "Mode Gerak",
+	options = {
+		{ id = "slow", label = "Pelan (terbang)" },
+		{ id = "cannon", label = "TP" },
+	},
+	defaultId = (SAVED.moveMode == "cannon") and "cannon" or "slow",   -- simpanan lama "instant" otomatis jadi "slow"
+	onSelect = function(id)
+		MINE.mode = id
+		MINE.instant = (id ~= "slow")   -- TP: langsung ke tujuan tanpa terbang pelan
+		saveSoon()
+	end,
+})
+-- Terapkan mode tersimpan saat script dimuat (dropdown tidak memanggil onSelect saat awal)
+MINE.mode = (SAVED.moveMode == "cannon") and "cannon" or "slow"
+MINE.instant = (MINE.mode ~= "slow")
+
+-- Mode "TP": TP ke meriam -> tekan prompt (E) -> setelah terlontar baru TP ke target.
+-- Posisi meriam disimpan lewat tombol di bawah (berdiri tepat di dekat meriam, lalu tekan).
+-- Posisi meriam disimpan PER MAP (pulau): cukup simpan sekali per map, tersimpan terus di file save
+-- dan otomatis dipakai lagi setiap kali script dimuat / pindah map.
+MINE.cannonByIsland = {}
+MINE.cannonPromptByIsland = {}
+if type(SAVED.cannonByIsland) == "table" then
+	for isl, v in pairs(SAVED.cannonByIsland) do
+		if type(v) == "table" and tonumber(v[1]) and tonumber(v[2]) and tonumber(v[3]) then
+			MINE.cannonByIsland[tostring(isl)] = Vector3.new(v[1], v[2], v[3])
+		end
+	end
+end
+-- simpanan versi lama (satu posisi saja) dianggap milik map terakhir yang aktif
+if type(SAVED.cannonPos) == "table" and tonumber(SAVED.cannonPos[1]) and tonumber(SAVED.cannonPos[2]) and tonumber(SAVED.cannonPos[3]) and not MINE.cannonByIsland[curIsland] then
+	MINE.cannonByIsland[curIsland] = Vector3.new(SAVED.cannonPos[1], SAVED.cannonPos[2], SAVED.cannonPos[3])
+end
+-- Pusat area raid (disimpan lewat tombol di bagian Auto Raid)
+MINE.raidPos = nil
+if type(SAVED.raidPos) == "table" and tonumber(SAVED.raidPos[1]) and tonumber(SAVED.raidPos[2]) and tonumber(SAVED.raidPos[3]) then
+	MINE.raidPos = Vector3.new(SAVED.raidPos[1], SAVED.raidPos[2], SAVED.raidPos[3])
+end
+
+MINE.cannonHop = function(hrp: BasePart)
+	local isl = curIsland
+	local cp: Vector3? = MINE.cannonByIsland[isl]
+	if not cp then
+		toast("Posisi meriam Map " .. isl .. " belum disimpan")
+		return
+	end
+	hrp.CFrame = CFrame.new(cp)
+	hrp.AssemblyLinearVelocity = Vector3.zero
+	task.wait(0.15)
+	local prompt: ProximityPrompt? = MINE.cannonPromptByIsland[isl]
+	if not (prompt and prompt.Parent) then
+		prompt = nil
+		local bestD = 25
+		for _, d in ipairs(workspace:GetDescendants()) do
+			if d:IsA("ProximityPrompt") then
+				local par = d.Parent
+				local pos: Vector3? = nil
+				if par and par:IsA("BasePart") then
+					pos = par.Position
+				elseif par and par:IsA("Model") then
+					pos = par:GetPivot().Position
+				end
+				if pos and (pos - cp).Magnitude < bestD then
+					bestD = (pos - cp).Magnitude
+					prompt = d
+				end
+			end
+		end
+		MINE.cannonPromptByIsland[isl] = prompt
+	end
+	if not prompt then
+		toast("Prompt meriam tidak ditemukan dekat posisi tersimpan")
+		return
+	end
+	if not fireproximityprompt then
+		toast("Executor tidak mendukung fireproximityprompt")
+		return
+	end
+	pcall(fireproximityprompt, prompt)
+	-- tunggu sampai terlontar (kecepatan tinggi / sudah jauh dari meriam), maksimal 2 detik
+	local t0 = os.clock()
+	while os.clock() - t0 < 2 do
+		task.wait(0.05)
+		if hrp.AssemblyLinearVelocity.Magnitude > 40 or (hrp.Position - cp).Magnitude > 15 then break end
+	end
+	task.wait(0.1)
+end
+
+values.mineDist = values.mineDist or 4
+addSliderCard(miningPage, 42, "Jarak ke Batu", "1 = tepat di tengah batu, makin besar makin menjauh (stud)", "mineDist", 1, 30, 100,
+	true)
+values.mineSpeed = values.mineSpeed or 16
+addSliderCard(miningPage, 43, "Kecepatan Gerak", "Stud/detik. Jalan normal = 16, terlalu tinggi berisiko kick", "mineSpeed", 1, 100, 300,
+	true)
+values.hitRate = values.hitRate or 10
+addSliderCard(miningPage, 44, "Kecepatan Pukul", "Pukulan per detik (Auto Mine & Auto Mob). 10 = sama dengan client asli, makin tinggi makin berisiko", "hitRate", 5, 25, 40,
+	true)
+
+do
+	local btnCannon = makeButton(miningPage, 45, "Simpan Posisi Meriam (berdiri di dekat meriam)", T.accent2, 36)
+	hover(btnCannon, T.accent2)
+	btnCannon.MouseButton1Click:Connect(function()
+		local char = player.Character
+		local hrp = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
+		if not hrp then
+			toast("Karakter tidak ditemukan")
+			return
+		end
+		MINE.cannonByIsland[curIsland] = hrp.Position
+		MINE.cannonPromptByIsland[curIsland] = nil
+		saveSoon()
+		toast("Posisi meriam Map " .. curIsland .. " disimpan")
+	end)
+end
+
+-- =====================================================
+-- AUTO MOB (tab Mining)
+-- Sama seperti Auto Mine, tapi targetnya mob: terbang ke mob terdekat (jenis sesuai pilihan),
+-- menghadap mob, lalu memanggil ToolActivated("Weapon") tiap ~0.1 detik.
+-- Memakai slider "Jarak ke Batu" + "Kecepatan Gerak" dan dropdown "Posisi terhadap Batu" yang sama.
+-- Mob = Model ber-Humanoid yang bukan karakter pemain (dicari di Workspace.Living kalau ada, kalau tidak di Workspace).
+-- Auto Mine & Auto Mob saling mematikan, dan memakai mineToken yang sama.
+-- =====================================================
+-- Dibungkus fungsi sendiri supaya variabel lokalnya tidak menambah jatah 200 register chunk utama.
+;(function()
+local MOB_ALL = "__all"
+-- targetTimeout = detik tanpa mob kena damage sebelum ganti mob (timer di-reset tiap HP mob berkurang); maxTime = batas keras per mob
+-- raidRadius = radius area raid (stud) dari pusat yang disimpan; hanya mob di dalam radius ini yang diserang Auto Raid
+local MOBCFG = { targetTimeout = 20, maxTime = 240, blacklistTime = 20, arriveTol = 3, raidRadius = 120 }
+local mobBlacklist: { [Model]: number } = {}
+local mobTarget: Model? = nil
+local mobDrop: any = nil
+
+-- "Zombie12" / "Zombie_12" -> "Zombie" (nomor di belakang nama dianggap ID instance, bukan jenis)
+local function mobBase(n: string): string
+	local b = n:gsub("[%s_]*%d+$", "")
+	if b == "" then return n end
+	return b
+end
+
+local function mobRootOf(m: Model): BasePart?
+	return (m:FindFirstChild("HumanoidRootPart") or m.PrimaryPart or m:FindFirstChildWhichIsA("BasePart")) :: any
+end
+
+local function eachMob(fn: (Model, Humanoid, BasePart) -> ())
+	local container: Instance = workspace:FindFirstChild("Living") or workspace
+	for _, h in ipairs(container:GetDescendants()) do
+		if h:IsA("Humanoid") then
+			local m = h.Parent
+			if m and m:IsA("Model") and not Players:GetPlayerFromCharacter(m) then
+				local r = mobRootOf(m)
+				if r then fn(m, h, r) end
+			end
+		end
+	end
+end
+
+local function mobWanted(name: string): boolean
+	return next(mobFilters) == nil or mobFilters[mobBase(name):lower()] ~= nil
+end
+
+local function findNearestMob(pos: Vector3): Model?
+	local best: Model? = nil
+	local bestD = math.huge
+	local now = os.clock()
+	eachMob(function(m, h, r)
+		if h.Health > 0 and mobWanted(m.Name) and not (mobBlacklist[m] and mobBlacklist[m] > now) then
+			local d = (r.Position - pos).Magnitude
+			if d < bestD then best, bestD = m, d end
+		end
+	end)
+	return best
+end
+
+-- Mob di area raid: semua Humanoid non-pemain dalam radius dari pusat raid (nama/jenis mob diabaikan,
+-- filter "Mob yang Diincar" tidak dipakai). Cari di Workspace.Living dulu, kalau kosong baru seluruh Workspace.
+local function findRaidMob(pos: Vector3): Model?
+	local center: Vector3? = MINE.raidPos
+	if not center then return nil end
+	local best: Model? = nil
+	local bestD = math.huge
+	local now = os.clock()
+	local function scan(container: Instance)
+		for _, h in ipairs(container:GetDescendants()) do
+			if h:IsA("Humanoid") and h.Health > 0 then
+				local m = h.Parent
+				if m and m:IsA("Model") and not Players:GetPlayerFromCharacter(m) and not (mobBlacklist[m] and mobBlacklist[m] > now) then
+					local r = mobRootOf(m)
+					if r and (r.Position - center).Magnitude <= MOBCFG.raidRadius then
+						local d = (r.Position - pos).Magnitude
+						if d < bestD then best, bestD = m, d end
+					end
+				end
+			end
+		end
+	end
+	local living = workspace:FindFirstChild("Living")
+	if living then scan(living) end
+	if not best then scan(workspace) end
+	return best
+end
+
+local function whyNoMob(pos: Vector3): string
+	local total, skipped = 0, 0
+	local now = os.clock()
+	eachMob(function(m, h, r)
+		if h.Health > 0 and mobWanted(m.Name) then
+			total += 1
+			if mobBlacklist[m] and mobBlacklist[m] > now then skipped += 1 end
+		end
+	end)
+	if total == 0 then
+		return next(mobFilters) == nil and "Tidak ada mob hidup ditemukan" or "Tidak ada mob hidup dari jenis yang dipilih"
+	end
+	return ("Semua %d mob sedang dilewati (macet / baru dicoba)"):format(skipped)
+end
+
+-- Posisi tujuan karakter relatif ke mob (sama seperti rockGoal): Atas/Bawah/Depan/Belakang/Tengah.
+-- Depan/Belakang mengikuti arah hadap mob saat ini (mob bergerak, jadi dihitung ulang tiap frame).
+local function mobGoal(m: Model): (Vector3, Vector3)
+	local r = mobRootOf(m)
+	local c = r and r.Position or m:GetPivot().Position
+	local off = math.max(0, (values.mineDist or 1) - 1)
+	local flat = Vector3.new(0, 0, 1)
+	if r then
+		local lv = r.CFrame.LookVector
+		local f = Vector3.new(lv.X, 0, lv.Z)
+		if f.Magnitude > 0.01 then flat = f.Unit end
+	end
+	local goal = c
+	if minePosMode == "up" then
+		goal = c + Vector3.new(0, off, 0)
+	elseif minePosMode == "down" then
+		goal = c - Vector3.new(0, off, 0)
+	elseif minePosMode == "front" then
+		goal = c + flat * off
+	elseif minePosMode == "back" then
+		goal = c - flat * off
+	end
+	return goal, c
+end
+
+local function mobLoop(token: number, raid: boolean?)
+	local remote = resolvePath("ReplicatedStorage.Shared.Packages.Knit.Services.ToolService.RF.ToolActivated")
+	if not remote then
+		toast("Remote ToolActivated tidak ditemukan")
+		local selfKey = raid and "autoraid" or "automob"
+		state[selfKey] = false
+		if switches[selfKey] then switches[selfKey].Set(false) end
+		refreshActive()
+		return
+	end
+
+	local target: Model? = nil
+	local startedAt = 0   -- waktu terakhir ada kemajuan (mob kena damage / masih terbang ke mob)
+	local pickedAt = 0
+	local lastHp = 0
+
+	-- Terbang ke posisi tujuan + tembus dinding, tiap frame fisika selama ada target
+	local charParts: { BasePart } = {}
+	local partsChar: Instance? = nil
+	local partsAt = 0
+	local flyConn = RunService.Stepped:Connect(function(_, dt)
+		local m = mobTarget
+		local char = player.Character
+		local hrp = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
+		if not (m and m.Parent and char and hrp) then return end
+		local fhum = char:FindFirstChildOfClass("Humanoid")
+		if not fhum or fhum.Health <= 0 then return end   -- karakter mati: jangan paksa TP
+
+		if partsChar ~= char or os.clock() - partsAt > 1 then
+			partsChar, partsAt = char, os.clock()
+			table.clear(charParts)
+			for _, d in ipairs(char:GetDescendants()) do
+				if d:IsA("BasePart") then table.insert(charParts, d) end
+			end
+		end
+		for _, p in ipairs(charParts) do p.CanCollide = false end
+
+		local goal, c = mobGoal(m)
+		local pos = hrp.Position
+		local delta = goal - pos
+		local step = MINE.instant and 1e9 or (values.mineSpeed or 16) * dt   -- TP: langsung ke tujuan; Pelan: stud/detik dari slider
+		local newPos = (delta.Magnitude <= step) and goal or (pos + delta.Unit * step)
+
+		local look = c - newPos
+		if look.Magnitude < 0.5 then look = hrp.CFrame.LookVector end   -- posisi "Tengah": pertahankan arah hadap
+		local up = Vector3.yAxis
+		if math.abs(look.Unit.Y) > 0.99 then up = Vector3.new(0, 0, -1) end
+		hrp.CFrame = CFrame.lookAt(newPos, newPos + look, up)
+		hrp.AssemblyLinearVelocity = Vector3.zero
+		hrp.AssemblyAngularVelocity = Vector3.zero
+	end)
+
+	local wasDead = false
+	while (if raid then state.autoraid else state.automob) and token == mineToken and not unloaded do
+		local char = player.Character
+		local hrp = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+		if not (char and hrp and hum) or hum.Health <= 0 then
+			-- mati / sedang respawn: lepas target supaya tidak TP paksa, tunggu sampai hidup lagi
+			wasDead = true
+			target = nil
+			mobTarget = nil
+			task.wait(0.5)
+			continue
+		end
+		if wasDead then
+			wasDead = false
+			task.wait(MINE.respawnDelay)   -- beri waktu karakter siap, lalu cek ulang (bisa mati lagi)
+			continue
+		end
+
+		-- target mati / hilang / terlalu lama: ganti
+		if target then
+			local th = target:FindFirstChildOfClass("Humanoid")
+			if not target.Parent or not th or th.Health <= 0 then
+				target = nil
+				mobTarget = nil
+			elseif th.Health < lastHp - 0.01 then
+				-- mob kena damage: masih dalam proses dibunuh, jangan pindah
+				lastHp = th.Health
+				startedAt = os.clock()
+			elseif os.clock() - startedAt > MOBCFG.targetTimeout or os.clock() - pickedAt > MOBCFG.maxTime then
+				mobBlacklist[target] = os.clock() + MOBCFG.blacklistTime
+				target = nil
+				mobTarget = nil
+			elseif th.Health > lastHp then
+				lastHp = th.Health   -- mob regen: naikkan acuan HP
+			end
+		end
+
+		if not target then
+			target = if raid then findRaidMob(hrp.Position) else findNearestMob(hrp.Position)
+			if target and not raid and MINE.mode == "cannon" then   -- selalu lewat meriam dulu untuk setiap target baru, berapa pun jaraknya
+				MINE.cannonHop(hrp)
+			end
+			mobTarget = target
+			startedAt = os.clock()
+			pickedAt = os.clock()
+			local nh = target and target:FindFirstChildOfClass("Humanoid")
+			lastHp = nh and nh.Health or 0
+			if not target then
+				note(raid and "Menunggu mob di area raid..." or whyNoMob(hrp.Position))
+				task.wait(raid and 1 or 1.5)
+				continue
+			end
+		end
+
+		local mob = target
+		if not mob then continue end
+		local goal, c = mobGoal(mob)
+		local off = math.max(0, (values.mineDist or 1) - 1)
+		local dGoal = (hrp.Position - goal).Magnitude
+		local dMob = (hrp.Position - c).Magnitude
+		if dGoal > MOBCFG.arriveTol and dMob > off + 6 then
+			-- masih terbang ke mob: belum memukul, jangan hitung sebagai timeout
+			startedAt = os.clock()
+			task.wait(0.1)
+		else
+			local ok, res = pcall(remote.InvokeServer, remote, "Weapon", nil)
+			pushSwing("M:" .. (ok and tostring(res) or ("ERR " .. tostring(res))))
+			task.wait(MINE.swingDelay())
+		end
+	end
+
+	flyConn:Disconnect()
+	mobTarget = nil
+end
+
+sectionLabel(miningPage, 20, "Target Mob")
+addToggleCard(miningPage, 3, "Auto Mob", "Cari mob sesuai filter, dekati, lalu serang terus. Tidak bisa jalan bareng Auto Mine.", "automob", function(on)
+	mineToken += 1
+	if on then
+		if state.automine then
+			state.automine = false
+			if switches.automine then switches.automine.Set(false) end
+		end
+		if state.autoraid then
+			state.autoraid = false
+			if switches.autoraid then switches.autoraid.Set(false) end
+		end
+		task.spawn(mobLoop, mineToken)
+	end
+end)
+
+-- Auto Raid: serang semua mob di area raid (jenis bebas). Memakai slider Jarak, Kecepatan Gerak, Kecepatan Pukul
+-- dan dropdown Posisi yang sama dengan Auto Mine / Auto Mob. Tidak lewat meriam.
+addToggleCard(miningPage, 5, "Auto Raid", "Serang semua mob di area raid (jenis bebas, tanpa filter). Simpan pusat area raid dulu di bagian bawah.", "autoraid", function(on)
+	mineToken += 1
+	if on then
+		if not MINE.raidPos then
+			toast("Simpan pusat area raid dulu (tombol di bagian Auto Raid)")
+			state.autoraid = false
+			if switches.autoraid then switches.autoraid.Set(false) end
+			refreshActive()
+			return
+		end
+		for _, k in ipairs({ "automine", "automob" }) do
+			if state[k] then
+				state[k] = false
+				if switches[k] then switches[k].Set(false) end
+			end
+		end
+		task.spawn(mobLoop, mineToken, true)
+	end
+end)
+
+-- Scan mob hidup di game, urut abjad, lalu isi dropdown (multi-pilih)
+local function scanMobTypes()
+	local counts: { [string]: { n: number, name: string } } = {}
+	eachMob(function(m, h, r)
+		if h.Health > 0 then
+			local b = mobBase(m.Name)
+			local k = b:lower()
+			local e = counts[k]
+			if e then e.n += 1 else counts[k] = { n = 1, name = b } end
+		end
+	end)
+
+	local keys: { string } = {}
+	for k in pairs(counts) do table.insert(keys, k) end
+	table.sort(keys, function(a, b) return counts[a].name < counts[b].name end)
+
+	local opts = { { id = MOB_ALL, label = "Semua mob" } }
+	for _, k in ipairs(keys) do
+		table.insert(opts, { id = k, label = ("%s  (%d)"):format(counts[k].name, counts[k].n) })
+	end
+	-- jenis yang sudah dipilih tetap ada di daftar walau tidak ditemukan saat ini
+	local extra: { string } = {}
+	for k in pairs(mobFilters) do
+		if not counts[k] then table.insert(extra, k) end
+	end
+	table.sort(extra)
+	for _, k in ipairs(extra) do
+		table.insert(opts, { id = k, label = mobFilters[k] })
+	end
+	mobDrop.SetOptions(opts, mobFilters)
+	toast(#keys > 0 and (#keys .. " jenis mob ditemukan") or "Tidak ada mob ditemukan")
+end
+
+local btnScanMob = makeButton(miningPage, 21, "Scan Jenis Mob", T.accent2, 36)
+hover(btnScanMob, T.accent2)
+btnScanMob.MouseButton1Click:Connect(scanMobTypes)
+
+local mobOpts = { { id = MOB_ALL, label = "Semua mob" } }
+do
+	local keys: { string } = {}
+	for k in pairs(mobFilters) do table.insert(keys, k) end
+	table.sort(keys)
+	for _, k in ipairs(keys) do
+		table.insert(mobOpts, { id = k, label = mobFilters[k] })
+	end
+end
+mobDrop = addDropdownCard(miningPage, 22, {
+	title = "Mob yang Diincar",
+	options = mobOpts,
+	multi = true,
+	allId = MOB_ALL,
+	selected = mobFilters,
+	onChange = function(picked)
+		table.clear(mobFilters)
+		for id, label in pairs(picked) do
+			mobFilters[id] = (label:gsub("%s+%(%d+%)$", ""))
+		end
+		table.clear(mobBlacklist)
+		saveSoon()
+	end,
+})
+sectionLabel(miningPage, 50, "Auto Raid")
+local btnRaid = makeButton(miningPage, 51, "Simpan Pusat Area Raid (berdiri di tengah arena)", T.accent2, 36)
+hover(btnRaid, T.accent2)
+btnRaid.MouseButton1Click:Connect(function()
+	local char = player.Character
+	local hrp = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
+	if not hrp then
+		toast("Karakter tidak ditemukan")
+		return
+	end
+	MINE.raidPos = hrp.Position
+	table.clear(mobBlacklist)
+	saveSoon()
+	toast("Pusat area raid disimpan (radius " .. MOBCFG.raidRadius .. " stud)")
+end)
+end)() -- akhir blok Auto Mob
+
+-- =====================================================
+-- AUTO REROLL RACE (tab Main)
+-- Pola dari log: client memanggil RaceService.RF.Reroll() tanpa argumen, sekitar 0.6 detik sekali.
+-- Berhenti sendiri kalau race hasil reroll cocok dengan salah satu target.
+-- =====================================================
+-- Dibungkus fungsi sendiri: script utama sudah mendekati batas 200 variabel lokal Lua.
+;(function()
+	local mainPage = pages["Mining"]
+	local rerollTargets: { string } = {}
+	local rerollToken = 0
+	MINE.rerollText = type(SAVED.rerollTargets) == "string" and SAVED.rerollTargets or ""
+
+	local function parseTargets(txt: string)
+		table.clear(rerollTargets)
+		for part in string.gmatch(txt, "[^,;]+") do
+			local t = string.lower((string.match(part, "^%s*(.-)%s*$")))
+			if t ~= "" then table.insert(rerollTargets, t) end
+		end
+	end
+	parseTargets(MINE.rerollText)
+
+	-- ambil nama race dari nilai balikan Reroll (string, atau tabel berisi string)
+	local function raceNameFrom(v: any, depth: number?): string?
+		local d = depth or 0
+		if type(v) == "string" then return v end
+		if type(v) == "table" and d < 3 then
+			for _, k in ipairs({ "Race", "race", "NewRace", "Name", "name", "Result" }) do
+				if v[k] ~= nil then
+					local r = raceNameFrom(v[k], d + 1)
+					if r then return r end
+				end
+			end
+			for _, x in pairs(v) do
+				if type(x) == "string" then return x end
+			end
+		end
+		return nil
+	end
+
+	-- cadangan: baca race dari atribut pemain / leaderstats kalau game menyimpannya di sana
+	local function readCurrentRace(): string?
+		for _, k in ipairs({ "Race", "race" }) do
+			local a = player:GetAttribute(k)
+			if type(a) == "string" and a ~= "" then return a end
+		end
+		local ls = player:FindFirstChild("leaderstats")
+		local rv = ls and ls:FindFirstChild("Race")
+		if rv and rv:IsA("StringValue") then return rv.Value end
+		return nil
+	end
+
+	-- cocok persis (huruf besar/kecil diabaikan, teks persen di belakang nama dibuang),
+	-- supaya "Angel" tidak ikut cocok dengan "Fallen Angel" atau "Archangel"
+	local function isTarget(name: string?): boolean
+		if not name then return false end
+		local low = string.lower((string.match(name, "^%s*(.-)%s*$")))
+		low = (low:gsub("%s*%(.-%)%s*$", ""))
+		for _, t in ipairs(rerollTargets) do
+			if low == t then return true end
+		end
+		return false
+	end
+
+	local function stopReroll()
+		state.autoreroll = false
+		if switches.autoreroll then switches.autoreroll.Set(false) end
+	end
+
+	local function rerollLoop(token: number)
+		local remote = resolvePath("ReplicatedStorage.Shared.Packages.Knit.Services.RaceService.RF.Reroll")
+		if not remote then
+			toast("Remote Reroll tidak ditemukan")
+			stopReroll()
+			return
+		end
+		if #rerollTargets == 0 then
+			toast("Pilih target race dulu")
+			stopReroll()
+			return
+		end
+		if isTarget(readCurrentRace()) then
+			toast("Race saat ini sudah sesuai target")
+			stopReroll()
+			return
+		end
+		local fails, first, count = 0, true, 0
+		while state.autoreroll and token == rerollToken and not unloaded do
+			local ok, res = pcall(remote.InvokeServer, remote)
+			count += 1
+			if first then
+				first = false
+				toast("Reroll pertama: " .. typeof(res) .. (type(res) == "string" and (" \"" .. res .. "\"") or ""))
+			end
+			if not ok or res == false then
+				fails += 1
+				if fails >= 3 then
+					toast("Reroll gagal 3x berturut-turut (bahan habis / cooldown?). Berhenti.")
+					stopReroll()
+					return
+				end
+			else
+				fails = 0
+				local name = raceNameFrom(res)
+				if not name then
+					task.wait(0.15)
+					name = readCurrentRace()
+				end
+				if isTarget(name) then
+					toast("Dapat race target: " .. tostring(name) .. " (" .. count .. "x reroll)")
+					stopReroll()
+					return
+				end
+			end
+			task.wait(0.6)
+		end
+	end
+
+	-- Daftar semua race di game (urut dari yang paling langka)
+	local RACE_NONE = "__none"
+	local RACES = { "Kitsune", "Dryad", "Orc Lord", "Archangel", "Fallen Angel", "Imp", "Angel", "Demon",
+		"Minotaur", "Dragonborn", "Golem", "Felynx", "Fairy", "Dwarf", "Shadow", "Vampire",
+		"Goblin", "Undead", "Orc", "Elf", "Zombie", "Human" }
+	local raceOpts = { { id = RACE_NONE, label = "Belum ada dipilih" } }
+	local raceSelected: { [string]: boolean } = {}
+	for _, name in ipairs(RACES) do
+		local id = string.lower(name)
+		table.insert(raceOpts, { id = id, label = name })
+		if table.find(rerollTargets, id) then raceSelected[id] = true end
+	end
+
+	sectionLabel(mainPage, 30, "Race yang Dicari")
+	-- Popup konfirmasi sebelum Auto Reroll dinyalakan (supaya tidak kepencet dan menghilangkan race bagus)
+	local confirmOverlay = new("TextButton", {
+		Name = "RerollConfirm",
+		Size = UDim2.fromScale(1, 1),
+		BackgroundColor3 = Color3.new(0, 0, 0),
+		BackgroundTransparency = 0.4,
+		Text = "",
+		AutoButtonColor = false,
+		Visible = false,
+		ZIndex = 80,
+	}, main)
+	round(confirmOverlay, 16)
+	local confirmBox = new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromOffset(310, 168),
+		BackgroundColor3 = T.card,
+		BorderSizePixel = 0,
+		ZIndex = 81,
+	}, confirmOverlay)
+	round(confirmBox, 12)
+	stroke(confirmBox, T.danger, 1.5, 0.2)
+	text(confirmBox, {
+		Text = "Yakin nyalakan Auto Reroll Race?",
+		Font = Enum.Font.GothamBold,
+		TextSize = 15,
+		Position = UDim2.fromOffset(16, 12),
+		Size = UDim2.new(1, -32, 0, 20),
+		ZIndex = 82,
+	})
+	text(confirmBox, {
+		Text = "Race kamu sekarang akan di-reroll dan bisa hilang (termasuk race terbaik) sampai dapat race yang dipilih.",
+		TextSize = 12,
+		TextColor3 = T.sub,
+		TextWrapped = true,
+		TextYAlignment = Enum.TextYAlignment.Top,
+		Position = UDim2.fromOffset(16, 40),
+		Size = UDim2.new(1, -32, 0, 66),
+		ZIndex = 82,
+	})
+	local btnCancel = new("TextButton", {
+		Position = UDim2.new(0, 16, 1, -50),
+		Size = UDim2.new(0.5, -22, 0, 34),
+		BackgroundColor3 = T.accent2,
+		Text = "Batal",
+		TextColor3 = WHITE,
+		Font = Enum.Font.GothamBold,
+		TextSize = 13,
+		AutoButtonColor = false,
+		ZIndex = 82,
+	}, confirmBox)
+	round(btnCancel, 8)
+	hover(btnCancel, T.accent2)
+	local btnYes = new("TextButton", {
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, -16, 1, -50),
+		Size = UDim2.new(0.5, -22, 0, 34),
+		BackgroundColor3 = T.danger,
+		Text = "Ya, Nyalakan",
+		TextColor3 = WHITE,
+		Font = Enum.Font.GothamBold,
+		TextSize = 13,
+		AutoButtonColor = false,
+		ZIndex = 82,
+	}, confirmBox)
+	round(btnYes, 8)
+	hover(btnYes, T.danger)
+
+	btnCancel.MouseButton1Click:Connect(function()
+		confirmOverlay.Visible = false
+	end)
+	btnYes.MouseButton1Click:Connect(function()
+		confirmOverlay.Visible = false
+		if unloaded then return end
+		state.autoreroll = true
+		if switches.autoreroll then switches.autoreroll.Set(true) end
+		refreshActive()
+		rerollToken += 1
+		task.spawn(rerollLoop, rerollToken)
+	end)
+	track(main:GetPropertyChangedSignal("Visible"):Connect(function()
+		if not main.Visible then confirmOverlay.Visible = false end
+	end))
+
+	addToggleCard(mainPage, 4, "Auto Reroll Race", "Reroll terus sampai dapat salah satu race yang dipilih, lalu berhenti sendiri. Ada konfirmasi sebelum menyala.", "autoreroll", function(on)
+		rerollToken += 1
+		if on then
+			-- belum menyala: kembalikan saklar ke OFF, tampilkan popup konfirmasi dulu
+			state.autoreroll = false
+			if switches.autoreroll then switches.autoreroll.Set(false) end
+			refreshActive()
+			confirmOverlay.Visible = true
+		else
+			confirmOverlay.Visible = false
+		end
+	end)
+	addDropdownCard(mainPage, 31, {
+		title = "Race yang Dicari (bisa pilih lebih dari satu)",
+		options = raceOpts,
+		multi = true,
+		allId = RACE_NONE,
+		selected = raceSelected,
+		onChange = function(picked)
+			table.clear(rerollTargets)
+			local names: { string } = {}
+			for id, label in pairs(picked) do
+				table.insert(rerollTargets, id)
+				table.insert(names, label)
+			end
+			table.sort(names)
+			MINE.rerollText = table.concat(names, ",")
+			saveSoon()
+		end,
+	})
+end)()
+
+local btnMineDump = makeButton(debugPage, 9, "Salin Status Batu & Swing", T.accent2, 40)
+hover(btnMineDump, T.accent2)
+btnMineDump.MouseButton1Click:Connect(dumpMineStatus)
+
+-- Diagnosa isi batu: salin seluruh struktur batu terdekat (anak, atribut, nilai, teks GUI)
+-- dipakai untuk mencari di mana jenis ore muncul saat batu sudah setengah dipukul.
+local function dumpRockTree()
+	local char = player.Character
+	local hrp = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
+	if not hrp then toast("Karakter belum siap") return end
+	local rock = mineTarget or findNearestRock(hrp.Position, true)
+	if not rock then toast("Tidak ada batu") return end
+
+	local out: { string } = {}
+	local dist = (rock:GetPivot().Position - hrp.Position).Magnitude
+	table.insert(out, ("Batu: %s | jarak %.1f stud"):format(rock:GetFullName(), dist))
+	for k, v in pairs(rock:GetAttributes()) do
+		table.insert(out, ("attr %s = %s"):format(k, tostring(v)))
+	end
+
+	local MAXLINES = 400
+	local function walk(inst: Instance, depth: number)
+		for _, c in ipairs(inst:GetChildren()) do
+			if #out >= MAXLINES then return end
+			local line = string.rep("  ", depth) .. ("%s [%s]"):format(c.Name, c.ClassName)
+			if c:IsA("BasePart") then
+				line ..= (" T=%.2f size=(%.1f,%.1f,%.1f) color=#%s mat=%s"):format(
+					c.Transparency, c.Size.X, c.Size.Y, c.Size.Z, c.Color:ToHex(), c.Material.Name)
+			elseif c:IsA("ValueBase") then
+				line ..= " Value=" .. tostring((c :: any).Value)
+			elseif c:IsA("TextLabel") or c:IsA("TextButton") or c:IsA("TextBox") then
+				line ..= " Text=" .. tostring((c :: any).Text)
+			elseif c:IsA("BillboardGui") or c:IsA("SurfaceGui") then
+				line ..= " Enabled=" .. tostring((c :: any).Enabled)
+			elseif c:IsA("ParticleEmitter") then
+				line ..= " Enabled=" .. tostring(c.Enabled)
+			end
+			for k, v in pairs(c:GetAttributes()) do
+				line ..= (" {%s=%s}"):format(k, tostring(v))
+			end
+			table.insert(out, line)
+			walk(c, depth + 1)
+		end
+	end
+	walk(rock, 1)
+	if #out >= MAXLINES then table.insert(out, "... (dipotong di " .. MAXLINES .. " baris)") end
+	exportText("IsiBatu", out)
+end
+
+local btnRockTree = makeButton(debugPage, 11, "Salin Isi Batu (struktur lengkap)", T.accent, 40)
+hover(btnRockTree, T.accent)
+btnRockTree.MouseButton1Click:Connect(dumpRockTree)
+
+end -- akhir blok Auto Mine
+
+-- ---------- Perekam Efek Batu (cari titik putih / weak-point) ----------
+-- Merekam: objek/efek/GUI baru di dekat karakter + perubahan Color/Material/Transparency/Size
+-- pada part batu terdekat + perubahan atribut batu.
+local fxOn = false
+local fxConns: { RBXScriptConnection } = {}
+local fxRecs: { any } = {}
+local fxSeen: { [string]: any } = {}
+local fxT0 = 0
+local FX_MAX = 250
+
+local function fxInteresting(inst: any): boolean
+	return inst:IsA("BasePart") or inst:IsA("ParticleEmitter") or inst:IsA("Beam") or inst:IsA("Trail")
+		or inst:IsA("Highlight") or inst:IsA("Light") or inst:IsA("BillboardGui") or inst:IsA("SurfaceGui")
+		or inst:IsA("GuiObject") or inst:IsA("Decal") or inst:IsA("Texture")
+end
+
+local function fxDescribe(inst: any): string
+	local s = inst.ClassName .. " | " .. inst:GetFullName()
+	if inst:IsA("BasePart") then
+		s ..= (" | pos=(%.1f,%.1f,%.1f) size=(%.1f,%.1f,%.1f) color=#%s T=%.2f mat=%s"):format(
+			inst.Position.X, inst.Position.Y, inst.Position.Z,
+			inst.Size.X, inst.Size.Y, inst.Size.Z,
+			inst.Color:ToHex(), inst.Transparency, inst.Material.Name)
+	elseif inst:IsA("ParticleEmitter") then
+		s ..= " | enabled=" .. tostring(inst.Enabled) .. " tex=" .. tostring(inst.Texture)
+	elseif inst:IsA("Highlight") then
+		s ..= " | fill=#" .. inst.FillColor:ToHex() .. " outline=#" .. inst.OutlineColor:ToHex()
+	elseif inst:IsA("Light") then
+		s ..= " | color=#" .. inst.Color:ToHex() .. " brightness=" .. tostring(inst.Brightness)
+	elseif inst:IsA("ImageLabel") or inst:IsA("ImageButton") then
+		s ..= " | image=" .. tostring(inst.Image) .. " size=" .. tostring(inst.AbsoluteSize) .. " pos=" .. tostring(inst.AbsolutePosition)
+	elseif inst:IsA("GuiObject") then
+		s ..= " | size=" .. tostring(inst.AbsoluteSize) .. " visible=" .. tostring(inst.Visible)
+	elseif inst:IsA("Decal") or inst:IsA("Texture") then
+		s ..= " | tex=" .. tostring(inst.Texture)
+	end
+	return s
+end
+
+local function fxAdd(tag: string, txt: string, key: string)
+	local k = tag .. "|" .. key
+	local rec = fxSeen[k]
+	if rec then
+		rec.n += 1
+		return
+	end
+	if #fxRecs >= FX_MAX then return end
+	rec = { t = os.clock() - fxT0, tag = tag, text = txt, n = 1 }
+	fxSeen[k] = rec
+	table.insert(fxRecs, rec)
+end
+
+local function fxNearPlayer(inst: any, radius: number): boolean
+	local char = player.Character
+	local hrp = char and char:FindFirstChild("HumanoidRootPart") :: any
+	if not hrp then return true end
+	local part: any = inst:IsA("BasePart") and inst or inst:FindFirstAncestorWhichIsA("BasePart")
+	if part then
+		return (part.Position - hrp.Position).Magnitude <= radius
+	end
+	local model = inst:FindFirstAncestorWhichIsA("Model")
+	if model then
+		return (model:GetPivot().Position - hrp.Position).Magnitude <= radius
+	end
+	return true
+end
+
+local function fxStop(doExport: boolean)
+	fxOn = false
+	for _, c in ipairs(fxConns) do
+		c:Disconnect()
+	end
+	table.clear(fxConns)
+	if doExport then
+		if #fxRecs == 0 then
+			toast("Tidak ada perubahan terekam")
+		else
+			local out = {}
+			for _, r in ipairs(fxRecs) do
+				table.insert(out, ("[%.1fs] %s x%d | %s"):format(r.t, r.tag, r.n, r.text))
+			end
+			exportText("EfekBatu", out)
+		end
+	end
+	table.clear(fxRecs)
+	table.clear(fxSeen)
+end
+
+local FX_PROPS = {
+	Transparency = true, Color = true, Material = true, Size = true,
+	Enabled = true, Visible = true, Brightness = true, Texture = true, Image = true,
+	ImageTransparency = true, BackgroundTransparency = true, ImageColor3 = true,
+	BackgroundColor3 = true, FillTransparency = true, OutlineTransparency = true, Rate = true,
+}
+local fxWatched = 0
+local FX_WATCH_MAX = 2500
+
+-- pantau perubahan properti penting pada satu instance (termasuk objek lama yang hanya di-ON/OFF-kan)
+local function fxWatch(inst: any)
+	if fxWatched >= FX_WATCH_MAX then return end
+	fxWatched += 1
+	table.insert(fxConns, inst.Changed:Connect(function(prop)
+		if not fxOn or not FX_PROPS[prop] then return end
+		local okv, v = pcall(function() return inst[prop] end)
+		local val = tostring(okv and v)
+		local path = inst:GetFullName() .. "." .. prop
+		fxAdd("PROP", ("%s [%s] = %s"):format(path, inst.ClassName, val), path .. "=" .. val)
+	end))
+end
+
+local function fxIsEffectClass(inst: any): boolean
+	return inst:IsA("ParticleEmitter") or inst:IsA("Beam") or inst:IsA("Trail") or inst:IsA("Highlight")
+		or inst:IsA("Light") or inst:IsA("Decal") or inst:IsA("Texture") or inst:IsA("BillboardGui")
+		or inst:IsA("SurfaceGui") or inst:IsA("Fire") or inst:IsA("Sparkles") or inst:IsA("Smoke")
+end
+
+local function fxStart()
+	fxStop(false)
+	fxOn = true
+	fxT0 = os.clock()
+	fxWatched = 0
+
+	-- objek/efek baru di dekat karakter
+	table.insert(fxConns, workspace.DescendantAdded:Connect(function(inst)
+		if not fxOn or not fxInteresting(inst) then return end
+		task.defer(function()
+			if not fxOn or not inst.Parent then return end
+			local char = player.Character
+			if char and inst:IsDescendantOf(char) then return end
+			if not fxNearPlayer(inst, 60) then return end
+			local ok, s = pcall(fxDescribe, inst)
+			fxAdd("ADD", ok and s or inst.ClassName, inst.ClassName .. "|" .. inst:GetFullName())
+			fxWatch(inst)
+		end)
+	end))
+
+	-- GUI baru (titik putih bisa berupa UI)
+	table.insert(fxConns, playerGui.DescendantAdded:Connect(function(inst)
+		if not fxOn or not inst:IsA("GuiObject") or inst:IsDescendantOf(gui) then return end
+		task.defer(function()
+			if not fxOn or not inst.Parent then return end
+			local ok, s = pcall(fxDescribe, inst)
+			fxAdd("GUI", ok and s or inst.ClassName, inst.ClassName .. "|" .. inst:GetFullName())
+			fxWatch(inst)
+		end)
+	end))
+
+	local char = player.Character
+	local hrp = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
+	local nWatchRock, nWatchFx, nWatchGui = 0, 0, 0
+
+	-- 1) seluruh isi batu terdekat + induknya (SpawnLocation): semua properti penting
+	local rock = hrp and findNearestRock(hrp.Position, true)
+	if rock then
+		local holder: Instance = rock.Parent or rock
+		fxWatch(holder)
+		for _, d in ipairs(holder:GetDescendants()) do
+			fxWatch(d)
+			nWatchRock += 1
+		end
+		table.insert(fxConns, rock.AttributeChanged:Connect(function(name)
+			if fxOn then
+				local val = tostring(rock:GetAttribute(name))
+				fxAdd("ATTR", rock:GetFullName() .. " @" .. name .. " = " .. val, name .. "=" .. val)
+			end
+		end))
+	end
+
+	-- 2) efek yang sudah ada di dekat karakter (partikel, highlight, cahaya, dll) yang bisa di-ON/OFF
+	if hrp then
+		for _, d in ipairs(workspace:GetDescendants()) do
+			if fxIsEffectClass(d) and not (char and d:IsDescendantOf(char)) and fxNearPlayer(d, 60) then
+				fxWatch(d)
+				nWatchFx += 1
+			end
+		end
+	end
+
+	-- 3) UI yang sudah ada (objek lama yang hanya diubah Visible/transparansinya)
+	for _, d in ipairs(playerGui:GetDescendants()) do
+		if d:IsA("GuiObject") and not d:IsDescendantOf(gui) then
+			fxWatch(d)
+			nWatchGui += 1
+		end
+	end
+
+	toast(("Merekam: batu %d, efek %d, UI %d"):format(nWatchRock, nWatchFx, nWatchGui))
+end
+
+addToggleCard(debugPage, 10, "Perekam Efek Batu", "ON, pukul batu sampai titik putih muncul, lalu OFF: hasil otomatis tersalin.", "fxrec", function(on)
+	if on then
+		fxStart()
+	else
+		fxStop(true)
+	end
+end)
+
+-- "Matikan Semua" / Unload: dipanggil dari disableAllFeatures() dan unload() di kerangka utama
+settings.forgeDisable = function()
+	mineToken += 1
+	spyOn = false
+	fxStop(false)
+end
+settings.forgeShutdown = function()
+	mineToken += 1
+	spyOn = false
+	spyWatchTools(false)
+	fxStop(false)
+end
+-- =====================================================
+
+saveReady = true   -- seluruh UI sudah dibuat: mulai simpan perubahan
+
+end)() -- akhir blok FORGE
+
+-- =====================================================
 -- PENYIMPANAN FILE LOKAL (writefile/readfile)
 --  settings.json     : keybind, speed/jump/freecam, ukuran panel (global, semua game)
 --  wp_<GameId>.json  : waypoint (terpisah per game)
@@ -14540,6 +17125,7 @@ local function unload()
 	unloaded = true
 
 	if settings.scanShutdown then pcall(settings.scanShutdown) end
+	if settings.forgeShutdown then pcall(settings.forgeShutdown) end -- Forge: lepas logger, perekam, loop
 	disableAllFeatures()
 	destroyPlatform()
 	clearEsp()
