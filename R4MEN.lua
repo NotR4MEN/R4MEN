@@ -147,7 +147,7 @@ settings.miniGameOk = table.find(settings.miniGameIds, game.GameId) ~= nil
 	or (ReplicatedStorage:FindFirstChild("WorldConfig", true) ~= nil
 		and ReplicatedStorage:FindFirstChild("RootData", true) ~= nil)
 
--- Fitur The Forge (tab Mining + Debug) HANYA aktif di game The Forge.
+-- Fitur The Forge (tab Mining) HANYA aktif di game The Forge. Tab Debug (Scan + Remote Logger) aktif di semua game.
 -- Isi forgeGameIds dengan GameId The Forge (lihat baris "GameId: ..." di scan, atau print(game.GameId)), mis. { 123456789 }.
 -- Kalau dibiarkan kosong, game dikenali otomatis lewat service khas The Forge (ToolService + RaceService di ReplicatedStorage.Shared).
 settings.forgeGameIds = { 7671049560 } -- GameId The Forge (hasil Scan Rarity; berlaku untuk semua pulau/place di dalam game ini)
@@ -2027,13 +2027,13 @@ local physicsPage = newPage("Physics")
 local teleportPage = newPage("Teleport")
 newPage("Mini Game") -- halaman Mini Game (Auto Cut + Scan Rarity + Rekam Minigame); diisi blok GUI Mini Game & blok TAB SCAN
 newPage("Mining") -- Forge: Auto Mine / Auto Mob / Auto Reroll Race (diisi blok FORGE)
-newPage("Debug") -- Forge: scan data game + Remote Logger (diisi blok FORGE)
+newPage("Debug") -- scan data game + Remote Logger: tab ini ada di semua game (di The Forge diisi blok FORGE, di game lain diisi blok DEBUG UNIVERSAL)
 newPage("ESP") -- halaman ESP sendiri (ESP NPC/Hewan + Loot & Item ESP); diakses lewat pages.ESP
 local settingsPage = newPage("Settings")
 local configPage = settingsPage -- Config tidak punya tab sendiri: kontennya ada di tab Settings (bagian "Config")
 
 for i, name in ipairs({ "Movement", "Physics", "Visual", "ESP", "Teleport", "Mini Game", "Mining", "Debug", "Settings" }) do
-	if (name == "Mining" or name == "Debug") and not settings.forgeOk then continue end   -- tab Forge hanya di game The Forge
+	if name == "Mining" and not settings.forgeOk then continue end   -- tab Mining hanya di game The Forge; tab Debug (scan + Remote Logger) ada di SEMUA game
 	local b = new("TextButton", {
 		LayoutOrder = i,
 		Size = UDim2.new(1, 0, 0, 38),
@@ -12179,6 +12179,471 @@ end
 end
 
 -- =====================================================
+-- DEBUG UNIVERSAL: tab Debug (Scan data game + Remote Logger) untuk SEMUA game selain The Forge
+-- Salinan bagian Debug umum dari blok FORGE di bawah (di The Forge, blok FORGE yang mengisinya, jadi dilewati di sini).
+-- Dibungkus fungsi sendiri supaya variabel lokalnya TIDAK menambah jatah 200 local chunk utama.
+-- =====================================================
+;(function()
+if settings.forgeOk then return end   -- game The Forge: tab Debug diisi blok FORGE
+
+-- Adaptor: toggle di script ini memakai effects[key](on), bukan callback onChange
+local baseAddToggleCard = addToggleCard
+local function addToggleCard(page: Instance, order: number, title: string, desc: string, key: string, onChange: ((boolean) -> ())?)
+	state[key] = state[key] or false
+	effects[key] = onChange or function() end
+	return baseAddToggleCard(page, order, title, desc, key)
+end
+
+-- Kartu input teks + tombol aksi (contoh: "TP to Player")
+local function addInputCard(page: Instance, order: number, title: string, placeholder: string, btnText: string, onSubmit: (string) -> ())
+	local card = makeCard(page, 76, order)
+	text(card, {
+		Text = title,
+		Font = Enum.Font.GothamBold,
+		TextSize = 14,
+		Position = UDim2.fromOffset(14, 10),
+		Size = UDim2.new(1, -84, 0, 18),
+	})
+
+	local input = new("TextBox", {
+		Position = UDim2.fromOffset(14, 34),
+		Size = UDim2.new(1, -114, 0, 30),
+		BackgroundColor3 = T.bg,
+		Text = "",
+		PlaceholderText = placeholder,
+		PlaceholderColor3 = T.sub,
+		TextColor3 = T.text,
+		Font = Enum.Font.GothamMedium,
+		TextSize = 12,
+		ClearTextOnFocus = false,
+		BorderSizePixel = 0,
+	}, card)
+	round(input, 8)
+	stroke(input, T.stroke, 1, 0.3)
+
+	local btn = new("TextButton", {
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -14, 0, 49),
+		Size = UDim2.fromOffset(80, 30),
+		BackgroundColor3 = T.accent2,
+		Text = btnText,
+		TextColor3 = WHITE,
+		Font = Enum.Font.GothamBold,
+		TextSize = 13,
+		AutoButtonColor = false,
+	}, card)
+	round(btn, 8)
+	hover(btn, T.accent2)
+
+	btn.MouseButton1Click:Connect(function()
+		local q = string.match(input.Text, "^%s*(.-)%s*$") or ""
+		onSubmit(q)
+	end)
+
+	return input
+end
+
+-- =====================================================
+-- TAB DEBUG / SCAN  (tempel ke template Urbee)
+-- =====================================================
+-- Hasil scan: disalin ke clipboard (setclipboard). Kalau executor tidak mendukung,
+-- otomatis disimpan ke file (writefile) di folder workspace executor, dan selalu dicetak di console (F9).
+
+local debugPage = pages["Debug"]
+
+-- ---------- Helper output ----------
+local function exportText(label: string, lines: { string })
+	local MAX_LINES = 400
+	local shown = {}
+	for i = 1, math.min(#lines, MAX_LINES) do
+		shown[i] = lines[i]
+	end
+	if #lines > MAX_LINES then
+		table.insert(shown, ("... (%d baris lagi dipotong)"):format(#lines - MAX_LINES))
+	end
+
+	local body = "=== " .. label .. " ===\n" .. table.concat(shown, "\n")
+	print(body)
+
+	local copied = false
+	if setclipboard then
+		copied = pcall(setclipboard, body)
+	end
+
+	if copied then
+		toast(("Disalin: %d baris"):format(#lines))
+		return
+	end
+
+	if writefile then
+		local fname = "scan_" .. label:gsub("[^%w]", "_") .. ".txt"
+		if pcall(writefile, fname, body) then
+			toast("Disimpan: " .. fname)
+			return
+		end
+	end
+
+	toast("Hasil dicetak di console (F9)")
+end
+
+-- Ringkas daftar instance: nama [Class] xJumlah
+local function summarize(list: { Instance }): { string }
+	local counts: { [string]: number } = {}
+	local order: { string } = {}
+	for _, inst in ipairs(list) do
+		local key = inst.Name .. " [" .. inst.ClassName .. "]"
+		if not counts[key] then
+			counts[key] = 0
+			table.insert(order, key)
+		end
+		counts[key] += 1
+	end
+	table.sort(order)
+	local out = {}
+	for _, k in ipairs(order) do
+		table.insert(out, counts[k] > 1 and (k .. "  x" .. counts[k]) or k)
+	end
+	return out
+end
+
+-- "Workspace.Rocks.Zone1" -> Instance (nama yang mengandung titik tidak didukung)
+local function resolvePath(path: string): Instance?
+	path = path:gsub("^%s+", ""):gsub("%s+$", "")
+	local cur: Instance = game
+	local first = true
+	for seg in string.gmatch(path, "[^%.]+") do
+		if not (first and seg:lower() == "game") then
+			local nxt = cur:FindFirstChild(seg)
+			if not nxt then return nil end
+			cur = nxt
+		end
+		first = false
+	end
+	return cur
+end
+
+-- ---------- Fungsi scan ----------
+local function scanRemotes()
+	local out = {}
+	local roots: { Instance } = { game:GetService("ReplicatedStorage"), workspace }
+	for _, root in ipairs(roots) do
+		for _, d in ipairs(root:GetDescendants()) do
+			if d:IsA("RemoteEvent") or d:IsA("RemoteFunction") or d:IsA("UnreliableRemoteEvent") then
+				table.insert(out, d.ClassName .. " | " .. d:GetFullName())
+			end
+		end
+	end
+	table.sort(out)
+	if #out == 0 then
+		toast("Remote tidak ditemukan")
+		return
+	end
+	exportText("Remotes", out)
+end
+
+local function scanWorkspaceTop()
+	local out = {}
+	for _, c in ipairs(workspace:GetChildren()) do
+		if c.ClassName ~= "Terrain" and c.ClassName ~= "Camera" then
+			table.insert(out, ("%s [%s]  (%d child)"):format(c.Name, c.ClassName, #c:GetChildren()))
+		end
+	end
+	table.sort(out)
+	exportText("Workspace_TopLevel", out)
+end
+
+local function scanFolder(path: string)
+	if path == "" then
+		toast("Isi path dulu, contoh: Workspace.Rocks")
+		return
+	end
+	local target = resolvePath(path)
+	if not target then
+		toast("Path tidak ditemukan")
+		return
+	end
+	local out = summarize(target:GetChildren())
+	table.insert(out, 1, ("Path: %s  (%d child, %d descendant)"):format(
+		target:GetFullName(), #target:GetChildren(), #target:GetDescendants()))
+	exportText("Folder_" .. target.Name, out)
+end
+
+local function scanNearby(radiusText: string)
+	local char = player.Character
+	local hrp = char and char:FindFirstChild("HumanoidRootPart")
+	if not hrp then
+		toast("Karakter belum siap")
+		return
+	end
+	local radius = tonumber(radiusText) or 60
+
+	local params = OverlapParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = { char }
+
+	local parts = workspace:GetPartBoundsInRadius((hrp :: any).Position, radius, params)
+	local groups: { [string]: { n: number, d: number } } = {}
+	local order: { string } = {}
+
+	for _, p in ipairs(parts) do
+		if p.ClassName ~= "Terrain" then
+			local holder: Instance = p.Parent or p
+			local key = holder:GetFullName() .. " [" .. holder.ClassName .. "]"
+			local dist = (p.Position - (hrp :: any).Position).Magnitude
+			local g = groups[key]
+			if not g then
+				g = { n = 0, d = dist }
+				groups[key] = g
+				table.insert(order, key)
+			end
+			g.n += 1
+			if dist < g.d then g.d = dist end
+		end
+	end
+
+	table.sort(order, function(a, b)
+		return groups[a].d < groups[b].d
+	end)
+
+	local out = {}
+	for _, k in ipairs(order) do
+		local g = groups[k]
+		table.insert(out, ("%s  | %d part | terdekat %.1f stud"):format(k, g.n, g.d))
+	end
+	if #out == 0 then
+		toast("Tidak ada objek di radius " .. radius)
+		return
+	end
+	exportText("Nearby_r" .. radius, out)
+end
+
+local function scanInventory()
+	local list: { Instance } = {}
+	local bp = player:FindFirstChildOfClass("Backpack")
+	if bp then
+		for _, t in ipairs(bp:GetChildren()) do table.insert(list, t) end
+	end
+	if player.Character then
+		for _, t in ipairs(player.Character:GetChildren()) do
+			if t:IsA("Tool") then table.insert(list, t) end
+		end
+	end
+	local out = summarize(list)
+
+	-- atribut & leaderstats (sering dipakai game untuk uang/level/stat)
+	local ls = player:FindFirstChild("leaderstats")
+	if ls then
+		table.insert(out, "--- leaderstats ---")
+		for _, v in ipairs(ls:GetChildren()) do
+			table.insert(out, v.Name .. " = " .. tostring((v :: any).Value))
+		end
+	end
+	local attrs = player:GetAttributes()
+	if next(attrs) then
+		table.insert(out, "--- attributes pemain ---")
+		for k, v in pairs(attrs) do
+			table.insert(out, k .. " = " .. tostring(v))
+		end
+	end
+	exportText("Inventory", out)
+end
+
+-- ---------- Remote Logger (rekam FireServer / InvokeServer) ----------
+local spyLog: { string } = {}
+local spyOn = false
+local spyHooked = false
+local spyT0 = os.clock()
+local MAX_SPY = 300
+-- remote berisik yang tidak perlu direkam (potongan nama path)
+local SPY_NOISE = { "Replica", "PerfReport", "ListenerService", "EffectService", "UpdateExpBar", "GetRemainingTime", "CheckCraftCompletions" }
+
+local function ser(v: any, depth: number): string
+	local t = typeof(v)
+	if t == "string" then
+		return '"' .. v .. '"'
+	elseif t == "Instance" then
+		return "<" .. v.ClassName .. " " .. v:GetFullName() .. ">"
+	elseif t == "table" then
+		if depth >= 2 then return "{...}" end
+		local parts = {}
+		local n = 0
+		for k, val in pairs(v) do
+			n += 1
+			if n > 8 then
+				table.insert(parts, "...")
+				break
+			end
+			table.insert(parts, "[" .. ser(k, depth + 1) .. "]=" .. ser(val, depth + 1))
+		end
+		return "{" .. table.concat(parts, ", ") .. "}"
+	end
+	return tostring(v)
+end
+
+local spyLastKey, spyLastT = "", 0
+local function logCall(method: string, remote: Instance, args: any)
+	local ok, line = pcall(function()
+		local path = remote:GetFullName()
+		path = path:gsub("ReplicatedStorage%.Shared%.Packages%.Knit%.Services%.", "")
+		for _, noise in ipairs(SPY_NOISE) do
+			if path:find(noise, 1, true) then return nil end
+		end
+		local parts = {}
+		for i = 1, args.n do
+			table.insert(parts, ser(args[i], 0))
+		end
+		local call = ("%s(%s)"):format(path, table.concat(parts, ", "))
+		-- panggilan sama yang tertangkap dua jalur hook (namecall + langsung) dalam 0.03 detik dicatat sekali
+		local now = os.clock()
+		if call == spyLastKey and now - spyLastT < 0.03 then return nil end
+		spyLastKey, spyLastT = call, now
+		return ("[%.1fs] %s %s"):format(now - spyT0, method, call)
+	end)
+	if ok and line then
+		table.insert(spyLog, line)
+		if #spyLog > MAX_SPY then table.remove(spyLog, 1) end
+	end
+end
+
+-- Dua jalur hook, supaya semua cara pemanggilan remote tertangkap:
+--   1) __namecall            -> remote:FireServer(...) / remote:InvokeServer(...)
+--   2) fungsi langsung       -> remote.FireServer(remote, ...) / pcall(remote.InvokeServer, remote, ...)
+--      (jalur ini TIDAK lewat __namecall; script lain sering memakainya, termasuk Auto Mine di script ini)
+local function installSpy(): boolean
+	if spyHooked then return true end
+	local wrap = newcclosure or function(f) return f end
+	local hooked = false
+
+	if hookmetamethod and getnamecallmethod then
+		local old
+		old = hookmetamethod(game, "__namecall", wrap(function(self, ...)
+			if spyOn and state.spy then
+				local method = getnamecallmethod()
+				if (method == "FireServer" or method == "InvokeServer") and typeof(self) == "Instance" then
+					local args = table.pack(...)
+					local remote = self
+					task.spawn(logCall, method, remote, args)
+				end
+			end
+			return old(self, ...)
+		end))
+		hooked = true
+	end
+
+	if hookfunction then
+		local function hookDirect(className: string, method: string)
+			local ok = pcall(function()
+				local inst: any = Instance.new(className)
+				local fn = inst[method]
+				inst:Destroy()
+				local old
+				old = hookfunction(fn, wrap(function(self, ...)
+					if spyOn and state.spy and typeof(self) == "Instance" then
+						task.spawn(logCall, method, self, table.pack(...))
+					end
+					return old(self, ...)
+				end))
+			end)
+			if ok then hooked = true end
+		end
+		hookDirect("RemoteEvent", "FireServer")
+		hookDirect("RemoteFunction", "InvokeServer")
+		hookDirect("UnreliableRemoteEvent", "FireServer")
+	end
+
+	if not hooked then return false end
+	spyHooked = true
+	return true
+end
+
+-- Catat juga tool yang di-equip / di-unequip karakter selama merekam (mis. pedang yang dipakai script lain)
+local spyToolConns: { RBXScriptConnection } = {}
+local function spyWatchTools(on: boolean)
+	for _, c in ipairs(spyToolConns) do c:Disconnect() end
+	table.clear(spyToolConns)
+	local char = player.Character
+	if not on or not char then return end
+	local function add(kind: string, inst: Instance)
+		if spyOn and state.spy and inst:IsA("Tool") then
+			table.insert(spyLog, ("[%.1fs] %s Tool \"%s\""):format(os.clock() - spyT0, kind, inst.Name))
+			if #spyLog > MAX_SPY then table.remove(spyLog, 1) end
+		end
+	end
+	table.insert(spyToolConns, char.ChildAdded:Connect(function(i) add("EQUIP", i) end))
+	table.insert(spyToolConns, char.ChildRemoved:Connect(function(i) add("UNEQUIP", i) end))
+	for _, t in ipairs(char:GetChildren()) do
+		if t:IsA("Tool") then add("HOLDING", t) end
+	end
+end
+
+-- ---------- UI tab Debug ----------
+sectionLabel(debugPage, 0, "Scan data game")
+
+local scanNearInput = addInputCard(debugPage, 1, "Scan sekitar karakter", "Radius (default 60)", "Scan", function(q)
+	scanNearby(q)
+end)
+
+addInputCard(debugPage, 2, "Scan isi folder", "Contoh: Workspace.Rocks", "Scan", function(q)
+	scanFolder(q)
+end)
+
+local btnWs = makeButton(debugPage, 3, "Scan Workspace (level atas)", T.accent2, 40)
+hover(btnWs, T.accent2)
+btnWs.MouseButton1Click:Connect(scanWorkspaceTop)
+
+local btnRem = makeButton(debugPage, 4, "Scan Remote (RemoteEvent/Function)", T.accent, 40)
+hover(btnRem, T.accent)
+btnRem.MouseButton1Click:Connect(scanRemotes)
+
+local btnInv = makeButton(debugPage, 5, "Scan Inventory & Stat", T.accent2, 40)
+hover(btnInv, T.accent2)
+btnInv.MouseButton1Click:Connect(scanInventory)
+
+addToggleCard(debugPage, 6, "Remote Logger", "ON, lakukan aksi di game, lalu OFF dan salin log.", "spy", function(on)
+	if on then
+		if not installSpy() then
+			toast("Executor tidak mendukung hook. Pakai SimpleSpy.")
+			spyOn = false
+			state.spy = false
+			if switches.spy then switches.spy.Set(false) end
+			refreshActive()
+			return
+		end
+		spyT0 = os.clock()
+		spyOn = true
+		spyWatchTools(true)
+		toast("Merekam remote...")
+	else
+		spyOn = false
+		spyWatchTools(false)
+	end
+end)
+
+local btnSpy = makeButton(debugPage, 7, "Salin & Kosongkan Log Remote", T.accent, 40)
+hover(btnSpy, T.accent)
+btnSpy.MouseButton1Click:Connect(function()
+	if #spyLog == 0 then
+		toast("Log kosong")
+		return
+	end
+	exportText("RemoteLog", spyLog)
+	table.clear(spyLog)
+end)
+
+text(debugPage, {
+	LayoutOrder = 8,
+	Text = "Hasil otomatis disalin ke clipboard. Tempel ke chat untuk dibaca. Detail argumen remote: pakai SimpleSpy.",
+	TextSize = 11,
+	TextColor3 = T.sub,
+	TextWrapped = true,
+	TextYAlignment = Enum.TextYAlignment.Top,
+	Size = UDim2.new(1, 0, 0, 40),
+})
+
+end)()
+
+
+-- =====================================================
 -- FORGE: MINING / AUTO MOB / AUTO REROLL RACE / DEBUG
 -- Dipindahkan dari script The Forge. Membuat 2 tab: "Mining" (toggle auto di atas, setelan custom di bawah)
 -- dan "Debug" (scan data game, Remote Logger, perekam efek batu).
@@ -15918,7 +16383,7 @@ local function buildScan()
 
 
 	-- Recorder V2: bounded independent evidence; legacy five-column samples stay compatible.
-	local V2 = {lines={}, bytes=0, count=0, limit=(settings.forgeOk and 220000 or 90000), full=false, held={}, last={}}
+	local V2 = {lines={}, bytes=0, count=0, limit=400000, full=false, held={}, last={}}
 	function V2.reset()
 		V2.lines={}; V2.bytes=0; V2.count=0; V2.full=false; V2.held={}; V2.last={}
 	end
@@ -16548,8 +17013,8 @@ local function buildScan()
 			add(string.format("  #%d t=%.3f input=%s mode=%s catatan=%s",tr.id,tr.t,tr.key,tr.mode,cut(tr.note~="" and tr.note or "-",70)))
 			local shownEvents=0
 			for _,e in ipairs(R.events) do
-				if e.t>=tr.t-0.25 and e.t<=tr.t+1.25 and (e.k=="UI_PROPERTY" or e.k=="VALUE_CHANGED" or e.k=="BUTTON_ACTIVATED" or e.k=="REMOTE" or e.k=="TAMPIL" or e.k=="SEMBUNYI" or e.k=="STAT") then
-					if shownEvents<5 then add(string.format("    %+0.3fs %s %s",e.t-tr.t,e.k,cut(e.m,100))); shownEvents+=1 end
+				if e.t>=tr.t-0.25 and e.t<=tr.t+1.25 and (e.k=="UI_PROPERTY" or e.k=="VALUE_CHANGED" or e.k=="BUTTON_ACTIVATED" or e.k=="REMOTE" or e.k=="REMOTE_OUT" or e.k=="TAMPIL" or e.k=="SEMBUNYI" or e.k=="STAT") then
+					if shownEvents<8 then add(string.format("    %+0.3fs %s %s",e.t-tr.t,e.k,cut(e.m,100))); shownEvents+=1 end
 				end
 			end
 			if shownEvents==0 then add("    (tidak ada event relevan di jendela ini)") end
@@ -17278,6 +17743,37 @@ local function buildScan()
 		end
 	end))
 
+	-- API untuk blok REKAM SEMUA + SCAN STRUKTUR (dipakai di bawah, setelah buildScan)
+	settings.recApi = {
+		isRec = function() return R.rec end,
+		hasData = function() return R.hasData end,
+		report = function(full)
+			local ok, rep = pcall(buildMini, full)
+			if ok then return rep end
+			return "(gagal membuat laporan: " .. tostring(rep) .. ")"
+		end,
+		clear = function()
+			resetData()
+			V2.reset()
+			R.fileName = nil
+			R.summaryName = nil
+		end,
+		event = function(kind, msg, sig)
+			if R.rec then addEvent(kind, msg, sig) end
+		end,
+		put = function(line)
+			if R.rec then V2.put(line) end
+		end,
+		now = now,
+		encode = V2.encode,
+		copy = copyText,
+		rarity = function()
+			local ok, rep = pcall(runRarity, function() end)
+			if ok and type(rep) == "string" then return rep end
+			return nil
+		end,
+	}
+
 	settings.scanShutdown = function()
 		R.rec = false
 		stopConns()
@@ -17285,6 +17781,450 @@ local function buildScan()
 end
 buildScan()
 end
+
+-- =====================================================
+-- REKAM SEMUA + SCAN STRUKTUR
+--  * Rekam Semua (satu toggle): remote keluar (hook) + remote masuk + UI + input + nilai dalam satu timeline.
+--    Dimatikan = hasil OTOMATIS tersalin ke clipboard lalu rekaman DIKOSONGKAN (siap rekam lagi).
+--  * Scan Struktur (satu klik): remote, GUI, workspace, sekitar karakter, inventory, modul data, rarity.
+--    Selesai = OTOMATIS tersalin ke clipboard.
+--  * Kartu lama (Remote Logger, tombol scan terpisah, Rekam Minigame lama, Hasil) disembunyikan.
+-- Dibungkus xpcall + fungsi supaya tidak menambah local di level atas dan tidak mematikan script bila ada error.
+-- =====================================================
+xpcall(function()
+	local api = settings.recApi
+	local dbg = pages["Debug"]
+	local mg = pages["Mini Game"]
+	if not (api and dbg and mg) then
+		warn("R4MEN: recApi / halaman tidak ditemukan")
+		return
+	end
+	local MarketplaceService = game:GetService("MarketplaceService")
+	local H: any = { on = false, hooked = false, stats = {}, win = {}, last = "", lastKey = "", lastT = 0 }
+
+	-- ---------- rapikan tab Debug & Mini Game: sembunyikan yang kembar ----------
+	for _, c in ipairs(dbg:GetChildren()) do
+		if c:IsA("GuiObject") then
+			local o = c.LayoutOrder
+			if o == 0 then
+				c.LayoutOrder = 50
+				if c:IsA("TextLabel") then c.Text = "LANJUTAN: SCAN MANUAL" end
+			elseif o == 1 or o == 2 then
+				c.LayoutOrder = 50 + o
+			elseif o >= 3 and o <= 8 then
+				c.Visible = false
+			end
+		end
+	end
+	local modeCard: any = nil
+	for _, c in ipairs(mg:GetChildren()) do
+		if c:IsA("GuiObject") then
+			local o = c.LayoutOrder
+			if o == 104 then
+				modeCard = c
+			elseif o == 100 or o == 101 or o == 102 or o == 103 or o == 105 or o == 106 then
+				c.Visible = false
+			end
+		end
+	end
+	if modeCard then
+		modeCard.Parent = dbg
+		modeCard.LayoutOrder = -29
+	end
+
+	-- ---------- hook remote KELUAR (client -> server) ----------
+	H.log = function(method: string, remote: Instance, args: any, res: any)
+		pcall(function()
+			local path = (string.gsub(remote:GetFullName(), "^ReplicatedStorage%.", ""))
+			local parts = {}
+			for i = 1, args.n do
+				parts[#parts + 1] = api.encode(args[i])
+			end
+			local argStr = table.concat(parts, ", ")
+			if res then
+				argStr ..= " => " .. (res.n > 0 and api.encode(res[1]) or "(kosong)")
+			end
+			-- panggilan yang sama dari dua jalur hook dalam 0.03 dtk dicatat sekali
+			local key = method .. path .. argStr
+			local t = os.clock()
+			if key == H.lastKey and t - H.lastT < 0.03 then return end
+			H.lastKey, H.lastT = key, t
+
+			local s = H.stats[path]
+			if not s then
+				s = { n = 0, sup = 0, m = method, ex = argStr, ex2 = nil }
+				H.stats[path] = s
+			end
+			s.n += 1
+			if argStr ~= s.ex and not s.ex2 then s.ex2 = argStr end
+
+			-- remote yang dipanggil >12x per detik (timer/ping) tidak dirinci satu-satu
+			local w = H.win[path]
+			if not w or t - w.t > 1 then
+				w = { t = t, c = 0 }
+				H.win[path] = w
+			end
+			w.c += 1
+			if w.c > 12 then
+				s.sup += 1
+				return
+			end
+
+			api.event("REMOTE_OUT", method .. " " .. path .. "(" .. string.sub(argStr, 1, 300) .. ")", "rout:" .. path)
+			api.put(string.format("REMOTE_OUT|%.4f|%s|%s|%s", api.now(), method, path,
+				(string.gsub(string.sub(argStr, 1, 1500), "[\r\n|]", " "))))
+		end)
+	end
+
+	local function installHook(): boolean
+		if H.hooked then return true end
+		local wrap = newcclosure or function(f) return f end
+		local okAny = false
+
+		if hookmetamethod and getnamecallmethod then
+			local okH = pcall(function()
+				local old
+				old = hookmetamethod(game, "__namecall", wrap(function(self, ...)
+					if H.on and not unloaded then
+						local m = getnamecallmethod()
+						if typeof(self) == "Instance" then
+							if m == "FireServer" then
+								task.spawn(H.log, m, self, table.pack(...), nil)
+							elseif m == "InvokeServer" then
+								local args = table.pack(...)
+								local res = table.pack(old(self, ...))
+								task.spawn(H.log, m, self, args, res)
+								return table.unpack(res, 1, res.n)
+							end
+						end
+					end
+					return old(self, ...)
+				end))
+			end)
+			if okH then okAny = true end
+		end
+
+		if hookfunction then
+			local function hookDirect(className: string, method: string)
+				local okD = pcall(function()
+					local inst: any = Instance.new(className)
+					local fn = inst[method]
+					inst:Destroy()
+					local old
+					old = hookfunction(fn, wrap(function(self, ...)
+						if H.on and not unloaded and typeof(self) == "Instance" then
+							if method == "InvokeServer" then
+								local args = table.pack(...)
+								local res = table.pack(old(self, ...))
+								task.spawn(H.log, method, self, args, res)
+								return table.unpack(res, 1, res.n)
+							end
+							task.spawn(H.log, method, self, table.pack(...), nil)
+						end
+						return old(self, ...)
+					end))
+				end)
+				if okD then okAny = true end
+			end
+			hookDirect("RemoteEvent", "FireServer")
+			hookDirect("RemoteFunction", "InvokeServer")
+			hookDirect("UnreliableRemoteEvent", "FireServer")
+		end
+
+		H.hooked = okAny
+		return okAny
+	end
+
+	-- ---------- ringkasan remote keluar ----------
+	local function summary(): string
+		local L: { string } = {}
+		L[#L + 1] = "== RINGKASAN REMOTE KELUAR (client -> server, dari hook) =="
+		L[#L + 1] = string.format("GameId=%s PlaceId=%s | hook: %s", tostring(game.GameId), tostring(game.PlaceId), H.hooked and "aktif" or "TIDAK TERPASANG")
+		if not H.hooked then
+			L[#L + 1] = "(executor tidak mendukung hook: hanya UI + remote masuk yang terekam)"
+		end
+		local keys: { string } = {}
+		for k in pairs(H.stats) do keys[#keys + 1] = k end
+		table.sort(keys, function(a, b) return H.stats[a].n > H.stats[b].n end)
+		if #keys == 0 then
+			L[#L + 1] = "(tidak ada panggilan remote tercatat)"
+		end
+		for _, k in ipairs(keys) do
+			local s = H.stats[k]
+			L[#L + 1] = string.format("%s | %s | %d panggilan%s | contoh: %s%s", k, s.m, s.n,
+				s.sup > 0 and (" (" .. s.sup .. " tidak dirinci, terlalu rapat)") or "",
+				string.sub(s.ex, 1, 200), s.ex2 and (" | variasi: " .. string.sub(s.ex2, 1, 200)) or "")
+		end
+		return table.concat(L, "\n")
+	end
+
+	-- ---------- selesai rekam: salin + simpan + KOSONGKAN ----------
+	local function finish()
+		local rep = summary() .. "\n\n" .. api.report(true)
+		H.last = rep
+		local copied = api.copy(rep)
+		local name = "rekam_" .. tostring(game.GameId) .. ".txt"
+		local saved = settings.save(name, rep)
+		local big = #rep > 150000
+		api.clear()
+		table.clear(H.stats)
+		table.clear(H.win)
+		if copied then
+			toast(string.format("Rekaman disalin LENGKAP (%d karakter) & dikosongkan%s", #rep, big and " - besar, rekam lebih pendek jika gagal ditempel" or ""))
+		elseif saved then
+			toast("Clipboard tidak didukung: hasil ada di file " .. settings.path(name))
+		else
+			toast("Gagal menyalin dan menyimpan rekaman")
+		end
+	end
+
+	-- ---------- toggle Rekam Semua (menggantikan effects.scanRec lama; keybind Rekam Minigame ikut) ----------
+	local oldRec = effects.scanRec
+	effects.scanRec = function(on: boolean)
+		if on then
+			table.clear(H.stats)
+			table.clear(H.win)
+			if oldRec then oldRec(true) end
+			if installHook() then
+				H.on = true
+			else
+				toast("Hook remote tidak didukung executor: hanya UI + remote masuk yang direkam")
+			end
+			return
+		end
+		H.on = false
+		if not api.isRec() then return end
+		if oldRec then oldRec(false) end
+		finish()
+	end
+	do
+		local prev = settings.scanShutdown
+		settings.scanShutdown = function()
+			H.on = false
+			if prev then prev() end
+		end
+	end
+
+	sectionLabel(dbg, -31, "Rekam & Scan (otomatis tersalin)")
+	local recDesc = addToggleCard(dbg, -30, "Rekam Semua",
+		"Satu toggle: remote keluar + masuk, UI, input, nilai. Mainkan 3-5 ronde, lalu MATIKAN: hasil otomatis tersalin ke clipboard dan rekaman dikosongkan.",
+		"scanRec")
+	if recDesc then recDesc.Size = UDim2.new(1, -84, 0, 44) end
+
+	-- ---------- SCAN STRUKTUR ----------
+	local OWN: { [string]: boolean } = {
+		UniversalUrbee = true, ControlPanel = true, UU_ITEMS = true, UU_NPC = true,
+		UU_RARITY = true, UU_ZONE = true, UU_CHESS = true,
+	}
+
+	local function structReport(): string
+		local L: { string } = {}
+		local function add(s: string) L[#L + 1] = s end
+		local yt = os.clock()
+		local function y()
+			if os.clock() - yt > 0.008 then
+				task.wait()
+				yt = os.clock()
+			end
+		end
+		local function capList(list: { string }, cap: number)
+			for _, s in ipairs(list) do
+				add(s) -- semua baris disalin (tanpa dipotong)
+			end
+		end
+
+		local placeName = "?"
+		local okP, info = pcall(function() return MarketplaceService:GetProductInfo(game.PlaceId) end)
+		if okP and type(info) == "table" and info.Name then placeName = tostring(info.Name) end
+		add("== SCAN STRUKTUR ==")
+		add(string.format("GameId=%s PlaceId=%s | %s | %s", tostring(game.GameId), tostring(game.PlaceId), placeName, os.date("%Y-%m-%d %H:%M:%S")))
+
+		-- 1) remote
+		add("")
+		add("## REMOTE (RemoteEvent / RemoteFunction)")
+		local rem: { string } = {}
+		for _, root in ipairs({ ReplicatedStorage, workspace }) do
+			for _, d in ipairs(root:GetDescendants()) do
+				y()
+				if d:IsA("RemoteEvent") or d:IsA("RemoteFunction") or d:IsA("UnreliableRemoteEvent") then
+					rem[#rem + 1] = d.ClassName .. " | " .. d:GetFullName()
+				end
+			end
+		end
+		table.sort(rem)
+		if #rem == 0 then add("(tidak ada)") end
+		capList(rem, 300)
+
+		-- 2) GUI
+		add("")
+		add("## GUI (ScreenGui di PlayerGui, selain UI script)")
+		local nGui = 0
+		for _, g in ipairs(playerGui:GetChildren()) do
+			if g:IsA("ScreenGui") and not OWN[g.Name] then
+				nGui += 1
+				local kids: { string } = {}
+				for i, c in ipairs(g:GetChildren()) do
+					if i > 12 then
+						kids[#kids + 1] = "..."
+						break
+					end
+					kids[#kids + 1] = c.Name .. "[" .. c.ClassName .. "]"
+				end
+				add(string.format("%s | Enabled=%s | isi=%d | %s", g.Name, tostring(g.Enabled), #g:GetDescendants(), table.concat(kids, ", ")))
+				y()
+			end
+		end
+		if nGui == 0 then add("(tidak ada)") end
+
+		-- 3) workspace level atas
+		add("")
+		add("## WORKSPACE (level atas)")
+		local top: { string } = {}
+		for _, c in ipairs(workspace:GetChildren()) do
+			if c.ClassName ~= "Terrain" and c.ClassName ~= "Camera" then
+				top[#top + 1] = string.format("%s [%s] (%d anak)", c.Name, c.ClassName, #c:GetChildren())
+			end
+		end
+		table.sort(top)
+		capList(top, 80)
+
+		-- 4) sekitar karakter (radius 60)
+		add("")
+		add("## SEKITAR KARAKTER (radius 60 stud)")
+		local char = player.Character
+		local hrp = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
+		if hrp then
+			local params = OverlapParams.new()
+			params.FilterType = Enum.RaycastFilterType.Exclude
+			params.FilterDescendantsInstances = { char }
+			local okN, parts = pcall(function() return workspace:GetPartBoundsInRadius(hrp.Position, 60, params) end)
+			local groups: { [string]: any } = {}
+			local order: { string } = {}
+			if okN then
+				for _, p in ipairs(parts) do
+					if p.ClassName ~= "Terrain" then
+						local holder: Instance = p.Parent or p
+						local key = holder:GetFullName() .. " [" .. holder.ClassName .. "]"
+						local dist = (p.Position - hrp.Position).Magnitude
+						local g = groups[key]
+						if not g then
+							g = { n = 0, d = dist }
+							groups[key] = g
+							order[#order + 1] = key
+						end
+						g.n += 1
+						if dist < g.d then g.d = dist end
+					end
+				end
+			end
+			table.sort(order, function(a, b) return groups[a].d < groups[b].d end)
+			local lines: { string } = {}
+			for _, k in ipairs(order) do
+				lines[#lines + 1] = string.format("%s | %d part | terdekat %.1f stud", k, groups[k].n, groups[k].d)
+			end
+			if #lines == 0 then add("(tidak ada objek)") end
+			capList(lines, 40)
+		else
+			add("(karakter belum siap)")
+		end
+
+		-- 5) inventory, stat, atribut
+		add("")
+		add("## INVENTORY & STAT")
+		local tools: { string } = {}
+		local bp = player:FindFirstChildOfClass("Backpack")
+		if bp then
+			for _, t in ipairs(bp:GetChildren()) do tools[#tools + 1] = t.Name .. " [" .. t.ClassName .. "]" end
+		end
+		if char then
+			for _, t in ipairs(char:GetChildren()) do
+				if t:IsA("Tool") then tools[#tools + 1] = t.Name .. " [dipegang]" end
+			end
+		end
+		add("Tool: " .. (#tools > 0 and table.concat(tools, ", ") or "(kosong)"))
+		local ls = player:FindFirstChild("leaderstats")
+		if ls then
+			for _, v in ipairs(ls:GetChildren()) do
+				local okv, val = pcall(function() return (v :: any).Value end)
+				add("leaderstats " .. v.Name .. " = " .. tostring(okv and val or "?"))
+			end
+		end
+		for k, v in pairs(player:GetAttributes()) do add("attr pemain " .. tostring(k) .. " = " .. tostring(v)) end
+		if char then
+			for k, v in pairs(char:GetAttributes()) do add("attr karakter " .. tostring(k) .. " = " .. tostring(v)) end
+		end
+
+		-- 6) modul di ReplicatedStorage (biasanya data game: item, rarity, konfigurasi)
+		add("")
+		add("## MODULE DI REPLICATEDSTORAGE")
+		local mods: { string } = {}
+		for _, d in ipairs(ReplicatedStorage:GetDescendants()) do
+			y()
+			if d:IsA("ModuleScript") then
+				mods[#mods + 1] = (string.gsub(d:GetFullName(), "^ReplicatedStorage%.", ""))
+			end
+		end
+		table.sort(mods)
+		if #mods == 0 then add("(tidak ada)") end
+		capList(mods, 150)
+
+		-- 7) rarity (otomatis)
+		local rr = api.rarity()
+		if rr then
+			add("")
+			add(rr)
+		end
+		return table.concat(L, "\n")
+	end
+
+	local sBtn = makeButton(dbg, -28, "🔎 SCAN STRUKTUR (satu klik, otomatis tersalin)", T.accent, 40)
+	hover(sBtn, T.accent)
+	local sLbl = text(dbg, {
+		LayoutOrder = -27,
+		Text = "Remote, GUI, workspace, sekitar karakter, inventory, modul data, dan rarity dalam satu laporan.",
+		TextSize = 10,
+		TextColor3 = T.sub,
+		TextWrapped = true,
+		TextYAlignment = Enum.TextYAlignment.Top,
+		Size = UDim2.new(1, 0, 0, 30),
+	})
+	local reBtn = makeButton(dbg, -26, "Salin Ulang Hasil Terakhir", T.accent2, 30)
+	hover(reBtn, T.accent2)
+
+	local busy = false
+	sBtn.MouseButton1Click:Connect(function()
+		if busy or unloaded then return end
+		busy = true
+		sBtn.Text = "⏳ Memindai..."
+		sLbl.TextColor3 = T.sub
+		task.spawn(function()
+			local ok, rep = pcall(structReport)
+			if unloaded then return end
+			if ok and type(rep) == "string" then
+				H.last = rep
+				local copied = api.copy(rep)
+				local saved = settings.save("struktur_" .. tostring(game.GameId) .. ".txt", rep)
+				sLbl.Text = (copied and "Disalin ke clipboard" or "TIDAK bisa menyalin") .. (saved and " + tersimpan ke file. " or ". ") .. tostring(#rep) .. " karakter."
+				sLbl.TextColor3 = copied and T.good or T.danger
+				toast(copied and "Scan struktur disalin" or "Scan selesai, tapi tidak bisa menyalin")
+			else
+				sLbl.Text = "Scan error: " .. tostring(rep)
+				sLbl.TextColor3 = T.danger
+				warn("[Scan] struktur: " .. tostring(rep))
+			end
+			sBtn.Text = "🔎 SCAN STRUKTUR (satu klik, otomatis tersalin)"
+			busy = false
+		end)
+	end)
+
+	reBtn.MouseButton1Click:Connect(function()
+		if H.last == "" then
+			toast("Belum ada hasil")
+			return
+		end
+		toast(api.copy(H.last) and "Hasil terakhir disalin ulang" or "Tidak bisa menyalin")
+	end)
+end, warn)
 
 
 -- =====================================================
