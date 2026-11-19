@@ -4611,11 +4611,19 @@ do
 				if myId ~= W.id or not W.active then return end
 				if ok and path and path.Status == Enum.PathStatus.Success then
 					local wps = path:GetWaypoints()
+					-- pilih waypoint terdekat dari posisi SEKARANG (bukan index 2 yang dihitung dari posisi lama)
+					local r2 = getRoot()
+					local best, bestD = 1, math.huge
+					if r2 then
+						for i, wp in ipairs(wps) do
+							local d = (wp.Position - r2.Position).Magnitude
+							if d < bestD then best, bestD = i, d end
+						end
+					end
 					wlist = wps
-					widx = math.min(2, #wps)
-				else
-					wlist = nil -- gagal: jalan lurus ke target
+					widx = math.min(best + 1, #wps)
 				end
+				-- gagal: pertahankan rute lama (jangan reset ke jalan lurus supaya tidak berbelok tiba-tiba)
 			end)
 		end
 
@@ -4643,7 +4651,7 @@ do
 			end
 
 			-- hitung ulang rute: berkala, target bergerak, atau macet
-			if not computing and (now - lastCompute > 3 or (lastTo and (to - lastTo).Magnitude > 8) or stuck > 3) then
+			if not computing and ((lastTo and (to - lastTo).Magnitude > 8) or stuck > 3) then
 				if stuck > 3 then stuck = 0 end
 				compute(pos, to)
 			end
@@ -4694,8 +4702,6 @@ do
 			if now - startT > 180 then wstop("Walk timeout") end
 		end
 
-		table.insert(W.conns, RunService.RenderStepped:Connect(step))
-		table.insert(W.conns, RunService.Stepped:Connect(step))
 		table.insert(W.conns, RunService.Heartbeat:Connect(step))
 		-- tekan WASD / panah = ambil alih manual, walk berhenti
 		table.insert(W.conns, UIS.InputBegan:Connect(function(input, gp)
@@ -18446,7 +18452,10 @@ track(UIS.InputBegan:Connect(function(input, processed)
 		return
 	end
 
-	if processed then return end
+	-- [FIX] Dulu: semua tombol yang "diambil" game (processed = true) diabaikan, jadi keybind waypoint
+	-- sering tidak jalan di game yang memakai tombol itu / punya GUI sendiri. Sekarang hanya diabaikan
+	-- saat kamu sedang mengetik di kotak teks (chat, kolom nama, dll).
+	if processed and UIS:GetFocusedTextBox() ~= nil then return end
 
 	local kc = input.KeyCode
 	if kc == Enum.KeyCode.Unknown then return end
