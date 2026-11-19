@@ -246,6 +246,7 @@ local state: { [string]: boolean } = {
 	noFog = false,
 	fov = false,
 	follow = false,
+	walkTp = false, -- Mode Walk: semua aksi TP diganti jalan otomatis (untuk map yang me-rollback teleport)
 	autoCut = false, -- Mini Game: Auto Cut jamur (mati saat script dijalankan)
 	autoMinigame = false, -- Mini Game: Auto Minigame universal (mati saat script dijalankan)
 	chess = false, -- Mini Game: saran langkah catur dari papan in-game (mati saat script dijalankan)
@@ -736,6 +737,9 @@ local follow: any = { target = nil, set = function() end, pick = function() end 
 
 local effects: { [string]: (boolean) -> () } = {
 	follow = function(on) follow.set(on) end,
+	walkTp = function(on)
+		if not on and settings.walkStop then settings.walkStop() end
+	end,
 	speed = function(on) if not on then restoreSpeed() end end,
 	jump = function(on) if not on then restoreJump() end end,
 	infJump = function() end,
@@ -821,6 +825,7 @@ local function teleportTo(i: number)
 		toast("Karakter belum siap")
 		return
 	end
+	if settings.goTo and settings.goTo(wp.cf, wp.name, nil) then return end
 	char:PivotTo(wp.cf)
 	hrp.AssemblyLinearVelocity = Vector3.zero
 	hrp.AssemblyAngularVelocity = Vector3.zero
@@ -861,6 +866,9 @@ local function teleportToUsername(name: string, exactPlayer: Player?)
 		return
 	end
 
+	if settings.goTo and settings.goTo(targetRoot.CFrame, targetPlayer.Name, function()
+		return targetRoot.Parent and targetRoot.Position or nil
+	end) then return end
 	char:PivotTo(targetRoot.CFrame + Vector3.new(0, 3, 0))
 	hrp.AssemblyLinearVelocity = Vector3.zero
 	hrp.AssemblyAngularVelocity = Vector3.zero
@@ -3424,6 +3432,9 @@ do
 				toast("NPC sudah tidak ada")
 				return
 			end
+			if settings.goTo and settings.goTo(root.CFrame, N.display(e.name), function()
+				return root.Parent and root.Position or nil
+			end) then return end
 			char:PivotTo(root.CFrame + Vector3.new(0, 4, 0))
 			hrp.AssemblyLinearVelocity = Vector3.zero
 			hrp.AssemblyAngularVelocity = Vector3.zero
@@ -4092,6 +4103,9 @@ do
 			toast("NPC sudah tidak ada")
 			return
 		end
+		if settings.goTo and settings.goTo(best.root.CFrame, N.display(g.name), function()
+			return best.root.Parent and best.root.Position or nil
+		end) then return end
 		char:PivotTo(best.root.CFrame + Vector3.new(0, 4, 0))
 		hrp.AssemblyLinearVelocity = Vector3.zero
 		hrp.AssemblyAngularVelocity = Vector3.zero
@@ -4538,8 +4552,170 @@ do
 end
 
 -- =====================================================
+-- MODE WALK: semua "TP" (item, NPC, pemain, waypoint) jadi jalan otomatis
+-- Dibungkus do...end supaya tidak menambah local level atas (batas 200).
+-- Kecepatan = WalkSpeed humanoid, otomatis ikut slider Speed bila Speed ON.
+-- =====================================================
+do
+	local PFS = game:GetService("PathfindingService")
+	local W: any = { id = 0, active = false, conns = {} }
+
+	local function wstop(reason: string?)
+		if not W.active then return end
+		W.active = false
+		for _, c in ipairs(W.conns) do
+			pcall(function() c:Disconnect() end)
+		end
+		table.clear(W.conns)
+		local hum = getHum()
+		if hum then pcall(function() hum:Move(Vector3.zero, false) end) end
+		if reason then toast(reason) end
+	end
+	settings.walkStop = wstop
+
+	settings.goTo = function(cf: CFrame, label: string, getPos: (() -> Vector3?)?): boolean
+		if not state.walkTp then return false end
+		local hum, root = getHum(), getRoot()
+		if not (hum and root and hum.Health > 0) then
+			toast("Karakter belum siap")
+			return true
+		end
+		wstop()
+		W.active = true
+		W.id += 1
+		local myId: number = W.id
+		local fixed: Vector3 = cf.Position
+
+		local wlist: { PathWaypoint }? = nil
+		local widx = 1
+		local computing = false
+		local lastCompute = -math.huge
+		local lastTo: Vector3? = nil
+		local startT = os.clock()
+		local lastPos: Vector3 = root.Position
+		local lastChk = os.clock()
+		local stuck = 0
+
+		local function compute(from: Vector3, to: Vector3)
+			if computing then return end
+			computing = true
+			lastCompute = os.clock()
+			lastTo = to
+			task.spawn(function()
+				local ok, path = pcall(function()
+					local p = PFS:CreatePath({ AgentRadius = 2, AgentHeight = 5, AgentCanJump = true, AgentCanClimb = true })
+					p:ComputeAsync(from, to)
+					return p
+				end)
+				computing = false
+				if myId ~= W.id or not W.active then return end
+				if ok and path and path.Status == Enum.PathStatus.Success then
+					local wps = path:GetWaypoints()
+					wlist = wps
+					widx = math.min(2, #wps)
+				else
+					wlist = nil -- gagal: jalan lurus ke target
+				end
+			end)
+		end
+
+		local function step()
+			if myId ~= W.id or not W.active then return end
+			if unloaded then wstop() return end
+			local h, r = getHum(), getRoot()
+			if not (h and r) or h.Health <= 0 then
+				wstop("Walk dibatalkan")
+				return
+			end
+			local to: Vector3? = fixed
+			if getPos then to = getPos() end
+			if not to then
+				wstop("Target sudah tidak ada")
+				return
+			end
+			local now = os.clock()
+			local pos = r.Position
+			local diff = to - pos
+			local flat = Vector3.new(diff.X, 0, diff.Z)
+			if diff.Magnitude < 5 or (flat.Magnitude < 3.5 and math.abs(diff.Y) < 10) then
+				wstop("Sampai di " .. label)
+				return
+			end
+
+			-- hitung ulang rute: berkala, target bergerak, atau macet
+			if not computing and (now - lastCompute > 3 or (lastTo and (to - lastTo).Magnitude > 8) or stuck > 3) then
+				if stuck > 3 then stuck = 0 end
+				compute(pos, to)
+			end
+
+			local aim: Vector3 = to
+			local needJump = false
+			if wlist then
+				local wl = wlist :: { PathWaypoint }
+				while wl[widx] do
+					local wp = wl[widx]
+					local d = Vector3.new(wp.Position.X - pos.X, 0, wp.Position.Z - pos.Z).Magnitude
+					if d < 3.2 and math.abs(wp.Position.Y - pos.Y) < 6 then
+						if wp.Action == Enum.PathWaypointAction.Jump then needJump = true end
+						widx += 1
+					else
+						break
+					end
+				end
+				if wl[widx] then
+					aim = wl[widx].Position
+					if wl[widx].Action == Enum.PathWaypointAction.Jump then needJump = true end
+				else
+					wlist = nil
+				end
+			end
+
+			-- deteksi macet: hampir tidak bergerak selama 1 detik -> lompat
+			if now - lastChk >= 1 then
+				if (pos - lastPos).Magnitude < 1 then
+					stuck += 1
+					needJump = true
+				else
+					stuck = 0
+				end
+				lastPos = pos
+				lastChk = now
+				if stuck >= 10 then
+					wstop("Tidak bisa sampai (terhalang)")
+					return
+				end
+			end
+
+			local dir = Vector3.new(aim.X - pos.X, 0, aim.Z - pos.Z)
+			if dir.Magnitude > 0.05 then
+				h:Move(dir.Unit, false)
+			end
+			if needJump then h.Jump = true end
+			if now - startT > 180 then wstop("Walk timeout") end
+		end
+
+		table.insert(W.conns, RunService.RenderStepped:Connect(step))
+		table.insert(W.conns, RunService.Stepped:Connect(step))
+		table.insert(W.conns, RunService.Heartbeat:Connect(step))
+		-- tekan WASD / panah = ambil alih manual, walk berhenti
+		table.insert(W.conns, UIS.InputBegan:Connect(function(input, gp)
+			if gp or myId ~= W.id or not W.active then return end
+			local k = input.KeyCode
+			if k == Enum.KeyCode.W or k == Enum.KeyCode.A or k == Enum.KeyCode.S or k == Enum.KeyCode.D
+				or k == Enum.KeyCode.Up or k == Enum.KeyCode.Down or k == Enum.KeyCode.Left or k == Enum.KeyCode.Right then
+				wstop("Walk dihentikan")
+			end
+		end))
+		compute(root.Position, fixed)
+		toast("Walk ke " .. label)
+		return true
+	end
+end
+
+-- =====================================================
 -- GUI: HALAMAN TELEPORT & ITEM DETECTOR
 -- =====================================================
+addToggleCard(teleportPage, -2, "Mode Walk", "ON = semua klik TP (item, NPC, pemain, waypoint) jadi jalan otomatis. Kecepatan ikut slider Speed bila Speed ON.", "walkTp")
 sectionLabel(teleportPage, 0, "Teleport ke Pemain")
 
 do
@@ -6125,6 +6301,9 @@ local function makeLabel(e: any)
 			toast("Item sudah tidak ada")
 			return
 		end
+		if settings.goTo and settings.goTo(part.CFrame, e.name, function()
+			return part.Parent and part.Position or nil
+		end) then return end
 		char:PivotTo(part.CFrame + Vector3.new(0, 3, 0))
 		hrp.AssemblyLinearVelocity = Vector3.zero
 		hrp.AssemblyAngularVelocity = Vector3.zero
@@ -6629,6 +6808,10 @@ local function teleportToNearest(g: any)
 		if not e.dead and e.part.Parent then n += 1 end
 	end
 
+	local bestPart: BasePart = best.part
+	if settings.goTo and settings.goTo(bestPart.CFrame, (total > 1) and string.format("%s (%d/%d)", g.name, n, total) or g.name, function()
+		return bestPart.Parent and bestPart.Position or nil
+	end) then return end
 	char:PivotTo(best.part.CFrame + Vector3.new(0, 3, 0))
 	hrp.AssemblyLinearVelocity = Vector3.zero
 	hrp.AssemblyAngularVelocity = Vector3.zero
