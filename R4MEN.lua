@@ -16,7 +16,7 @@
   3. Visual   : Fullbright (+ slider Kecerahan, Jam Dunia), Hilangkan Kabut, FOV, Free Cam
   4. ESP      : ESP Chams (pemain)  ->  ESP NPC / Hewan  ->  Loot & Item ESP (+ pop-up Pin)
   5. Teleport : TP ke Pemain (daftar pemain), Waypoint, Pindah Server (Hop)
-  6. Mini Game: Auto Cut (Mushrooming) / Auto Minigame universal -> Catur -> Scan Rarity -> Rekam Minigame + Auto Minigame -> Hasil
+  6. Mini Game: Auto Cut (Mushrooming) / Auto Minigame universal -> Catur -> Ngamen (Auto + Rekam Detail + Timing) -> Scan Rarity -> Rekam Minigame + Auto Minigame -> Hasil
   7. Mining   : Auto Mine, Attack Sambil Mining, Auto Mob, Auto Reroll Race (toggle di atas) -> Target Batu -> Target Mob -> Race yang Dicari -> Posisi & Gerak (Mode Pelan / TP via meriam, posisi meriam per map)
   8. Debug    : Scan data game, Remote Logger, Perekam Efek Batu (blok "FORGE", dipindah dari script The Forge)
   9. Settings : Keybind, Ukuran Panel, Config (simpan/muat + toggle pop-up Pin/Daerah),
@@ -29,9 +29,9 @@
   * Untuk memindah fitur: ganti halaman induk pada pemanggilan addToggleCard / addSliderCard /
     makeCard / sectionLabel, lalu atur LayoutOrder (angka kecil = di atas).
   * Menambah/menghapus tab: ubah newPage(...) DAN daftar nama di loop sidebar.
-  * Urutan LayoutOrder yang dipakai: Settings = Keybind 0-9, Config 20-60 (slot save 30+i),
+  * Urutan LayoutOrder yang dipakai: Settings = Keybind 0-11 (Ngamen 10-11), Ukuran Panel 12, Config 20-60 (slot save 30+i),
     Utilitas 200, tombol Matikan Semua 300, Unload 301-302.
-    Mini Game = Auto Minigame universal 0-1, Auto Cut 2, Catur 9-14, Scan 100-106. ESP = ESP Chams -2/-1, NPC 1-2, Item 4-5.
+    Mini Game = Auto Minigame universal 0-1, Auto Cut 2, Catur 9-14, Ngamen 20-24 (khusus GameId ngamenGameIds), Scan 100-106. ESP = ESP Chams -2/-1, NPC 1-2, Item 4-5.
     Visual = Pencahayaan 0-4, Kamera 5-7. Mining = toggle auto 0-4, Target Batu 10-12, Target Mob 20-22, Race 30-31, Posisi & Gerak 40-45. Debug = 0-11.
 
  PETA BAGIAN (judul komentar "-- GUI: ..." di dalam script)
@@ -72,7 +72,12 @@ do
 			task.wait(2)
 			local lp = game:GetService("Players").LocalPlayer
 			local pg = lp and lp:WaitForChild("PlayerGui", 10)
-			if pg and pg:FindFirstChild("UniversalUrbee") then return end
+			local already = pg and pg:FindFirstChild("UniversalUrbee")
+			pcall(function()
+				local h = (gethui and gethui()) or game:GetService("CoreGui")
+				if h:FindFirstChild("UniversalUrbee") then already = true end
+			end)
+			if already then return end
 			local ok, e = pcall(function() loadstring(readfile("R4MEN_auto.lua"))() end)
 			if not ok then warn("R4MEN auto-run gagal: " .. tostring(e)) end
 		]])
@@ -107,6 +112,16 @@ for _, n in ipairs({ "UniversalUrbee", "ControlPanel", "UU_ITEMS", "UU_NPC", "UU
 	local old = playerGui:FindFirstChild(n)
 	if old then old:Destroy() end
 end
+-- [FIX] UI lama yang mungkin ada di gethui()/CoreGui
+do
+	local roots = {}
+	pcall(function() if gethui then table.insert(roots, gethui()) end end)
+	pcall(function() table.insert(roots, game:GetService("CoreGui")) end)
+	for _, r in ipairs(roots) do
+		local okF, oldG = pcall(function() return r:FindFirstChild("UniversalUrbee") end)
+		if okF and oldG then pcall(function() oldG:Destroy() end) end
+	end
+end
 
 -- =====================================================
 -- STATE
@@ -132,6 +147,8 @@ local settings: { [string]: any } = {
 	miniGameIds = {}, -- opsional: GameId Mushrooming untuk pengecekan paling pasti, mis. { 123456789 }
 	autoMiniGameIds = {}, -- GameId game yang punya Lockpick / Safe Dial. Kartu "Auto Minigame" HANYA muncul di game ini. Isi mis. { 123456789 } (lihat GameId di Scan / print(game.GameId))
 	chessGameIds = {}, -- opsional: GameId game catur (kartu Catur HANYA dibuat di game ini). Selain daftar ini, kartu Catur juga otomatis dibuat bila game punya GUI papan catur (ChessUI / 2DBoard). Di game lain tab Mini Game tidak berisi Catur.
+	ngamenGameIds = { 10773205357 }, -- GameId minigame Ngamen (osu!). Kartu Ngamen di tab Mini Game HANYA dibuat di game ini
+	ngamenAutoMini = true, -- true = saat Auto Ngamen dinyalakan, panel diciutkan jadi bubble supaya tidak menutupi not. false = panel dibiarkan
 	saveKey = Enum.KeyCode.LeftBracket,
 	tpKey = Enum.KeyCode.RightBracket,
 	cycleKey = Enum.KeyCode.Quote,
@@ -146,6 +163,12 @@ settings.autoMiniOk = table.find(settings.autoMiniGameIds, game.GameId) ~= nil -
 settings.miniGameOk = table.find(settings.miniGameIds, game.GameId) ~= nil
 	or (ReplicatedStorage:FindFirstChild("WorldConfig", true) ~= nil
 		and ReplicatedStorage:FindFirstChild("RootData", true) ~= nil)
+
+settings.ngamenOk = table.find(settings.ngamenGameIds, game.GameId) ~= nil -- Auto Ngamen / Rekam Detail: khusus GameId di ngamenGameIds
+if settings.ngamenOk then
+	settings.ngamenKey = Enum.KeyCode.F6 -- Auto Ngamen ON / OFF (bisa diganti di Settings)
+	settings.ngamenRecKey = Enum.KeyCode.F7 -- Rekam Detail Ngamen ON / OFF (bisa diganti di Settings)
+end
 
 -- Fitur The Forge (tab Mining) HANYA aktif di game The Forge. Tab Debug (Scan + Remote Logger) aktif di semua game.
 -- Isi forgeGameIds dengan GameId The Forge (lihat baris "GameId: ..." di scan, atau print(game.GameId)), mis. { 123456789 }.
@@ -252,6 +275,8 @@ local state: { [string]: boolean } = {
 	chess = false, -- Mini Game: saran langkah catur dari papan in-game (mati saat script dijalankan)
 	chessApi = false, -- Mini Game: Stockfish online untuk saran catur (opsional)
 	chessDouble = false, -- Mini Game: Double Move (saran 2 langkah sekaligus untuk premove, mode bullet)
+	ngamen = false, -- Mini Game: Auto Ngamen (mati saat script dijalankan)
+	ngamenRec = false, -- Mini Game: Rekam Detail Ngamen (mati saat script dijalankan)
 }
 
 local values: { [string]: number } = {
@@ -265,6 +290,10 @@ local values: { [string]: number } = {
 	npcDist = 50000,
 	cutLead = 5, -- Mini Game: LEAD dalam milidetik (5 = 0.005 dtk)
 	chessTime = 3, -- Mini Game: batas waktu berpikir saran catur (detik)
+	ngTap = 12, -- Ngamen: offset TAP (ms). Positif = klik lebih awal
+	ngHold = 12, -- Ngamen: offset HOLD / slider (ms)
+	ngEnd = 60, -- Ngamen: tahan slider segini lama setelah bola sampai ujung (ms)
+	ngAcc = 100, -- Ngamen: % not yang dimainkan (sisanya sengaja dilewati)
 }
 
 local targetUsername = ""
@@ -762,6 +791,8 @@ local effects: { [string]: (boolean) -> () } = {
 	chess = function() end, -- diisi blok GUI Catur
 	chessApi = function() end,
 	chessDouble = function() end, -- diisi blok GUI Catur
+	ngamen = function() end, -- diisi blok GUI Ngamen
+	ngamenRec = function() end, -- diisi blok GUI Ngamen
 	fullbright = function(on) ext.light(on) end,
 	noFog = function(on) ext.fog(on) end,
 	fov = function(on) ext.fov(on) end,
@@ -800,6 +831,7 @@ local function disableAllFeatures()
 	clearMarkings()
 	if effects.scanRec then pcall(effects.scanRec, false) end
 	if settings.forgeDisable then pcall(settings.forgeDisable) end -- Forge: hentikan logger & perekam
+	if settings.ngamenDisable then pcall(settings.ngamenDisable) end -- Ngamen: lepas klik tertahan & simpan rekaman
 	refreshActive()
 end
 
@@ -1537,12 +1569,47 @@ end
 
 local panelW, panelH = clampSize(520, 450)
 
-local gui = new("ScreenGui", {
+-- [FIX] Game ini menyembunyikan semua ScreenGui di PlayerGui saat menu (mis. pilih lagu) terbuka.
+-- UI script dipindah ke gethui()/CoreGui yang tidak tersentuh script game; kalau tidak bisa,
+-- jatuh kembali ke PlayerGui seperti sebelumnya.
+local function pickGuiParent(): Instance
+	local ok, h = pcall(function() return gethui and gethui() end)
+	if ok and typeof(h) == "Instance" then return h end
+	local okC, cg = pcall(function() return game:GetService("CoreGui") end)
+	if okC and cg then
+		local okT = pcall(function()
+			local t = Instance.new("Folder")
+			t.Parent = cg
+			t:Destroy()
+		end)
+		if okT then return cg end
+	end
+	return playerGui
+end
+
+local guiProps = {
 	Name = "UniversalUrbee",
 	ResetOnSpawn = false,
-	DisplayOrder = 999,
+	DisplayOrder = 2147483647, -- maksimum (int32)
 	ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
-}, playerGui)
+}
+local okGui, guiObj = pcall(new, "ScreenGui", guiProps, pickGuiParent())
+local gui = (okGui and guiObj) or new("ScreenGui", guiProps, playerGui)
+pcall(function() if syn and syn.protect_gui then syn.protect_gui(gui) end end)
+
+-- [FIX] Jaga agar UI script tetap tampil & paling atas, walau game mengubah Enabled/DisplayOrder
+gui:GetPropertyChangedSignal("Enabled"):Connect(function()
+	if not gui.Enabled then gui.Enabled = true end
+end)
+task.spawn(function()
+	while gui and gui.Parent do
+		if gui.DisplayOrder ~= 2147483647 then
+			gui.DisplayOrder = 2147483647
+		end
+		if not gui.Enabled then gui.Enabled = true end
+		task.wait(1)
+	end
+end)
 
 local modal = new("TextButton", {
 	Name = "MouseFree",
@@ -1680,6 +1747,30 @@ local function headerButton(txt: string, xOffset: number, hoverColor: Color3)
 		AutoButtonColor = false,
 	}, header)
 	round(b, 13)
+	-- [FIX] Kunci ukuran/posisi tombol header. UI ini ada di PlayerGui, jadi script game yang memberi
+	-- efek hover/animasi ke semua tombol (membesarkan Size atau menambah UIScale) ikut mengenainya,
+	-- hasilnya tombol X membengkak dan menutupi tombol minimize. Nilai yang diubah pihak lain dikembalikan.
+	do
+		local fixing = false
+		local function lock(prop: string)
+			local want = b[prop]
+			b:GetPropertyChangedSignal(prop):Connect(function()
+				if fixing or b[prop] == want then return end
+				fixing = true
+				b[prop] = want
+				fixing = false
+			end)
+		end
+		lock("Size")
+		lock("Position")
+		lock("AnchorPoint")
+		lock("AutomaticSize")
+		b.ChildAdded:Connect(function(c)
+			if c:IsA("UIScale") or c:IsA("UISizeConstraint") or c:IsA("UIAspectRatioConstraint") then
+				c:Destroy()
+			end
+		end)
+	end
 	b.MouseEnter:Connect(function()
 		tween(b, { BackgroundColor3 = hoverColor, TextColor3 = WHITE }, 0.1)
 	end)
@@ -1834,7 +1925,7 @@ setUIState = function(s: string)
 	uiState = s
 	local nowOpen = (s == "open")
 
-	if s == "mini" and prev == "open" then
+	if s == "mini" and prev == "open" and not settings.keepBubblePos then -- keepBubblePos: dipakai Auto Ngamen supaya bubble tetap di posisi terakhir
 		placeBubbleAtPanel()
 	elseif nowOpen and prev == "mini" then
 		placePanelAtBubble()
@@ -4702,6 +4793,11 @@ do
 			if now - startT > 180 then wstop("Walk timeout") end
 		end
 
+		-- WAJIB tetap 3 koneksi: Humanoid:Move hanya dibaca fisika kalau ditulis SEBELUM langkah fisika.
+		-- Kontrol bawaan Roblox menimpa Move(0) tiap RenderStepped, jadi kalau hanya Heartbeat (setelah fisika)
+		-- perintah jalan selalu tertimpa dan karakter diam.
+		table.insert(W.conns, RunService.RenderStepped:Connect(step))
+		table.insert(W.conns, RunService.Stepped:Connect(step))
 		table.insert(W.conns, RunService.Heartbeat:Connect(step))
 		-- tekan WASD / panah = ambil alih manual, walk berhenti
 		table.insert(W.conns, UIS.InputBegan:Connect(function(input, gp)
@@ -8727,7 +8823,7 @@ end
 local keyConflictUI: any = {
 	open = false,
 	titles = {},
-	order = { "toggleKey", "saveKey", "tpKey", "cycleKey", "floatUpKey", "floatDownKey", "followKey", "autoCutKey", "recordMiniKey" },
+	order = { "toggleKey", "saveKey", "tpKey", "cycleKey", "floatUpKey", "floatDownKey", "followKey", "autoCutKey", "recordMiniKey", "ngamenKey", "ngamenRecKey" },
 }
 do
 	local ui = keyConflictUI
@@ -8916,9 +9012,13 @@ if settings.miniGameOk then
 	addKeyRow(8, "Auto Cut: ON / OFF", "Nyalakan atau matikan Auto Cut (Mini Game). Belum diatur = kosong. Backspace untuk mengosongkan.", "autoCutKey", true)
 end
 addKeyRow(9, "Rekam Minigame: ON / OFF", "Mulai atau hentikan perekaman minigame. Bisa diganti sesuai tombol pilihanmu.", "recordMiniKey", true)
+if settings.ngamenOk then
+	addKeyRow(10, "Auto Ngamen: ON / OFF", "Nyalakan atau matikan Auto Ngamen (Mini Game). Backspace untuk mengosongkan.", "ngamenKey", true)
+	addKeyRow(11, "Rekam Detail Ngamen: ON / OFF", "Mulai atau hentikan Rekam Detail Ngamen. Backspace untuk mengosongkan.", "ngamenRecKey", true)
+end
 refreshKeyUI()
 
-local sizeCard = makeCard(settingsPage, 78, 9)
+local sizeCard = makeCard(settingsPage, 78, 12)
 text(sizeCard, {
 	Text = "Ukuran Panel",
 	Font = Enum.Font.GothamBold,
@@ -8992,7 +9092,7 @@ text(settingsPage, {
 -- =====================================================
 do
 local MAX_SLOTS = 10
-local KEY_NAMES = { "toggleKey", "saveKey", "tpKey", "cycleKey", "floatUpKey", "floatDownKey", "followKey", "autoCutKey", "recordMiniKey" }
+local KEY_NAMES = { "toggleKey", "saveKey", "tpKey", "cycleKey", "floatUpKey", "floatDownKey", "followKey", "autoCutKey", "recordMiniKey", "ngamenKey", "ngamenRecKey" }
 
 local slots: { { name: string, data: any } } = {}
 local remote: RemoteFunction? = nil
@@ -9893,6 +9993,884 @@ do
 	end
 	if settings.miniGameOk then
 		buildMiniGame()
+	end
+end
+
+-- =====================================================
+-- GUI: NGAMEN (Mini Game) -- minigame ngamen gaya osu!  (khusus GameId di settings.ngamenGameIds)
+-- Dibungkus fungsi sendiri supaya local-nya TIDAK menghabiskan jatah 200 local script utama.
+-- Fitur: Auto Ngamen (klik not TAP tepat waktu + ikuti bola slider) dan Rekam Detail (hasil rekaman otomatis DISALIN ke clipboard saat dimatikan;
+-- file .txt hanya dipakai kalau executor tidak punya fungsi clipboard).
+-- Membaca PlayerGui.NgamenOsuGui.Main.Bidang.Not (Not<N> = TAP, Slider<N> = HOLD).
+-- Nilai timing ada di values.ngTap / ngHold / ngEnd / ngAcc -> ikut tersimpan di settings.json & slot Config.
+-- Toggle: state.ngamen & state.ngamenRec. Keybind: Settings (settings.ngamenKey / ngamenRecKey, bawaan F6 / F7).
+-- =====================================================
+do
+	local function buildNgamen()
+		local GuiService = game:GetService("GuiService")
+		local ENV: any = (getgenv and getgenv()) or _G
+		local fmt = string.format
+		local VIM: any = nil
+		pcall(function() VIM = game:GetService("VirtualInputManager") end)
+
+		-- singkirkan versi mandiri lama (kalau masih jalan) supaya tidak menekan dobel
+		do
+			if type(ENV.__NGAMEN_UNLOAD) == "function" then pcall(ENV.__NGAMEN_UNLOAD) end
+			ENV.__NGAMEN_UNLOAD = nil
+			pcall(function()
+				local hosts: { any } = { playerGui }
+				if gethui then table.insert(hosts, gethui()) end
+				table.insert(hosts, game:GetService("CoreGui"))
+				for _, h in ipairs(hosts) do
+					local old = h:FindFirstChild("NgamenAutoPanel")
+					if old then old:Destroy() end
+				end
+			end)
+		end
+
+		local GUI_NAME = "NgamenOsuGui"
+		local K = {
+			tapHold = 0.05,     -- lama tombol ditahan untuk not TAP (dtk)
+			endRadius = 8,      -- jarak (px) bola ke ujung jalur untuk dianggap sampai
+			maxHold = 4,        -- batas aman lama menahan satu slider (dtk)
+			preMoveRatio = 1.8, -- kursor dipindah ke not saat cincin tinggal segini x ukuran not
+			pathSpeed = 280,    -- px/dtk, HANYA dipakai bila bola slider tidak terbaca
+			legMove = 4,        -- px: bola dianggap berbalik arah bila menjauh segini dari ujung (cadangan bila hook remote tidak ada)
+			legVerify = 0.12,   -- dtk: tunggu segini di ujung sebelum yakin slider selesai (cadangan bila hook remote tidak ada)
+			doneTimeout = 0.8,  -- dtk: batas tunggu hasil dari game setelah bola tampak selesai (slider bolak-balik)
+		}
+
+		local notes: any = {}
+		local cur: any = nil
+		local stats = { tap = 0, hold = 0, skip = 0 }
+		local boundFolder: any = nil
+		local folderConns: { RBXScriptConnection } = {}
+		local lastPress: any = nil                 -- { kind, t } not terakhir yang kita tekan
+		local errs: any = { tap = {}, hold = {} }  -- geseran Tanda (px) 10 terakhir per jenis
+		local doneAt: any = {}                     -- id not -> time() saat GAME mengirim hasil not (remote ketukOsu); dipakai slider bolak-balik
+
+		-- ---------- log ----------
+		local rec: any = { on = false, lines = {}, t0 = 0, lastFlush = 0, name = "", textCache = {}, conns = {}, nextText = 0 }
+		local function rline(s: string)
+			if #rec.lines < 90000 then rec.lines[#rec.lines + 1] = s end
+		end
+		local function dbg(s: string)
+			if rec.on then rline("A|" .. fmt("%.3f", time() - rec.t0) .. "|" .. s) end
+		end
+
+		-- ---------- util GUI ----------
+		local function center(o: any): Vector2 return o.AbsolutePosition + o.AbsoluteSize / 2 end
+		local function insetFor(o: any): Vector2
+			local sg = o and o:FindFirstAncestorOfClass("ScreenGui")
+			if sg and not sg.IgnoreGuiInset then
+				local ok, v = pcall(function() return GuiService:GetGuiInset() end)
+				if ok and typeof(v) == "Vector2" then return v end
+			end
+			return Vector2.new(0, 0)
+		end
+		local function relPath(o: any): string
+			local ok, p = pcall(function() return o:GetFullName() end)
+			if not ok then return tostring(o) end
+			return (string.gsub(p, "^.-PlayerGui%.", ""))
+		end
+
+		-- ---------- input ----------
+		local mouseDown = false
+		local function moveTo(p: Vector2)
+			if not VIM then return end
+			pcall(function() VIM:SendMouseMoveEvent(p.X, p.Y, game) end)
+		end
+		local function press(p: Vector2, down: boolean)
+			if not VIM then return end
+			pcall(function() VIM:SendMouseButtonEvent(p.X, p.Y, 0, down, game, 1) end)
+			mouseDown = down
+		end
+
+		-- ---------- jalur slider ----------
+		local function buildPath(container: any): { Vector2 }
+			local pts: { Vector2 } = {}
+			for _, ch in ipairs(container:GetChildren()) do
+				if ch.Name == "Frame" and ch:IsA("GuiObject") then
+					local c = center(ch)
+					local last = pts[#pts]
+					if not last or (c - last).Magnitude > 2 then pts[#pts + 1] = c end
+				end
+			end
+			return pts
+		end
+
+		local function pathAt(path: { Vector2 }, d: number, bounce: boolean): Vector2
+			local total = 0
+			for i = 1, #path - 1 do total = total + (path[i + 1] - path[i]).Magnitude end
+			if total <= 0 then return path[1] end
+			if bounce then
+				d = d % (2 * total)
+				if d > total then d = 2 * total - d end
+			elseif d > total then
+				d = total
+			end
+			for i = 1, #path - 1 do
+				local seg = (path[i + 1] - path[i]).Magnitude
+				if d <= seg then
+					return path[i]:Lerp(path[i + 1], seg > 0 and d / seg or 0)
+				end
+				d = d - seg
+			end
+			return path[#path]
+		end
+
+		-- daftar anak (nama:kelas) untuk log diagnosa
+		local function kidsOf(o: any): string
+			local list = {}
+			pcall(function()
+				for _, ch in ipairs(o:GetChildren()) do
+					list[#list + 1] = ch.Name .. ":" .. ch.ClassName
+					if #list >= 24 then break end
+				end
+			end)
+			return table.concat(list, ",")
+		end
+
+		-- ---------- deteksi not ----------
+		local function addNote(inst: Instance)
+			local nm = inst.Name
+			local kind = "hold"
+			local id = tonumber(string.match(nm, "^Slider(%d+)$"))
+			if not id then
+				kind = "tap"
+				id = tonumber(string.match(nm, "^Not(%d+)$"))
+			end
+			if not id or notes[id] then return end
+			local n: any = {
+				id = id, kind = kind, container = inst, state = 0, ready = false,
+				skip = (math.random() * 100) > values.ngAcc, inset = Vector2.new(0, 0),
+			}
+			notes[id] = n
+			task.spawn(function()
+				local head: any = inst
+				if kind == "hold" then head = inst:WaitForChild("Not" .. id, 4) end
+				if not head then
+					dbg(fmt("not %d: kepala tidak ditemukan (anak: %s)", id, kidsOf(inst)))
+					notes[id] = nil
+					return
+				end
+				n.head = head
+				n.ring = head:WaitForChild("CincinPendekat", 4)
+				if not n.ring then dbg(fmt("not %d: CincinPendekat tidak ada (anak kepala: %s)", id, kidsOf(head))) end
+				if kind == "hold" then
+					n.ball = inst:FindFirstChild("Bola") or inst:WaitForChild("Bola", 0.5)
+					n.follow = inst:FindFirstChild("SliderIkut")
+					n.balik = inst:FindFirstChild("SliderBalik")
+					RunService.Heartbeat:Wait()
+					n.path = buildPath(inst)
+				end
+				n.inset = insetFor(head)
+				n.ready = true
+			end)
+		end
+
+		local function findFolder(): any
+			local g = playerGui:FindFirstChild(GUI_NAME)
+			local m = g and g:FindFirstChild("Main")
+			local b = m and m:FindFirstChild("Bidang")
+			return b and b:FindFirstChild("Not")
+		end
+
+		local function ringRatio(n: any): number?
+			local ring, head = n.ring, n.head
+			if not (ring and ring.Parent and head and head.Parent) then return nil end
+			local hs = head.AbsoluteSize.X
+			if hs <= 0 then return nil end
+			return ring.AbsoluteSize.X / hs
+		end
+
+		local function updateSamples(now: number)
+			for id, n in pairs(notes) do
+				if n.ready and not n.gone then
+					local c = n.container
+					if not (c and c.Parent) then
+						n.gone = true
+					else
+						if not (n.ring and n.ring.Parent) and n.head and n.head.Parent then
+							n.ring = n.head:FindFirstChild("CincinPendekat") or n.ring -- cincin telat muncul / dibuat ulang
+						end
+						local r = ringRatio(n)
+						if r then
+							if not n.firstR then n.firstR = r end
+							if n.lastR and now > n.lastT then
+								local inst = (r - n.lastR) / (now - n.lastT)
+								n.rate = n.rate and (n.rate * 0.6 + inst * 0.4) or inst
+							end
+							n.lastR, n.lastT, n.r = r, now, r
+							if n.rate and n.rate < -0.05 then n.ttH = (r - 1) / (-n.rate) else n.ttH = nil end
+							local h = n.hist
+							if not h then h = {} n.hist = h end
+							h[#h + 1] = { now, r }
+							if #h > 8 then table.remove(h, 1) end
+							n.ttHfit = nil
+							if #h >= 4 then
+								local t0, sx, sy, sxx, sxy = h[1][1], 0, 0, 0, 0
+								for i = 1, #h do
+									local x, y = h[i][1] - t0, h[i][2]
+									sx, sy, sxx, sxy = sx + x, sy + y, sxx + x * x, sxy + x * y
+								end
+								local m = #h
+								local den = m * sxx - sx * sx
+								if den > 1e-9 then
+									local slope = (m * sxy - sx * sy) / den
+									if slope < -0.05 then
+										local icpt = (sy - slope * sx) / m
+										n.ttHfit = (t0 + (1 - icpt) / slope) - now
+									end
+								end
+							end
+						end
+					end
+				elseif n.gone and not (cur and cur.n == n) then
+					notes[id] = nil
+				end
+			end
+		end
+
+		local function pickNote(): any
+			local best: any = nil
+			for id, n in pairs(notes) do
+				if n.ready and not n.gone and n.state == 0 and n.r and (n.firstR or 0) > 1.3 then
+					if not best or id < best.id then best = n end
+				end
+			end
+			return best
+		end
+
+		local function headScreen(n: any): Vector2 return center(n.head) + n.inset end
+
+		-- ---------- aksi ----------
+		local function releaseCur(reason: string)
+			local a = cur
+			if not a then return end
+			press(a.last or a.p, false)
+			a.n.state = 2
+			dbg(fmt("lepas not %d: %s (%.2f dtk)", a.n.id, reason, time() - a.t0))
+			cur = nil
+		end
+
+		local function beginNote(n: any, now: number)
+			n.state = 1
+			if n.skip then
+				n.state = 2
+				stats.skip = stats.skip + 1
+				dbg(fmt("lewati not %d (akurasi)", n.id))
+				return
+			end
+			local p = headScreen(n)
+			doneAt[n.id] = nil
+			lastPress = { kind = n.kind, t = time() }
+			moveTo(p)
+			press(p, true)
+			if n.kind == "tap" then
+				cur = { n = n, tap = true, p = p, untilT = now + K.tapHold, t0 = now }
+				stats.tap = stats.tap + 1
+			else
+				n.balik = n.balik or n.container:FindFirstChild("SliderBalik")
+				n.path = buildPath(n.container)
+				cur = { n = n, p = p, t0 = now, reached = false }
+				stats.hold = stats.hold + 1
+				dbg(fmt("not %d: anak slider = %s", n.id, kidsOf(n.container)))
+			end
+			dbg(fmt("tekan not %d (%s) rasio=%.2f ttH=%s fit=%s", n.id, n.kind, n.r or -1,
+				n.ttH and fmt("%.3f", n.ttH) or "-", n.ttHfit and fmt("%.3f", n.ttHfit) or "-"))
+		end
+
+		local function stepAction(now: number)
+			local a = cur
+			local n = a.n
+			if a.tap then
+				if now >= a.untilT then releaseCur("tap") end
+				return
+			end
+			local el = now - a.t0
+			if not (n.container and n.container.Parent) then releaseCur("slider hilang") return end
+			if el > K.maxHold then releaseCur("batas waktu") return end
+
+			local g: any = nil
+			local b, f = n.ball, n.follow
+			if b and b.Parent and b.Visible and b.AbsoluteSize.X > 0 then
+				g = center(b)
+			elseif f and f.Parent and f.Visible and f.AbsoluteSize.X > 0 then
+				g = center(f)
+			end
+			local real = g ~= nil -- true = posisi dibaca dari bola / pengikut asli (bukan perkiraan jalur)
+			if not g and n.path and #n.path >= 2 then
+				g = pathAt(n.path, el * K.pathSpeed, n.balik ~= nil)
+				if not a.warned then a.warned = true dbg("bola tidak terbaca: pakai jalur + kecepatan tetap") end
+			end
+			if not g then g = center(n.head) end
+
+			local p = g + n.inset
+			a.last = p
+			moveTo(p)
+
+			-- bola dianggap berhenti bila nyaris tidak bergeser antar frame
+			if a.lastG and (g - a.lastG).Magnitude < 0.4 then
+				a.stillSince = a.stillSince or now
+			else
+				a.stillSince = nil
+			end
+			a.lastG = g
+			local still = a.stillSince and (now - a.stillSince) > 0.05
+
+			local path = n.path
+			local hookOn = ENV.__NGAMEN_HOOKED and ENV.__NGAMEN_OUT ~= nil
+
+			-- SLIDER BOLAK-BALIK dengan hook remote: tahan sampai GAME sendiri menilai not ini.
+			-- Bukti rekaman: slider 3 leg (durasi 1.25 dtk) tampak "selesai" di leg ke-2 (0.83 dtk) -> dilepas terlalu cepat
+			-- -> tick terakhir 0 -> hasil 1 (bukan 2). Game mengirim ketukOsu(id, ...) tepat di akhir slider, jadi itu sinyal pasti.
+			if n.balik and hookOn then
+				if doneAt[n.id] then releaseCur("hasil not diterima dari game") return end
+				if path and #path >= 2 and el > 0.12 and not a.reachedAt then
+					local dEnd = (g - path[#path]).Magnitude
+					if not a.reached and (dEnd <= K.endRadius or (dEnd <= 40 and still)) then a.reached = true end
+					if a.reached then
+						local dStart = (g - path[1]).Magnitude
+						if dStart <= K.endRadius or (dStart <= 40 and still and el > 0.3) then a.reachedAt = now end
+					end
+				end
+				if a.reachedAt then
+					if now - a.reachedAt >= K.doneTimeout then releaseCur("batas aman (hasil game tidak datang)") return end
+					local nx = pickNote()
+					if nx then
+						local ntt = (nx.kind == "tap" and nx.ttHfit) or nx.ttH
+						if (ntt and ntt <= 0.05) or (nx.r and nx.r <= 1.0) then releaseCur("not berikut sudah dekat") return end
+					end
+				end
+				return
+			end
+
+			-- tanpa hook remote: deteksi ujung berdasarkan gerak bola
+			if path and #path >= 2 and el > 0.12 and not a.reachedAt then
+				local first, last = path[1], path[#path]
+				if not n.balik then
+					local dEnd = (g - last).Magnitude
+					if dEnd <= K.endRadius or (dEnd <= 40 and still) then
+						a.reachedAt = now
+						dbg(fmt("not %d: bola di ujung, tahan %d ms lagi", n.id, values.ngEnd))
+					end
+				else
+					-- bolak-balik: ujung dituju bergantian (jauh, awal, jauh, ...). Di tiap ujung, kalau bola menjauh lagi
+					-- berarti masih ada leg berikutnya. Selesai hanya bila bola diam di ujung setelah minimal 1 putaran balik.
+					a.leg = a.leg or 0
+					local tp = (a.leg % 2 == 0) and last or first
+					local dT = (g - tp).Magnitude
+					local ex = a.ext
+					if not ex then
+						if dT <= K.endRadius or (dT <= 40 and still and (a.leg == 0 or el > 0.3)) then
+							a.ext = { t = now, p = tp, dmin = dT }
+						end
+					else
+						local dd = (g - ex.p).Magnitude
+						if real and dd - ex.dmin > K.legMove then
+							a.leg = a.leg + 1
+							a.ext = nil
+							a.stillSince = nil
+							dbg(fmt("not %d: bola berbalik arah (leg %d selesai)", n.id, a.leg))
+						else
+							if dd < ex.dmin then ex.dmin = dd end
+							if a.leg >= 1 and now - ex.t >= math.max(K.legVerify, values.ngEnd / 1000) then
+								a.reachedAt = ex.t
+								dbg(fmt("not %d: bola di ujung (leg %d), tahan %d ms lagi", n.id, a.leg + 1, values.ngEnd))
+							end
+						end
+					end
+				end
+			end
+			if a.reachedAt then
+				if now - a.reachedAt >= values.ngEnd / 1000 then releaseCur("ujung jalur + tahan") return end
+				local nx = pickNote()
+				if nx then
+					local ntt = (nx.kind == "tap" and nx.ttHfit) or nx.ttH
+					if (ntt and ntt <= 0.05) or (nx.r and nx.r <= 1.0) then releaseCur("not berikut sudah dekat") return end
+				end
+			end
+		end
+
+		local function autoStep(now: number)
+			if cur then
+				if not state.ngamen then releaseCur("Auto dimatikan") return end
+				stepAction(now)
+				return
+			end
+			if not state.ngamen then return end
+			local n = pickNote()
+			if not n then return end
+			local r = n.r
+			if r < 0.8 then
+				n.state = 2
+				dbg(fmt("not %d sudah lewat (rasio %.2f)", n.id, r))
+				return
+			end
+			if r < K.preMoveRatio and not n.premoved and not n.skip then
+				n.premoved = true
+				moveTo(headScreen(n))
+			end
+			local isTap = n.kind == "tap"
+			local lead = (isTap and values.ngTap or values.ngHold) / 1000
+			local tt = (isTap and n.ttHfit) or n.ttH
+			local fire
+			if tt then fire = tt <= lead else fire = r <= 1.0 end -- offset negatif = klik SETELAH cincin pas
+			if fire then
+				beginNote(n, now)
+			end
+		end
+
+		-- ---------- bind folder not ----------
+		local function unbind()
+			for _, c in ipairs(folderConns) do pcall(function() c:Disconnect() end) end
+			folderConns = {}
+			if cur then releaseCur("lagu berganti") end
+			notes = {}
+			for k in pairs(doneAt) do doneAt[k] = nil end
+		end
+		local function bind(folder: any)
+			unbind()
+			boundFolder = folder
+			if not folder then return end
+			for _, ch in ipairs(folder:GetChildren()) do addNote(ch) end
+			folderConns[#folderConns + 1] = folder.ChildAdded:Connect(addNote)
+			local main0 = folder.Parent and folder.Parent.Parent
+			local hud = main0 and main0:FindFirstChild("Hud")
+			local garis = hud and hud:FindFirstChild("GarisError")
+			if garis then
+				folderConns[#folderConns + 1] = garis.ChildAdded:Connect(function(d)
+					if d.Name ~= "Tanda" or not d:IsA("GuiObject") then return end
+					task.spawn(function()
+						RunService.Heartbeat:Wait()
+						if not (d.Parent and garis.Parent) then return end
+						local dx = (d.AbsolutePosition.X + d.AbsoluteSize.X / 2) - (garis.AbsolutePosition.X + garis.AbsoluteSize.X / 2)
+						local lp_ = lastPress
+						if lp_ and time() - lp_.t < 0.4 then
+							local list = errs[lp_.kind]
+							list[#list + 1] = dx
+							if #list > 10 then table.remove(list, 1) end
+						end
+					end)
+				end)
+			end
+			dbg("terhubung ke folder not")
+		end
+
+		task.spawn(function()
+			while not unloaded do
+				local f = findFolder()
+				if f ~= boundFolder then bind(f) end
+				task.wait(0.25)
+			end
+			unbind()
+		end)
+
+		-- =====================================================
+		-- REKAM DETAIL
+		-- =====================================================
+		local function ser(v: any, d: number?): string
+			local depth = d or 0
+			local tv = typeof(v)
+			if tv == "table" then
+				if depth >= 3 then return "{...}" end
+				local parts, c = {}, 0
+				for k, x in pairs(v) do
+					c = c + 1
+					if c > 14 then parts[#parts + 1] = "..." break end
+					parts[#parts + 1] = tostring(k) .. "=" .. ser(x, depth + 1)
+				end
+				return "{" .. table.concat(parts, ",") .. "}"
+			elseif tv == "Instance" then
+				return relPath(v)
+			elseif tv == "string" then
+				return fmt("%q", string.sub(v, 1, 80))
+			end
+			return tostring(v)
+		end
+		local function packArgs(...): string
+			local t, n = {}, select("#", ...)
+			for i = 1, n do t[#t + 1] = ser((select(i, ...))) end
+			return table.concat(t, ", ")
+		end
+		local function rt(): number return time() - rec.t0 end
+		local function t3(x: number): string return fmt("%.3f", x) end
+
+		-- Rekaman disalin ke clipboard saat dimatikan (final = true). File .txt hanya cadangan bila clipboard tidak tersedia.
+		local clipFn: any = setclipboard or toclipboard or set_clipboard
+		local function recFlush(final: boolean)
+			rec.lastFlush = time()
+			if clipFn then
+				if not final then return end
+				if pcall(clipFn, table.concat(rec.lines, "\n")) then rec.where = "clipboard" return end
+			end
+			if writefile then
+				if pcall(writefile, rec.name, table.concat(rec.lines, "\n")) then rec.where = "file" end
+			end
+		end
+
+		local function installOutHook()
+			if ENV.__NGAMEN_HOOKED then return end
+			if not (hookmetamethod and getnamecallmethod and newcclosure) then return end
+			local ok = pcall(function()
+				local old
+				old = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+					local m = getnamecallmethod()
+					local f = ENV.__NGAMEN_OUT
+					if f and (m == "FireServer" or m == "InvokeServer") then
+						pcall(f, self, m, ...)
+						if setnamecallmethod then pcall(setnamecallmethod, m) end
+					end
+					return old(self, ...)
+				end))
+			end)
+			if ok then ENV.__NGAMEN_HOOKED = true end
+		end
+
+		-- pengamat remote keluar: (1) catat id not yang sudah dinilai game (doneAt), (2) tulis ke rekaman bila Rekam Detail ON
+		local function outObserver(self: any, m: string, ...)
+			if m == "FireServer" then
+				local a1, a2 = ...
+				if a1 == "ketukOsu" and type(a2) == "number" then doneAt[a2] = time() end
+			end
+			if rec.on then
+				rline("R>|" .. t3(rt()) .. "|" .. relPath(self) .. "|" .. m .. "|" .. packArgs(...))
+			end
+		end
+
+		local function recFrame()
+			local t = rt()
+			for id, n in pairs(notes) do
+				if n.ready and not n.gone and n.ring and n.ring.Parent and n.head and n.head.Parent then
+					local hs, rs = n.head.AbsoluteSize.X, n.ring.AbsoluteSize.X
+					if hs > 0 and rs / hs > 1.8 then continue end -- cincin masih jauh: tidak dicatat (hemat ukuran rekaman)
+					local hc = center(n.head)
+					local b, f = n.ball, n.follow
+					local bv, bp, fv, fw = "-", "-", "-", "-"
+					if b and b.Parent then
+						local bc = center(b)
+						bv = tostring(b.Visible)
+						bp = fmt("%.0f,%.0f", bc.X, bc.Y)
+					end
+					if f and f.Parent then
+						fv = tostring(f.Visible)
+						fw = fmt("%.1f", f.AbsoluteSize.X)
+					end
+					rline(table.concat({
+						"F", t3(t), tostring(id), n.kind, fmt("%.1f", rs), fmt("%.1f", hs),
+						fmt("%.3f", hs > 0 and rs / hs or 0), bv, bp, fv, fw, fmt("%.0f,%.0f", hc.X, hc.Y),
+					}, "|"))
+				end
+			end
+		end
+
+		local HUD_NAMES = { GUI_NAME, "NgamenGui", "UangHud" }
+
+		local function sampleTexts()
+			for _, gname in ipairs(HUD_NAMES) do
+				local gui0 = playerGui:FindFirstChild(gname)
+				if gui0 then
+					local m = gui0:FindFirstChild("Main")
+					local bid = m and m:FindFirstChild("Bidang")
+					for _, d in ipairs(gui0:GetDescendants()) do
+						if d:IsA("TextLabel") or d:IsA("TextButton") then
+							if not (bid and d:IsDescendantOf(bid)) then
+								local txt = d.Text
+								if txt ~= "" and rec.textCache[d] ~= txt then
+									rec.textCache[d] = txt
+									rline("T|" .. t3(rt()) .. "|" .. relPath(d) .. "|" .. string.sub(txt, 1, 80))
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+
+		local function skipNoise(path: string): boolean
+			if string.find(path, ".Bidang.Not.", 1, true) then return true end
+			if string.find(path, ".Bidang.TitikIkut", 1, true) then return true end
+			if string.find(path, ".Efek.Percik", 1, true) then return true end
+			return false
+		end
+
+		local function startRec()
+			if rec.on then return end
+			rec.on = true
+			rec.lines = {}
+			rec.t0 = time()
+			rec.textCache = {}
+			rec.name = "Ngamen_Detail_" .. tostring(os.time()) .. ".txt"
+			rline("== NGAMEN DETAIL == GameId=" .. tostring(game.GameId) .. " PlaceId=" .. tostring(game.PlaceId) .. " | " .. os.date("%Y-%m-%d %H:%M:%S"))
+			rline("Format: F|t|id|jenis|cincinW|kepalaW|rasio|bolaVisible|bolaX,Y|ikutVisible|ikutW|kepalaX,Y")
+			rline("        I|t|down/up|x,y (input mouse)  E|t|Tanda geserX|lebarGaris  G|t|objek baru  T|t|teks HUD")
+			rline("        R<|t|remote|args (masuk)  R>|t|remote|metode|args (keluar)  A|t|aksi bot  S|t|ScreenGui Enabled")
+
+			local rc = rec.conns
+			-- remote masuk
+			for _, d in ipairs(ReplicatedStorage:GetDescendants()) do
+				if d:IsA("RemoteEvent") then
+					rc[#rc + 1] = d.OnClientEvent:Connect(function(...)
+						rline("R<|" .. t3(rt()) .. "|" .. relPath(d) .. "|" .. packArgs(...))
+					end)
+				end
+			end
+			-- remote keluar
+			installOutHook()
+			ENV.__NGAMEN_OUT = outObserver
+			if not ENV.__NGAMEN_HOOKED then rline("# catatan: hook remote keluar tidak tersedia di executor ini") end
+			-- input mouse
+			rc[#rc + 1] = UIS.InputBegan:Connect(function(i)
+				if i.UserInputType == Enum.UserInputType.MouseButton1 then
+					local p = UIS:GetMouseLocation()
+					rline("I|" .. t3(rt()) .. "|down|" .. fmt("%.0f,%.0f", p.X, p.Y))
+				end
+			end)
+			rc[#rc + 1] = UIS.InputEnded:Connect(function(i)
+				if i.UserInputType == Enum.UserInputType.MouseButton1 then
+					local p = UIS:GetMouseLocation()
+					rline("I|" .. t3(rt()) .. "|up|" .. fmt("%.0f,%.0f", p.X, p.Y))
+				end
+			end)
+			-- objek GUI baru + Enabled
+			for _, gname in ipairs(HUD_NAMES) do
+				local gui0 = playerGui:FindFirstChild(gname)
+				if gui0 then
+					if gui0:IsA("ScreenGui") then
+						rline("S|" .. t3(rt()) .. "|" .. gname .. "|Enabled=" .. tostring(gui0.Enabled))
+						rc[#rc + 1] = gui0:GetPropertyChangedSignal("Enabled"):Connect(function()
+							rline("S|" .. t3(rt()) .. "|" .. gname .. "|Enabled=" .. tostring(gui0.Enabled))
+						end)
+					end
+					rc[#rc + 1] = gui0.DescendantAdded:Connect(function(d)
+						local path = relPath(d)
+						if d.Name == "Tanda" and d.Parent and d.Parent:IsA("GuiObject") then
+							local par = d.Parent
+							local dx = (d.AbsolutePosition.X + d.AbsoluteSize.X / 2) - (par.AbsolutePosition.X + par.AbsoluteSize.X / 2)
+							rline("E|" .. t3(rt()) .. "|" .. fmt("%.1f", dx) .. "|" .. fmt("%.1f", par.AbsoluteSize.X))
+						elseif not skipNoise(path) then
+							rline("G|" .. t3(rt()) .. "|" .. path .. "|" .. d.ClassName)
+						end
+					end)
+				end
+			end
+			sampleTexts()
+			rec.where = nil
+			rec.lastMsg = nil
+			dbg("rekam detail ON")
+		end
+
+		local function stopRec()
+			if not rec.on then return end
+			for _, c in ipairs(rec.conns) do pcall(function() c:Disconnect() end) end
+			rec.conns = {}
+			if not state.ngamen then ENV.__NGAMEN_OUT = nil end
+			sampleTexts()
+			dbg("rekam detail OFF (" .. #rec.lines .. " baris)")
+			rec.on = false
+			recFlush(true)
+			if rec.where == "clipboard" then
+				rec.lastMsg = fmt("Selesai: %d baris disalin ke clipboard. Tempel ke Catatan lalu kirim.", #rec.lines)
+				toast("Rekaman disalin ke clipboard")
+			elseif rec.where == "file" then
+				rec.lastMsg = fmt("Clipboard tidak didukung: disimpan ke file %s (folder workspace).", rec.name)
+				toast("Rekaman disimpan ke file " .. rec.name)
+			else
+				rec.lastMsg = "Rekaman GAGAL disimpan (executor tanpa clipboard & writefile)."
+				toast("Rekaman gagal disimpan")
+			end
+		end
+
+		-- =====================================================
+		-- HALAMAN (kartu bertema R4MEN di tab Mini Game, order 20-24)
+		-- =====================================================
+		effects.ngamen = function(on: boolean)
+			if not on and cur then releaseCur("Auto dimatikan") end
+			if on then
+				installOutHook()
+				ENV.__NGAMEN_OUT = outObserver
+			elseif not rec.on then
+				ENV.__NGAMEN_OUT = nil
+			end
+			dbg(on and "Auto ON" or "Auto OFF")
+			dbg(ENV.__NGAMEN_HOOKED and "hook remote: aktif (slider bolak-balik ditahan sampai game menilai)" or "hook remote: TIDAK tersedia (pakai deteksi gerak bola)")
+			toast(on and "Auto Ngamen: ON" or "Auto Ngamen: OFF")
+			-- panel yang terbuka bisa menutupi area not (klik tiruan kena panel, bukan game): ciutkan jadi bubble
+			if on and settings.ngamenAutoMini and uiState == "open" then
+				settings.keepBubblePos = true -- bubble TIDAK dipindah ke panel: tetap di tempat terakhir yang Anda geser
+				setUIState("mini")
+				settings.keepBubblePos = nil
+			end
+		end
+		effects.ngamenRec = function(on: boolean)
+			if on then startRec() else stopRec() end
+		end
+		-- dipanggil "Matikan Semua Fitur" & Unload: lepas klik yang masih tertahan + simpan rekaman
+		settings.ngamenDisable = function()
+			if cur then pcall(releaseCur, "dimatikan") end
+			if mouseDown then pcall(press, Vector2.new(0, 0), false) end
+			if rec.on then pcall(stopRec) end
+			ENV.__NGAMEN_OUT = nil
+		end
+
+		local page = pages["Mini Game"]
+		sectionLabel(page, 20, "Ngamen (Osu)")
+		addToggleCard(page, 21, "Auto Ngamen",
+			"Klik not TAP tepat waktu dan ikuti bola slider otomatis. Panel ikut diciutkan saat ON agar tidak menutupi not.",
+			"ngamen")
+		local recDescDefault = "Catat detail frame, remote, dan teks HUD. Saat dimatikan, hasil otomatis disalin ke clipboard. Nyalakan sebelum lagu dimulai."
+		local recDesc = addToggleCard(page, 22, "Rekam Detail", recDescDefault, "ngamenRec")
+
+		-- kartu status
+		local stCard = makeCard(page, 100, 23)
+		text(stCard, {
+			Text = "Status Ngamen",
+			Font = Enum.Font.GothamBold,
+			TextSize = 14,
+			Position = UDim2.fromOffset(14, 10),
+			Size = UDim2.new(1, -28, 0, 18),
+		})
+		local stLbl = text(stCard, {
+			Text = "Menunggu lagu...",
+			TextSize = 11,
+			TextColor3 = T.sub,
+			TextWrapped = true,
+			TextYAlignment = Enum.TextYAlignment.Top,
+			Position = UDim2.fromOffset(14, 32),
+			Size = UDim2.new(1, -28, 0, 60),
+		})
+
+		-- kartu timing: baris stepper  [ - ] [nilai] [ + ]
+		local tmCard = makeCard(page, 192, 24)
+		text(tmCard, {
+			Text = "Timing & Akurasi",
+			Font = Enum.Font.GothamBold,
+			TextSize = 14,
+			Position = UDim2.fromOffset(14, 10),
+			Size = UDim2.new(1, -28, 0, 18),
+		})
+
+		local function addStepper(y: number, label: string, key: string, lo: number, hi: number, step: number)
+			text(tmCard, {
+				Text = label,
+				TextSize = 12,
+				TextYAlignment = Enum.TextYAlignment.Center,
+				Position = UDim2.fromOffset(14, y),
+				Size = UDim2.new(1, -150, 0, 28),
+			})
+			local function mkBtn(sym: string, xOff: number): any
+				local b = new("TextButton", {
+					AnchorPoint = Vector2.new(1, 0),
+					Position = UDim2.new(1, xOff, 0, y),
+					Size = UDim2.fromOffset(28, 28),
+					BackgroundColor3 = T.bg,
+					Text = sym,
+					TextColor3 = T.text,
+					Font = Enum.Font.GothamBold,
+					TextSize = 15,
+					AutoButtonColor = false,
+				}, tmCard)
+				round(b, 8)
+				stroke(b, T.stroke, 1, 0.3)
+				hover(b, T.bg)
+				return b
+			end
+			local minus = mkBtn("-", -102)
+			local plus = mkBtn("+", -14)
+			local box = new("TextBox", {
+				AnchorPoint = Vector2.new(1, 0),
+				Position = UDim2.new(1, -48, 0, y),
+				Size = UDim2.fromOffset(48, 28),
+				BackgroundColor3 = T.bg,
+				Text = tostring(values[key]),
+				TextColor3 = T.text,
+				Font = Enum.Font.GothamBold,
+				TextSize = 13,
+				ClearTextOnFocus = false,
+				BorderSizePixel = 0,
+			}, tmCard)
+			round(box, 8)
+			stroke(box, T.stroke, 1, 0.3)
+
+			local function setV(v: number)
+				v = math.clamp(math.floor(v + 0.5), lo, hi)
+				values[key] = v
+				box.Text = tostring(v)
+			end
+			setV(values[key])
+			sliderSetters[key] = setV -- supaya ikut tersimpan / dimuat dari Config & settings.json
+			minus.MouseButton1Click:Connect(function() setV(values[key] - step) end)
+			plus.MouseButton1Click:Connect(function() setV(values[key] + step) end)
+			box.FocusLost:Connect(function() setV(tonumber(box.Text) or values[key]) end)
+		end
+		addStepper(36, "Offset TAP (ms)", "ngTap", -100, 100, 2)
+		addStepper(70, "Offset HOLD (ms)", "ngHold", -100, 100, 5)
+		addStepper(104, "Tahan akhir slider (ms)", "ngEnd", 0, 500, 20)
+		addStepper(138, "Akurasi (%)", "ngAcc", 10, 100, 5)
+		text(tmCard, {
+			Text = "Offset positif = klik lebih awal, negatif = lebih lambat. Lihat geseran Tanda di Status untuk menyetel.",
+			TextSize = 10,
+			TextColor3 = T.sub,
+			TextWrapped = true,
+			TextYAlignment = Enum.TextYAlignment.Top,
+			Position = UDim2.fromOffset(14, 170),
+			Size = UDim2.new(1, -28, 0, 14),
+			TextTruncate = Enum.TextTruncate.AtEnd,
+		})
+
+		-- ---------- loop UI (ringan, 4x per detik; hanya saat tab Mini Game terlihat) ----------
+		task.spawn(function()
+			local function avg(list: { number }): string
+				if #list == 0 then return "-" end
+				local sum = 0
+				for _, v in ipairs(list) do sum = sum + v end
+				return fmt("%+.0f", sum / #list)
+			end
+			while not unloaded do
+				if page.Visible then
+					local cnt = 0
+					for _ in pairs(notes) do cnt = cnt + 1 end
+					local l1 = boundFolder and fmt("Lagu aktif • not terpantau: %d", cnt) or "Menunggu lagu..."
+					local l2 = fmt("Tap %d  •  Hold %d  •  Lewat %d", stats.tap, stats.hold, stats.skip)
+					local l3 = fmt("Geseran Tanda (px)  tap: %s  |  hold: %s", avg(errs.tap), avg(errs.hold))
+					local l4 = VIM and "" or "VirtualInputManager tidak ada!"
+					stLbl.Text = l1 .. "\n" .. l2 .. "\n" .. l3 .. (l4 ~= "" and ("\n" .. l4) or "")
+					recDesc.Text = rec.on and fmt("Merekam: %d baris (disalin ke clipboard saat dimatikan)", #rec.lines) or (rec.lastMsg or recDescDefault)
+				end
+				task.wait(0.25)
+			end
+		end)
+
+		-- ---------- loop utama ----------
+		track(RunService.RenderStepped:Connect(function()
+			if unloaded then return end
+			local now = time()
+			updateSamples(now)
+			autoStep(now)
+			if rec.on then
+				if not state.ngamenRec then
+					stopRec() -- dimatikan lewat jalur lain (mis. Matikan Semua)
+					return
+				end
+				recFrame()
+				if now >= rec.nextText then
+					rec.nextText = now + 0.5
+					sampleTexts()
+				end
+				if now - rec.lastFlush > 15 then recFlush(false) end
+			end
+		end))
+
+		dbg("Ngamen Auto siap")
+	end
+
+	-- Ngamen hanya dibuat di game yang GameId-nya ada di settings.ngamenGameIds
+	if settings.ngamenOk then
+		local okN, errN = pcall(buildNgamen)
+		if not okN then
+			warn("R4MEN: modul Ngamen gagal dimuat: " .. tostring(errN))
+		end
 	end
 end
 
@@ -10999,7 +11977,7 @@ local function buildChess()
 
 	-- ---------- overlay: ScreenGui sendiri, tidak menyentuh UI game ----------
 	local ov = new("ScreenGui", {
-		Name = "UU_CHESS", ResetOnSpawn = false, DisplayOrder = 1000,
+		Name = "UU_CHESS", ResetOnSpawn = false, DisplayOrder = 2147483646,
 		ZIndexBehavior = Enum.ZIndexBehavior.Sibling, Enabled = false,
 	}, playerGui)
 	local layer = new("Frame", {
@@ -18259,11 +19237,31 @@ xpcall(function()
 					end
 					kids[#kids + 1] = c.Name .. "[" .. c.ClassName .. "]"
 				end
-				add(string.format("%s | Enabled=%s | isi=%d | %s", g.Name, tostring(g.Enabled), #g:GetDescendants(), table.concat(kids, ", ")))
+				local okB, onTop = pcall(function() return g.OnTopOfCoreBlur end)
+				add(string.format("%s | Enabled=%s | DisplayOrder=%s | OnTopOfCoreBlur=%s | isi=%d | %s", g.Name, tostring(g.Enabled), tostring(g.DisplayOrder), okB and tostring(onTop) or "?", #g:GetDescendants(), table.concat(kids, ", ")))
 				y()
 			end
 		end
 		if nGui == 0 then add("(tidak ada)") end
+		do
+			add("UI script ini (UniversalUrbee) | DisplayOrder=" .. tostring(gui.DisplayOrder) .. " | Parent=" .. gui:GetFullName())
+			add("")
+			add("## GUI DI COREGUI / GETHUI (bukan milik script)")
+			local okC, cg = pcall(function() return game:GetService("CoreGui") end)
+			local nCore = 0
+			if okC and cg then
+				local okK, kidsC = pcall(function() return cg:GetChildren() end)
+				if okK then
+					for _, g in ipairs(kidsC) do
+						if g:IsA("ScreenGui") and not OWN[g.Name] then
+							nCore += 1
+							add(string.format("%s | Enabled=%s | DisplayOrder=%s", g.Name, tostring(g.Enabled), tostring(g.DisplayOrder)))
+						end
+					end
+				end
+			end
+			if nCore == 0 then add("(tidak ada / tidak bisa dibaca)") end
+		end
 
 		-- 3) workspace level atas
 		add("")
@@ -18480,6 +19478,11 @@ track(UIS.InputBegan:Connect(function(input, processed)
 	elseif kc == settings.recordMiniKey then
 		setFeature("scanRec", not state.scanRec)
 		toast(state.scanRec and "Rekam Minigame: ON" or "Rekam Minigame: OFF")
+	elseif kc == settings.ngamenKey and settings.ngamenOk then
+		setFeature("ngamen", not state.ngamen) -- toast ditampilkan oleh effects.ngamen
+	elseif kc == settings.ngamenRecKey and settings.ngamenOk then
+		setFeature("ngamenRec", not state.ngamenRec)
+		toast(state.ngamenRec and "Rekam Detail Ngamen: ON" or "Rekam Detail Ngamen: OFF")
 	end
 end))
 
