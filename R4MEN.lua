@@ -16,7 +16,7 @@
   3. Visual   : Fullbright (+ slider Kecerahan, Jam Dunia), Hilangkan Kabut, FOV, Free Cam
   4. ESP      : ESP Chams (pemain)  ->  ESP NPC / Hewan  ->  Loot & Item ESP (+ pop-up Pin)
   5. Teleport : TP ke Pemain (daftar pemain), Waypoint, Pindah Server (Hop)
-  6. Mini Game: Auto Cut (Mushrooming) / Auto Minigame universal -> Catur -> Ngamen (Auto + Rekam Detail + Timing) -> Scan Rarity -> Rekam Minigame + Auto Minigame -> Hasil
+  6. Mini Game: Auto Cut (Mushrooming) / Auto Minigame universal -> Catur -> Ngamen (Auto + Rekam Detail + Timing; Vinyl Spin otomatis mengikuti Auto Ngamen) -> Scan Rarity -> Rekam Minigame + Auto Minigame -> Hasil
   7. Mining   : Auto Mine, Attack Sambil Mining, Auto Mob, Auto Reroll Race (toggle di atas) -> Target Batu -> Target Mob -> Race yang Dicari -> Posisi & Gerak (Mode Pelan / TP via meriam, posisi meriam per map)
   8. Debug    : Scan data game, Remote Logger, Perekam Efek Batu (blok "FORGE", dipindah dari script The Forge)
   9. Settings : Keybind, Ukuran Panel, Config (simpan/muat + toggle pop-up Pin/Daerah),
@@ -31,7 +31,7 @@
   * Menambah/menghapus tab: ubah newPage(...) DAN daftar nama di loop sidebar.
   * Urutan LayoutOrder yang dipakai: Settings = Keybind 0-11 (Ngamen 10-11), Ukuran Panel 12, Config 20-60 (slot save 30+i),
     Utilitas 200, tombol Matikan Semua 300, Unload 301-302.
-    Mini Game = Auto Minigame universal 0-1, Auto Cut 2, Catur 9-14, Ngamen 20-24 (khusus GameId ngamenGameIds), Scan 100-106. ESP = ESP Chams -2/-1, NPC 1-2, Item 4-5.
+    Mini Game = Auto Minigame universal 0-1, Auto Cut 2, Catur 9-14, Ngamen 20-24 (khusus GameId ngamenGameIds; Auto Vinyl Spin terintegrasi), Scan 100-106. ESP = ESP Chams -2/-1, NPC 1-2, Item 4-5.
     Visual = Pencahayaan 0-4, Kamera 5-7. Mining = toggle auto 0-4, Target Batu 10-12, Target Mob 20-22, Race 30-31, Posisi & Gerak 40-45. Debug = 0-11.
 
  PETA BAGIAN (judul komentar "-- GUI: ..." di dalam script)
@@ -10086,6 +10086,299 @@ do
 			mouseDown = down
 		end
 
+		-- ---------- Auto Vinyl Spin (otomatis mengikuti Auto Ngamen) ----------
+		local vinyl: any = { enabled = false, held = false, last = Vector2.zero, blockedPrompt = nil, statusLabel = nil }
+		do
+			-- Potassium input API: mousemoveabs / mouse1press / mouse1release.
+			-- Jalur input putar tetap terpisah agar tidak mengubah timing slider/bounce Ngamen.
+			local inputEnv: any = (getgenv and getgenv()) or _G
+			local inputDriver: string? = nil
+			local function gameFocused(): boolean
+				if type(inputEnv.isrbxactive) == "function" then
+					local ok, active = pcall(inputEnv.isrbxactive)
+					return ok and active == true
+				end
+				return true -- fallback untuk executor tanpa isrbxactive
+			end
+			local function moveVinylTo(p: Vector2): boolean
+				if type(inputEnv.mousemoveabs) == "function" then
+					local ok = pcall(inputEnv.mousemoveabs, math.floor(p.X + 0.5), math.floor(p.Y + 0.5))
+					if ok then return true end
+				end
+				if VIM then
+					return pcall(function() VIM:SendMouseMoveEvent(p.X, p.Y, game) end)
+				end
+				return false
+			end
+			local function pressVinyl(p: Vector2): boolean
+				if not gameFocused() then return false end
+				if type(inputEnv.mouse1press) == "function" and type(inputEnv.mouse1release) == "function" then
+					local ok = pcall(inputEnv.mouse1press)
+					if ok then inputDriver = "potassium"; vinyl.held = true; vinyl.last = p; return true end
+				end
+				if VIM then
+					local ok = pcall(function() VIM:SendMouseButtonEvent(p.X, p.Y, 0, true, game, 1) end)
+					if ok then inputDriver = "vim"; vinyl.held = true; vinyl.last = p; return true end
+				end
+				return false
+			end
+			local function setStatus(msg: string)
+				if vinyl.statusLabel and vinyl.statusLabel.Parent then
+					vinyl.statusLabel.Text = msg
+				end
+			end
+
+			local function isGuiShown(inst: Instance?): boolean
+				if not inst or not inst.Parent then return false end
+				local cur: Instance? = inst
+				while cur and cur ~= playerGui do
+					if cur:IsA("GuiObject") and not cur.Visible then return false end
+					if cur:IsA("ScreenGui") and not cur.Enabled then return false end
+					cur = cur.Parent
+				end
+				return cur == playerGui
+			end
+
+			local function findPrompt(): any
+				for _, obj in ipairs(playerGui:GetDescendants()) do
+					if (obj:IsA("TextLabel") or obj:IsA("TextButton")) and isGuiShown(obj) then
+						local t = string.lower(tostring(obj.Text or ""))
+						t = string.gsub(t, "%s+", "")
+						if t == "putar!" or t == "putar" then return obj end
+					end
+				end
+				return nil
+			end
+
+			local function readProgress(label: any, centerPoint: Vector2, viewport: Vector2): (number?, number?)
+				local root = label and label:FindFirstAncestorOfClass("ScreenGui")
+				if not root then return nil, nil end
+				local bestCurrent, bestTotal = nil, nil
+				local bestDistance = math.huge
+				for _, obj in ipairs(root:GetDescendants()) do
+					if (obj:IsA("TextLabel") or obj:IsA("TextButton")) and isGuiShown(obj) then
+						local a, b = string.match(tostring(obj.Text or ""), "(%d+)%s*/%s*(%d+)")
+						local current, total = tonumber(a), tonumber(b)
+						if current and total and total >= 1 and total <= 20 and current <= total then
+							local p = obj.AbsolutePosition + obj.AbsoluteSize / 2
+							local dx, dy = math.abs(p.X - centerPoint.X), p.Y - centerPoint.Y
+							if dx <= viewport.X * 0.20 and dy >= 0 and dy <= viewport.Y * 0.36 then
+								local distance = (p - centerPoint).Magnitude
+								if distance < bestDistance then
+									bestCurrent, bestTotal, bestDistance = current, total, distance
+								end
+							end
+						end
+					end
+				end
+				return bestCurrent, bestTotal
+			end
+
+			local function squareBounds(obj: any, viewport: Vector2): boolean
+				if not obj or not obj:IsA("GuiObject") or not isGuiShown(obj) then return false end
+				local size = obj.AbsoluteSize
+				local minSide = math.min(size.X, size.Y)
+				local ratio = size.X / math.max(size.Y, 1)
+				local c = obj.AbsolutePosition + size / 2
+				return minSide >= math.min(viewport.X, viewport.Y) * 0.40
+					and minSide <= math.min(viewport.X, viewport.Y) * 1.05
+					and ratio >= 0.68 and ratio <= 1.48
+					and c.X >= viewport.X * 0.20 and c.X <= viewport.X * 0.80
+					and c.Y >= viewport.Y * 0.10 and c.Y <= viewport.Y * 0.90
+			end
+
+			local function spinGeometry(label: any): (Vector2, number)
+				local cam = workspace.CurrentCamera
+				local viewport = (cam and cam.ViewportSize) or Vector2.new(1920, 1080)
+				local inset = insetFor(label)
+				local cur: Instance? = label and label.Parent
+				local depth = 0
+				while cur and cur ~= playerGui and depth < 10 do
+					depth += 1
+					if squareBounds(cur, viewport) then
+						local size = (cur :: GuiObject).AbsoluteSize
+						return (cur :: GuiObject).AbsolutePosition + size / 2 + inset, math.min(size.X, size.Y) * 0.29
+					end
+					cur = cur.Parent
+				end
+
+				-- Cari objek bernama vinyl/disc/record bila label PUTAR! bukan anak langsung piringan.
+				local best: any = nil
+				local bestArea = 0
+				for _, obj in ipairs(playerGui:GetDescendants()) do
+					if obj:IsA("GuiObject") and squareBounds(obj, viewport) then
+						local n = string.lower(obj.Name)
+						if string.find(n, "vinyl", 1, true) or string.find(n, "disc", 1, true)
+							or string.find(n, "record", 1, true) or string.find(n, "piring", 1, true) then
+							local size = obj.AbsoluteSize
+							local area = size.X * size.Y
+							if area > bestArea then best, bestArea = obj, area end
+						end
+					end
+				end
+				if best then
+					local size = best.AbsoluteSize
+					return best.AbsolutePosition + size / 2 + inset, math.min(size.X, size.Y) * 0.29
+				end
+
+				-- Fallback sesuai komposisi screenshot: piringan besar di tengah, sedikit di bawah titik tengah layar.
+				return Vector2.new(viewport.X * 0.50, viewport.Y * 0.55) + inset, math.min(viewport.X, viewport.Y) * 0.22
+			end
+
+			-- Gelombang putih = lingkaran besar di sekitar piringan yang ukurannya mengecil. Dianggap "mulai"
+			-- bila ada objek bundar yang ukurannya berubah antara dua sampel. Dibatasi maxWait supaya tidak macet.
+			local function waveStarted(label: any, c: Vector2, viewport: Vector2): boolean
+				local root = label and label:FindFirstAncestorOfClass("ScreenGui")
+				if not root then return false end
+				local minSide = math.min(viewport.X, viewport.Y)
+				local function sample(): { [any]: number }
+					local t: { [any]: number } = {}
+					for _, o in ipairs(root:GetDescendants()) do
+						if o:IsA("GuiObject") and o ~= label and isGuiShown(o) then
+							local sz = o.AbsoluteSize
+							local r = sz.X / math.max(sz.Y, 1)
+							local oc = o.AbsolutePosition + sz / 2
+							if r > 0.85 and r < 1.18 and sz.X > minSide * 0.15 and sz.X < minSide * 1.1
+								and (oc - c).Magnitude < minSide * 0.25 then
+								t[o] = sz.X
+							end
+						end
+					end
+					return t
+				end
+				local s1 = sample()
+				task.wait(0.06)
+				local s2 = sample()
+				for o, w1 in pairs(s1) do
+					local w2 = s2[o]
+					if w2 and math.abs(w2 - w1) >= 2 then return true end
+				end
+				return false
+			end
+
+			local function releaseVinyl()
+				if vinyl.held then
+					if inputDriver == "potassium" and type(inputEnv.mouse1release) == "function" then
+						pcall(inputEnv.mouse1release)
+					elseif inputDriver == "vim" and VIM then
+						pcall(function() VIM:SendMouseButtonEvent(vinyl.last.X, vinyl.last.Y, 0, false, game, 1) end)
+					end
+				end
+				inputDriver = nil
+				vinyl.held = false
+			end
+
+			vinyl.release = releaseVinyl
+			vinyl.setStatus = setStatus
+			task.spawn(function()
+				while not unloaded do
+					if not vinyl.enabled then
+						releaseVinyl()
+						task.wait(0.12)
+					elseif not (type(inputEnv.mousemoveabs) == "function" or VIM)
+						or not ((type(inputEnv.mouse1press) == "function" and type(inputEnv.mouse1release) == "function") or VIM) then
+						setStatus("Input mouse tidak tersedia • perlu mousemoveabs + mouse1press/release")
+						task.wait(0.5)
+					elseif not gameFocused() then
+						setStatus("Menunggu jendela Roblox aktif")
+						task.wait(0.2)
+					else
+						local label = findPrompt()
+						if not label then
+							vinyl.blockedPrompt = nil
+							setStatus("Aktif • menunggu layar PUTAR!")
+							task.wait(0.15)
+						elseif label == vinyl.blockedPrompt then
+							task.wait(0.15)
+						else
+							local c, radius = spinGeometry(label)
+							local cam = workspace.CurrentCamera
+							local viewport = (cam and cam.ViewportSize) or Vector2.new(1920, 1080)
+							local angle = 0
+							local rotationsPerSecond = vinyl.rps or 14 -- putaran/detik (naikkan = lebih cepat; turunkan bila game mulai tidak membaca putaran)
+							local maxStep = vinyl.maxStep or 2.2 -- radian maksimum per frame (< pi). Lebih dari ini game bisa salah baca arah putaran
+							local startPos = c + Vector2.new(radius, 0)
+							moveVinylTo(startPos)
+
+							-- 1) JANGAN klik dulu: tunggu gelombang putih (timer) benar-benar mulai.
+							setStatus("Piringan terdeteksi • menunggu gelombang putih...")
+							local waitStart = os.clock()
+							local maxWait = 1.5
+							local waveSeen = false
+							while vinyl.enabled and isGuiShown(label) and os.clock() - waitStart < maxWait do
+								if waveStarted(label, c, viewport) then waveSeen = true break end
+								task.wait(0.02)
+							end
+							if not waveSeen then task.wait(0.25) end -- cadangan bila gelombang tidak terbaca
+							task.wait(0.05)
+
+							local started = os.clock()
+							local frames = 0
+							local completed = false
+							local lastCur = -1
+							local lastGain = os.clock() -- kapan penghitung terakhir naik / klik terakhir ditekan
+							local presses = 0
+
+							while vinyl.enabled and isGuiShown(label)
+								and string.find(string.lower(tostring(label.Text or "")), "putar", 1, true)
+								and os.clock() - started < 40 do
+								-- 2) klik tahan (ulang) bila belum tertahan
+								if not vinyl.held then
+									moveVinylTo(c + Vector2.new(math.cos(angle) * radius, math.sin(angle) * radius))
+									if pressVinyl(vinyl.last ~= Vector2.zero and vinyl.last or startPos) then
+										presses += 1
+										lastGain = os.clock()
+										setStatus("Memutar • klik tahan ke-" .. presses)
+										task.wait(0.05)
+									else
+										setStatus("Klik tahan gagal • pastikan Roblox fokus")
+										task.wait(0.2)
+									end
+								end
+								local dt = RunService.RenderStepped:Wait()
+								if not vinyl.enabled or not isGuiShown(label) then break end
+								angle += math.min((2 * math.pi) * rotationsPerSecond * math.clamp(dt, 1 / 240, 1 / 30), maxStep)
+								local p = c + Vector2.new(math.cos(angle) * radius, math.sin(angle) * radius)
+								moveVinylTo(p)
+								vinyl.last = p
+								frames += 1
+								if frames % 6 == 0 then
+									local current, total = readProgress(label, c, viewport)
+									if current and total and current >= total then
+										completed = true -- target tercapai, TETAP putar untuk bonus (mis. 4/2, 5/2) sampai fase habis
+									end
+									if current and current ~= lastCur then
+										lastCur = current
+										setStatus("Memutar • " .. current .. "/" .. tostring(total))
+										if current > 0 then lastGain = os.clock() end
+									end
+								end
+								-- 3) penghitung tidak naik ~1.2 dtk setelah ditekan = hold tidak terbaca -> lepas & tekan ulang
+								if vinyl.held and os.clock() - lastGain > 1.2 and (lastCur or 0) <= 0 then
+									releaseVinyl()
+									task.wait(0.12)
+									lastGain = os.clock()
+								end
+							end
+							releaseVinyl()
+							if vinyl.enabled then
+								vinyl.blockedPrompt = label
+								if completed then
+									setStatus("Fase selesai • target tercapai, bonus dikejar sampai habis")
+								elseif os.clock() - started >= 40 then
+									setStatus("Batas 40 detik tercapai • klik dilepas")
+								else
+									setStatus("Fase PUTAR! selesai • menunggu fase berikutnya")
+								end
+							end
+							task.wait(0.15)
+						end
+					end
+				end
+				releaseVinyl()
+			end)
+		end
+
 		-- ---------- jalur slider ----------
 		local function buildPath(container: any): { Vector2 }
 			local pts: { Vector2 } = {}
@@ -10686,8 +10979,14 @@ do
 		-- HALAMAN (kartu bertema R4MEN di tab Mini Game, order 20-24)
 		-- =====================================================
 		effects.ngamen = function(on: boolean)
-			if not on and cur then releaseCur("Auto dimatikan") end
+			vinyl.enabled = on -- Auto Vinyl Spin ikut Auto Ngamen
+			if not on then
+				if vinyl.release then pcall(vinyl.release) end
+				if vinyl.setStatus then vinyl.setStatus("Menunggu Auto Ngamen aktif") end
+				if cur then releaseCur("Auto dimatikan") end
+			end
 			if on then
+				if vinyl.setStatus then vinyl.setStatus("Aktif • menunggu layar PUTAR!") end
 				installOutHook()
 				ENV.__NGAMEN_OUT = outObserver
 			elseif not rec.on then
@@ -10708,6 +11007,9 @@ do
 		end
 		-- dipanggil "Matikan Semua Fitur" & Unload: lepas klik yang masih tertahan + simpan rekaman
 		settings.ngamenDisable = function()
+			vinyl.enabled = false
+			if vinyl.release then pcall(vinyl.release) end
+			if vinyl.setStatus then vinyl.setStatus("Menunggu Auto Ngamen aktif") end
 			if cur then pcall(releaseCur, "dimatikan") end
 			if mouseDown then pcall(press, Vector2.new(0, 0), false) end
 			if rec.on then pcall(stopRec) end
@@ -10717,13 +11019,13 @@ do
 		local page = pages["Mini Game"]
 		sectionLabel(page, 20, "Ngamen (Osu)")
 		addToggleCard(page, 21, "Auto Ngamen",
-			"Klik not TAP tepat waktu dan ikuti bola slider otomatis. Panel ikut diciutkan saat ON agar tidak menutupi not.",
+			"Klik not TAP, ikuti bola slider, dan jalankan Auto Vinyl Spin otomatis saat layar PUTAR! muncul. Panel ikut diciutkan saat ON.",
 			"ngamen")
 		local recDescDefault = "Catat detail frame, remote, dan teks HUD. Saat dimatikan, hasil otomatis disalin ke clipboard. Nyalakan sebelum lagu dimulai."
 		local recDesc = addToggleCard(page, 22, "Rekam Detail", recDescDefault, "ngamenRec")
 
 		-- kartu status
-		local stCard = makeCard(page, 100, 23)
+		local stCard = makeCard(page, 122, 23)
 		text(stCard, {
 			Text = "Status Ngamen",
 			Font = Enum.Font.GothamBold,
@@ -10739,6 +11041,14 @@ do
 			TextYAlignment = Enum.TextYAlignment.Top,
 			Position = UDim2.fromOffset(14, 32),
 			Size = UDim2.new(1, -28, 0, 60),
+		})
+		vinyl.statusLabel = text(stCard, {
+			Text = "Vinyl Spin: menunggu Auto Ngamen aktif",
+			TextSize = 10,
+			TextColor3 = T.sub,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			Position = UDim2.fromOffset(14, 96),
+			Size = UDim2.new(1, -28, 0, 16),
 		})
 
 		-- kartu timing: baris stepper  [ - ] [nilai] [ + ]
