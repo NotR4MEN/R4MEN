@@ -20,7 +20,7 @@
   7. Mining   : Auto Mine, Attack Sambil Mining, Auto Mob, Auto Reroll Race (toggle di atas) -> Target Batu -> Target Mob -> Race yang Dicari -> Posisi & Gerak (Mode Pelan / TP via meriam, posisi meriam per map)
   8. Debug    : Scan data game, Remote Logger, Perekam Efek Batu (blok "FORGE", dipindah dari script The Forge)
   9. Settings : Keybind, Ukuran Panel, Config (simpan/muat + toggle pop-up Pin/Daerah),
-                Utilitas (Anti-AFK), Matikan Semua Fitur, Unload
+                Utilitas (Anti-AFK, Unlock FPS), Matikan Semua Fitur, Unload
 
  CARA MEMINDAHKAN FITUR KE TAB LAIN
   * Halaman dibuat lewat newPage("Nama") dan disimpan di tabel pages["Nama"].
@@ -265,6 +265,7 @@ local state: { [string]: boolean } = {
 	esp = false,
 	freecam = false,
 	antiAfk = true, -- aktif sejak awal; bisa dimatikan lewat tombol di tab Settings
+	fpsCap = true, -- Settings > Utilitas: Unlock FPS, aktif sejak awal (butuh setfpscap dari executor); bisa dimatikan lewat tombolnya
 	fullbright = false,
 	noFog = false,
 	fov = false,
@@ -287,6 +288,7 @@ local values: { [string]: number } = {
 	bright = 2,
 	clock = 14,
 	fov = 70,
+	fpsCap = 165, -- Unlock FPS: batas FPS yang dipasang (sesuaikan dengan Hz monitor)
 	npcDist = 50000,
 	cutLead = 5, -- Mini Game: LEAD dalam milidetik (5 = 0.005 dtk)
 	chessTime = 3, -- Mini Game: batas waktu berpikir saran catur (detik)
@@ -294,6 +296,12 @@ local values: { [string]: number } = {
 	ngHold = 12, -- Ngamen: offset HOLD / slider (ms)
 	ngEnd = 60, -- Ngamen: tahan slider segini lama setelah bola sampai ujung (ms)
 	ngAcc = 100, -- Ngamen: % not yang dimainkan (sisanya sengaja dilewati)
+	vnRps = 40, -- Vinyl Spin: kecepatan putar maksimum (putaran/detik). Kecepatan nyata dibatasi vnStep x FPS
+	vnRad = 26, -- Vinyl Spin: radius lingkaran kursor (% dari sisi piringan). 26 = seukuran lingkaran merah di screenshot (antara label biru dan cincin putih)
+	vnStep = 25, -- Vinyl Spin: batas sudut per frame dalam 0.1 radian (25 = 2.5 rad, harus < pi = 3.14)
+	vnFps = 240, -- Vinyl Spin: FPS cap sementara saat memutar (0 = jangan ubah). Putaran/detik maksimum = langkah x FPS / 2pi
+	vnAuto = 1, -- Vinyl Spin: 1 = AUTO-TUNE (tiap fase coba rps berbeda, lalu pakai yang hitungannya tertinggi). 0 = pakai vnRps manual
+	vnSub = 3, -- Vinyl Spin: jumlah gerakan kursor per frame (1-6). Membantu bila game membaca event mouse, bukan posisi per frame
 }
 
 local targetUsername = ""
@@ -786,6 +794,7 @@ local effects: { [string]: (boolean) -> () } = {
 	esp = function(on) setEsp(on) end,
 	freecam = function(on) setFreecam(on) end,
 	antiAfk = function() end,
+	fpsCap = function() end, -- ditangani loop kecil di blok Utilitas (tab Settings)
 	autoCut = function() end, -- diisi blok GUI Mini Game
 	autoMinigame = function() end, -- diisi blok GUI Auto Minigame universal
 	chess = function() end, -- diisi blok GUI Catur
@@ -811,7 +820,7 @@ local function disableAllFeatures()
 	for key in pairs(state) do
 		-- Anti-AFK sengaja dikecualikan: "Matikan Semua" tidak boleh membuatmu ter-kick karena idle
 		-- (saat Unload handler-nya ikut diputus). Matikan manual lewat tombolnya.
-		if key ~= "antiAfk" then
+		if key ~= "antiAfk" and key ~= "fpsCap" then
 			state[key] = false
 			if switches[key] then
 				switches[key].Set(false)
@@ -1985,7 +1994,7 @@ end)
 refreshActive = function()
 	local n = 0
 	for k, v in pairs(state) do
-		if v and k ~= "antiAfk" then n += 1 end -- Anti-AFK tidak dihitung (aktif sejak awal)
+		if v and k ~= "antiAfk" and k ~= "fpsCap" then n += 1 end -- Anti-AFK & Unlock FPS tidak dihitung (aktif sejak awal)
 	end
 	pillText.Text = tostring(n) .. " aktif"
 	pillDot.BackgroundColor3 = n > 0 and T.good or T.off
@@ -9070,6 +9079,33 @@ sectionLabel(settingsPage, 200, "Utilitas")
 addToggleCard(settingsPage, 201, "Anti-AFK", "Mencegah kick karena diam 20 menit. Aktif sejak awal.", "antiAfk")
 switches.antiAfk.Set(true)
 
+-- Unlock FPS (tab Settings > Utilitas, aktif sejak awal): pasang batas FPS dari slider (butuh setfpscap). Loop hanya bekerja saat toggle/nilai berubah,
+-- jadi tidak bentrok dengan Auto Vinyl Spin yang juga mengatur FPS sementara.
+addSliderCard(settingsPage, 202, "Unlock FPS", "Batas FPS (mis. 165 sesuai Hz monitor). Aktif sejak awal. Butuh setfpscap.", "fpsCap", 30, 360, 1000)
+switches.fpsCap.Set(true)
+do
+	local env: any = (getgenv and getgenv()) or _G
+	local applied: number? = nil
+	local original: number = 60
+	task.spawn(function()
+		while true do
+			if type(env.setfpscap) == "function" then
+				local want: number? = (not unloaded and state.fpsCap) and values.fpsCap or nil
+				if want ~= applied then
+					if want and applied == nil and type(env.getfpscap) == "function" then
+						local okG, cur = pcall(env.getfpscap)
+						if okG and type(cur) == "number" and cur > 0 then original = cur end
+					end
+					pcall(env.setfpscap, want or original)
+					applied = want
+				end
+			end
+			if unloaded then break end
+			task.wait(0.3)
+		end
+	end)
+end
+
 local offAllBtn = makeButton(settingsPage, 300, "Matikan Semua Fitur", T.accent, 40)
 hover(offAllBtn, T.accent)
 offAllBtn.MouseButton1Click:Connect(function()
@@ -9190,7 +9226,7 @@ local function applySnapshot(d: any)
 	if type(d.state) == "table" then
 		for key in pairs(state) do
 			-- data lama tidak punya antiAfk: biarkan nilainya, jangan dimatikan diam-diam
-			if key ~= "antiAfk" or d.state[key] ~= nil then
+			if (key ~= "antiAfk" and key ~= "fpsCap") or d.state[key] ~= nil then
 				setFeature(key, d.state[key] == true)
 			end
 		end
@@ -10159,7 +10195,7 @@ do
 					if (obj:IsA("TextLabel") or obj:IsA("TextButton")) and isGuiShown(obj) then
 						local a, b = string.match(tostring(obj.Text or ""), "(%d+)%s*/%s*(%d+)")
 						local current, total = tonumber(a), tonumber(b)
-						if current and total and total >= 1 and total <= 20 and current <= total then
+						if current and total and total >= 1 and total <= 20 and current <= 999 then
 							local p = obj.AbsolutePosition + obj.AbsoluteSize / 2
 							local dx, dy = math.abs(p.X - centerPoint.X), p.Y - centerPoint.Y
 							if dx <= viewport.X * 0.20 and dy >= 0 and dy <= viewport.Y * 0.36 then
@@ -10197,7 +10233,7 @@ do
 					depth += 1
 					if squareBounds(cur, viewport) then
 						local size = (cur :: GuiObject).AbsoluteSize
-						return (cur :: GuiObject).AbsolutePosition + size / 2 + inset, math.min(size.X, size.Y) * 0.29
+						return (cur :: GuiObject).AbsolutePosition + size / 2 + inset, math.min(size.X, size.Y) * ((values.vnRad or 29) / 100)
 					end
 					cur = cur.Parent
 				end
@@ -10218,11 +10254,11 @@ do
 				end
 				if best then
 					local size = best.AbsoluteSize
-					return best.AbsolutePosition + size / 2 + inset, math.min(size.X, size.Y) * 0.29
+					return best.AbsolutePosition + size / 2 + inset, math.min(size.X, size.Y) * ((values.vnRad or 29) / 100)
 				end
 
 				-- Fallback sesuai komposisi screenshot: piringan besar di tengah, sedikit di bawah titik tengah layar.
-				return Vector2.new(viewport.X * 0.50, viewport.Y * 0.55) + inset, math.min(viewport.X, viewport.Y) * 0.22
+				return Vector2.new(viewport.X * 0.50, viewport.Y * 0.55) + inset, math.min(viewport.X, viewport.Y) * 0.18
 			end
 
 			-- Gelombang putih = lingkaran besar di sekitar piringan yang ukurannya mengecil. Dianggap "mulai"
@@ -10295,8 +10331,8 @@ do
 							local cam = workspace.CurrentCamera
 							local viewport = (cam and cam.ViewportSize) or Vector2.new(1920, 1080)
 							local angle = 0
-							local rotationsPerSecond = vinyl.rps or 14 -- putaran/detik (naikkan = lebih cepat; turunkan bila game mulai tidak membaca putaran)
-							local maxStep = vinyl.maxStep or 2.2 -- radian maksimum per frame (< pi). Lebih dari ini game bisa salah baca arah putaran
+							-- Kecepatan diatur dari kartu Timing & Akurasi (values.vnRps / values.vnStep), dibaca tiap frame.
+							-- Langkah per frame = min(2*pi*rps*dt, maxStep). maxStep harus < pi, kalau tidak game salah baca arah putaran.
 							local startPos = c + Vector2.new(radius, 0)
 							moveVinylTo(startPos)
 
@@ -10318,6 +10354,41 @@ do
 							local lastCur = -1
 							local lastGain = os.clock() -- kapan penghitung terakhir naik / klik terakhir ditekan
 							local presses = 0
+							local lastRead = 0
+							local peakCur, peakTotal, peakAt = 0, nil, nil -- puncak hitungan & kapan tercapai (untuk diagnosa)
+							local spinStart = os.clock()
+							local totalAngle = 0
+							-- AUTO-TUNE: fase 1..N mencoba rps berbeda; sesudahnya selalu memakai rps dengan hitungan puncak tertinggi.
+							local phaseRps = values.vnRps or 40
+							local sweeping = false
+							local TU: any = nil
+							if (values.vnAuto or 0) == 1 then
+								vinyl.tune = vinyl.tune or { list = { 15, 20, 25, 30, 35, 40, 50, 60 }, idx = 0, res = {} }
+								TU = vinyl.tune
+								if TU.idx < #TU.list then
+									TU.idx += 1
+									phaseRps = TU.list[TU.idx]
+									sweeping = true
+								else
+									local bestR, bestV = TU.list[1], -1
+									for _, r in ipairs(TU.list) do
+										local v = TU.res[r] or -1
+										if v > bestV then bestR, bestV = r, v end
+									end
+									phaseRps = bestR
+								end
+							end
+							-- FPS unlock sementara: batas putaran/detik = langkah per frame x FPS. Di 60 FPS mentok ~28 rps, di 240 FPS ~114 rps.
+							local prevCap: any = nil
+							local fpsSet = false
+							if (values.vnFps or 0) > 0 and type(inputEnv.setfpscap) == "function" then
+								if type(inputEnv.getfpscap) == "function" then
+									local okc, v = pcall(inputEnv.getfpscap)
+									if okc and type(v) == "number" then prevCap = v end
+								end
+								fpsSet = pcall(inputEnv.setfpscap, values.vnFps)
+							end
+							dbg(fmt("vinyl: fase mulai | rps=%s langkah=%s %s", tostring(phaseRps), tostring(values.vnStep), sweeping and "(uji " .. tostring(TU.idx) .. "/" .. tostring(#TU.list) .. ")" or (TU and "(terbaik)" or "(manual)")))
 
 							while vinyl.enabled and isGuiShown(label)
 								and string.find(string.lower(tostring(label.Text or "")), "putar", 1, true)
@@ -10337,15 +10408,31 @@ do
 								end
 								local dt = RunService.RenderStepped:Wait()
 								if not vinyl.enabled or not isGuiShown(label) then break end
-								angle += math.min((2 * math.pi) * rotationsPerSecond * math.clamp(dt, 1 / 240, 1 / 30), maxStep)
+								local rotationsPerSecond = vinyl.rps or phaseRps
+								local maxStep = math.min(vinyl.maxStep or ((values.vnStep or 25) / 10), 3.0)
+								local stepNow = math.min((2 * math.pi) * rotationsPerSecond * math.clamp(dt, 1 / 240, 1 / 30), maxStep)
+								local a0 = angle
+								angle += stepNow
+								totalAngle += stepNow
+								-- Beberapa gerakan kecil per frame (searah, total tetap = stepNow) supaya lebih banyak event mouse terbaca.
+								local sub = math.clamp(math.floor(values.vnSub or 3), 1, 6)
+								for k = 1, sub - 1 do
+									local ak = a0 + stepNow * k / sub
+									moveVinylTo(c + Vector2.new(math.cos(ak) * radius, math.sin(ak) * radius))
+								end
 								local p = c + Vector2.new(math.cos(angle) * radius, math.sin(angle) * radius)
 								moveVinylTo(p)
 								vinyl.last = p
 								frames += 1
-								if frames % 6 == 0 then
+								if os.clock() - lastRead >= 0.25 then
+									lastRead = os.clock()
 									local current, total = readProgress(label, c, viewport)
 									if current and total and current >= total then
 										completed = true -- target tercapai, TETAP putar untuk bonus (mis. 4/2, 5/2) sampai fase habis
+									end
+									if current and current > peakCur then
+										peakCur, peakTotal, peakAt = current, total, os.clock() - spinStart
+										dbg(fmt("vinyl: hitungan %d/%s pada %.2f dtk (frame %d)", current, tostring(total), peakAt, frames))
 									end
 									if current and current ~= lastCur then
 										lastCur = current
@@ -10361,14 +10448,26 @@ do
 								end
 							end
 							releaseVinyl()
+							if fpsSet then pcall(inputEnv.setfpscap, prevCap or 60) end
+							local spinDur = math.max(os.clock() - spinStart, 0.001)
+							if sweeping and TU then
+								if spinDur >= 0.8 then
+									TU.res[phaseRps] = math.max(TU.res[phaseRps] or 0, peakCur)
+									local parts = {}
+									for _, r in ipairs(TU.list) do parts[#parts + 1] = r .. "rps=" .. tostring(TU.res[r] or "-") end
+									dbg("vinyl: auto-tune | " .. table.concat(parts, " "))
+								else
+									TU.idx -= 1 -- fase terpotong, ulangi rps ini
+								end
+							end
+							local summary = fmt("puncak %d/%s @%.1fs • fase %.1fs • %.0f rps nyata • %.0f FPS",
+								peakCur, tostring(peakTotal or "?"), peakAt or 0, spinDur, totalAngle / (2 * math.pi) / spinDur, frames / spinDur)
+							dbg("vinyl: selesai | " .. summary .. fmt(" | klik %d", presses))
 							if vinyl.enabled then
 								vinyl.blockedPrompt = label
-								if completed then
-									setStatus("Fase selesai • target tercapai, bonus dikejar sampai habis")
-								elseif os.clock() - started >= 40 then
-									setStatus("Batas 40 detik tercapai • klik dilepas")
-								else
-									setStatus("Fase PUTAR! selesai • menunggu fase berikutnya")
+								setStatus("Fase selesai • " .. summary)
+								if os.clock() - started >= 40 then
+									setStatus("Batas 40 detik tercapai • klik dilepas • " .. summary)
 								end
 							end
 							task.wait(0.15)
@@ -11025,7 +11124,7 @@ do
 		local recDesc = addToggleCard(page, 22, "Rekam Detail", recDescDefault, "ngamenRec")
 
 		-- kartu status
-		local stCard = makeCard(page, 122, 23)
+		local stCard = makeCard(page, 140, 23)
 		text(stCard, {
 			Text = "Status Ngamen",
 			Font = Enum.Font.GothamBold,
@@ -11046,13 +11145,14 @@ do
 			Text = "Vinyl Spin: menunggu Auto Ngamen aktif",
 			TextSize = 10,
 			TextColor3 = T.sub,
-			TextTruncate = Enum.TextTruncate.AtEnd,
+			TextWrapped = true,
+			TextYAlignment = Enum.TextYAlignment.Top,
 			Position = UDim2.fromOffset(14, 96),
-			Size = UDim2.new(1, -28, 0, 16),
+			Size = UDim2.new(1, -28, 0, 30),
 		})
 
 		-- kartu timing: baris stepper  [ - ] [nilai] [ + ]
-		local tmCard = makeCard(page, 192, 24)
+		local tmCard = makeCard(page, 296, 24)
 		text(tmCard, {
 			Text = "Timing & Akurasi",
 			Font = Enum.Font.GothamBold,
@@ -11118,13 +11218,16 @@ do
 		addStepper(70, "Offset HOLD (ms)", "ngHold", -100, 100, 5)
 		addStepper(104, "Tahan akhir slider (ms)", "ngEnd", 0, 500, 20)
 		addStepper(138, "Akurasi (%)", "ngAcc", 10, 100, 5)
+		addStepper(172, "Putar piringan (rps)", "vnRps", 10, 150, 5)
+		addStepper(206, "Langkah putar (x0.1 rad)", "vnStep", 10, 29, 1)
+		addStepper(240, "Radius putar (% piringan)", "vnRad", 8, 45, 3)
 		text(tmCard, {
 			Text = "Offset positif = klik lebih awal, negatif = lebih lambat. Lihat geseran Tanda di Status untuk menyetel.",
 			TextSize = 10,
 			TextColor3 = T.sub,
 			TextWrapped = true,
 			TextYAlignment = Enum.TextYAlignment.Top,
-			Position = UDim2.fromOffset(14, 170),
+			Position = UDim2.fromOffset(14, 274),
 			Size = UDim2.new(1, -28, 0, 14),
 			TextTruncate = Enum.TextTruncate.AtEnd,
 		})
@@ -17141,7 +17244,7 @@ task.spawn(function()
 	local function globalData(): any
 		local d = snapshot(false)
 		-- hanya Anti-AFK yang ikut tersimpan otomatis (fitur lain sengaja mati saat game dibuka)
-		d.state = { antiAfk = state.antiAfk == true }
+		d.state = { antiAfk = state.antiAfk == true, fpsCap = state.fpsCap == true }
 		d.wps = nil
 		return d
 	end
