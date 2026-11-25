@@ -31,7 +31,7 @@
   * Menambah/menghapus tab: ubah newPage(...) DAN daftar nama di loop sidebar.
   * Urutan LayoutOrder yang dipakai: Settings = Keybind 0-11 (Ngamen 10-11), Ukuran Panel 12, Config 20-60 (slot save 30+i),
     Utilitas 200, tombol Matikan Semua 300, Unload 301-302.
-    Mini Game = Auto Minigame universal 0-1, Auto Cut 2, Catur 9-14, Ngamen 20-24 (khusus GameId ngamenGameIds; Auto Vinyl Spin terintegrasi), Scan 100-106. ESP = ESP Chams -2/-1, NPC 1-2, Item 4-5.
+    Mini Game = Auto Minigame universal 0-1, Auto Cut 2, Catur 9-14, Ngamen 20-24 (khusus GameId ngamenGameIds; Auto Vinyl Spin terintegrasi), Rekam Reel 30-31 + Auto Reel 32 (khusus GameId reelGameIds), Scan 100-106. ESP = ESP Chams -2/-1, NPC 1-2, Item 4-5.
     Visual = Pencahayaan 0-4, Kamera 5-7. Mining = toggle auto 0-4, Target Batu 10-12, Target Mob 20-22, Race 30-31, Posisi & Gerak 40-45. Debug = 0-11.
 
  PETA BAGIAN (judul komentar "-- GUI: ..." di dalam script)
@@ -148,6 +148,7 @@ local settings: { [string]: any } = {
 	autoMiniGameIds = {}, -- GameId game yang punya Lockpick / Safe Dial. Kartu "Auto Minigame" HANYA muncul di game ini. Isi mis. { 123456789 } (lihat GameId di Scan / print(game.GameId))
 	chessGameIds = {}, -- opsional: GameId game catur (kartu Catur HANYA dibuat di game ini). Selain daftar ini, kartu Catur juga otomatis dibuat bila game punya GUI papan catur (ChessUI / 2DBoard). Di game lain tab Mini Game tidak berisi Catur.
 	ngamenGameIds = { 10773205357 }, -- GameId minigame Ngamen (osu!). Kartu Ngamen di tab Mini Game HANYA dibuat di game ini
+	reelGameIds = { 10764240948 }, -- GameId game fishing/harpoon (minigame Reel). Kartu Rekam Reel di tab Mini Game HANYA dibuat di game ini
 	ngamenAutoMini = true, -- true = saat Auto Ngamen dinyalakan, panel diciutkan jadi bubble supaya tidak menutupi not. false = panel dibiarkan
 	saveKey = Enum.KeyCode.LeftBracket,
 	tpKey = Enum.KeyCode.RightBracket,
@@ -165,9 +166,14 @@ settings.miniGameOk = table.find(settings.miniGameIds, game.GameId) ~= nil
 		and ReplicatedStorage:FindFirstChild("RootData", true) ~= nil)
 
 settings.ngamenOk = table.find(settings.ngamenGameIds, game.GameId) ~= nil -- Auto Ngamen / Rekam Detail: khusus GameId di ngamenGameIds
+settings.reelOk = table.find(settings.reelGameIds, game.GameId) ~= nil -- Rekam Reel: khusus GameId di reelGameIds
 if settings.ngamenOk then
 	settings.ngamenKey = Enum.KeyCode.F6 -- Auto Ngamen ON / OFF (bisa diganti di Settings)
 	settings.ngamenRecKey = Enum.KeyCode.F7 -- Rekam Detail Ngamen ON / OFF (bisa diganti di Settings)
+end
+if settings.reelOk then
+	settings.reelRecKey = Enum.KeyCode.F8 -- Rekam Reel ON / OFF (bisa diganti di Settings; berguna saat mouse terkunci di bawah air)
+	settings.autoReelKey = Enum.KeyCode.F10 -- Auto Reel ON / OFF (bisa diganti di Settings)
 end
 
 -- Fitur The Forge (tab Mining) HANYA aktif di game The Forge. Tab Debug (Scan + Remote Logger) aktif di semua game.
@@ -278,6 +284,8 @@ local state: { [string]: boolean } = {
 	chessDouble = false, -- Mini Game: Double Move (saran 2 langkah sekaligus untuk premove, mode bullet)
 	ngamen = false, -- Mini Game: Auto Ngamen (mati saat script dijalankan)
 	ngamenRec = false, -- Mini Game: Rekam Detail Ngamen (mati saat script dijalankan)
+	reelRec = false, -- Mini Game: Rekam Reel (perekam khusus minigame reel/harpoon; mati saat script dijalankan)
+	autoReel = false, -- Mini Game: Auto Reel Harpoon Abyss (klik beat otomatis setelah ikan kena; mati saat script dijalankan)
 }
 
 local values: { [string]: number } = {
@@ -802,6 +810,7 @@ local effects: { [string]: (boolean) -> () } = {
 	chessDouble = function() end, -- diisi blok GUI Catur
 	ngamen = function() end, -- diisi blok GUI Ngamen
 	ngamenRec = function() end, -- diisi blok GUI Ngamen
+	autoReel = function() end, -- diisi blok GUI Reel (Harpoon)
 	fullbright = function(on) ext.light(on) end,
 	noFog = function(on) ext.fog(on) end,
 	fov = function(on) ext.fov(on) end,
@@ -841,6 +850,7 @@ local function disableAllFeatures()
 	if effects.scanRec then pcall(effects.scanRec, false) end
 	if settings.forgeDisable then pcall(settings.forgeDisable) end -- Forge: hentikan logger & perekam
 	if settings.ngamenDisable then pcall(settings.ngamenDisable) end -- Ngamen: lepas klik tertahan & simpan rekaman
+	if settings.reelDisable then pcall(settings.reelDisable) end -- Rekam Reel: berhenti & salin hasil
 	refreshActive()
 end
 
@@ -8832,7 +8842,7 @@ end
 local keyConflictUI: any = {
 	open = false,
 	titles = {},
-	order = { "toggleKey", "saveKey", "tpKey", "cycleKey", "floatUpKey", "floatDownKey", "followKey", "autoCutKey", "recordMiniKey", "ngamenKey", "ngamenRecKey" },
+	order = { "toggleKey", "saveKey", "tpKey", "cycleKey", "floatUpKey", "floatDownKey", "followKey", "autoCutKey", "recordMiniKey", "ngamenKey", "ngamenRecKey", "reelRecKey", "autoReelKey" },
 }
 do
 	local ui = keyConflictUI
@@ -9025,6 +9035,10 @@ if settings.ngamenOk then
 	addKeyRow(10, "Auto Ngamen: ON / OFF", "Nyalakan atau matikan Auto Ngamen (Mini Game). Backspace untuk mengosongkan.", "ngamenKey", true)
 	addKeyRow(11, "Rekam Detail Ngamen: ON / OFF", "Mulai atau hentikan Rekam Detail Ngamen. Backspace untuk mengosongkan.", "ngamenRecKey", true)
 end
+if settings.reelOk then
+	addKeyRow(13, "Rekam Reel: ON / OFF", "Mulai atau hentikan Rekam Reel tanpa menggerakkan mouse ke panel (bawaan F8). Backspace untuk mengosongkan.", "reelRecKey", true)
+	addKeyRow(14, "Auto Reel: ON / OFF", "Nyalakan atau matikan Auto Reel (bawaan F10). Backspace untuk mengosongkan.", "autoReelKey", true)
+end
 refreshKeyUI()
 
 local sizeCard = makeCard(settingsPage, 78, 12)
@@ -9128,7 +9142,7 @@ text(settingsPage, {
 -- =====================================================
 do
 local MAX_SLOTS = 10
-local KEY_NAMES = { "toggleKey", "saveKey", "tpKey", "cycleKey", "floatUpKey", "floatDownKey", "followKey", "autoCutKey", "recordMiniKey", "ngamenKey", "ngamenRecKey" }
+local KEY_NAMES = { "toggleKey", "saveKey", "tpKey", "cycleKey", "floatUpKey", "floatDownKey", "followKey", "autoCutKey", "recordMiniKey", "ngamenKey", "ngamenRecKey", "reelRecKey", "autoReelKey" }
 
 local slots: { { name: string, data: any } } = {}
 local remote: RemoteFunction? = nil
@@ -11284,6 +11298,482 @@ do
 		if not okN then
 			warn("R4MEN: modul Ngamen gagal dimuat: " .. tostring(errN))
 		end
+	end
+end
+
+-- =====================================================
+-- GUI: REKAM REEL (Mini Game) -- perekam KHUSUS minigame reel / harpoon (khusus GameId di settings.reelGameIds)
+-- Dibungkus fungsi sendiri supaya local-nya TIDAK menghabiskan jatah 200 local script utama.
+-- Merekam: ReelState / SpearHooked (server -> client, isi LENGKAP), ReelBeat / HarpoonFire / TelemetryReport (client -> server),
+-- input pemain, dan HANYA UI di dalam ReelGui (posisi, ukuran, rotasi, warna, teks) selama ReelGui tampil.
+-- Saat dimatikan, hasil otomatis DISALIN ke clipboard (+ file reel_<GameId>.txt) lalu rekaman dikosongkan.
+-- Toggle: state.reelRec. Keybind: Settings (settings.reelRecKey, bawaan F8; Auto Reel = settings.autoReelKey, bawaan F10).
+-- =====================================================
+do
+	local function buildReel()
+		local ENV: any = (getgenv and getgenv()) or _G
+		local RunService = game:GetService("RunService")
+		local InputService = game:GetService("UserInputService")
+		local RepStorage = game:GetService("ReplicatedStorage")
+		local GUI_NAME = "ReelGui"
+		local MAX_LINES = 60000
+		local WATCH: { [string]: boolean } = { ReelBeat = true, HarpoonFire = true, TelemetryReport = true, DepthTipDone = true, HarpoonDepth = true }
+		local SKIP_TELEMETRY: { [string]: boolean } = { fps = true, net = true, fishhealth = true }
+		local R: any = { on = false, out = {}, t0 = 0, conns = {}, objs = {}, nextId = 0, sampling = false, gui = nil, prop = "Enabled" }
+
+		local function put(s: string, noServerTime: boolean?)
+			if #R.out >= MAX_LINES then return end
+			if noServerTime then
+				R.out[#R.out + 1] = string.format("[%.3f] %s", os.clock() - R.t0, s)
+			else
+				R.out[#R.out + 1] = string.format("[%.3f|%.3f] %s", os.clock() - R.t0, workspace:GetServerTimeNow(), s)
+			end
+		end
+
+		local function ser(v: any, d: number): string
+			local t = typeof(v)
+			if t == "string" then
+				return string.format("%q", v)
+			elseif t == "table" then
+				if d >= 5 then return "{...}" end
+				local parts, n = {}, 0
+				for k, x in pairs(v) do
+					n = n + 1
+					if n > 60 then
+						parts[#parts + 1] = "..."
+						break
+					end
+					parts[#parts + 1] = tostring(k) .. "=" .. ser(x, d + 1)
+				end
+				return "{" .. table.concat(parts, ", ") .. "}"
+			elseif t == "Instance" then
+				return v:GetFullName()
+			end
+			return tostring(v)
+		end
+
+		local function packArgs(...): string
+			local a = table.pack(...)
+			local parts = {}
+			for i = 1, a.n do
+				parts[#parts + 1] = ser(a[i], 0)
+			end
+			return table.concat(parts, ", ")
+		end
+
+		-- ---------- remote keluar (client -> server) lewat hook sekali pasang; pengamat bisa diganti-ganti ----------
+		local function onOut(name: string, ...)
+			if not R.on then return end
+			if name == "TelemetryReport" then
+				local first = ...
+				if SKIP_TELEMETRY[first] then return end
+			end
+			put("OUT " .. name .. "(" .. packArgs(...) .. ")")
+		end
+
+		local function installHook()
+			if ENV.__REEL_HOOKED then return end
+			if not (hookmetamethod and getnamecallmethod) then return end
+			local wrap = newcclosure or function(f) return f end
+			local ok = pcall(function()
+				local old
+				old = hookmetamethod(game, "__namecall", wrap(function(self, ...)
+					local obs = ENV.__REEL_OUT
+					if obs then
+						local m = getnamecallmethod()
+						if m == "FireServer" and typeof(self) == "Instance" and WATCH[self.Name] then
+							-- [FIX] pencatatan DITUNDA. Dulu obs dipanggil langsung di sini; di dalamnya ada namecall lain
+							-- (workspace:GetServerTimeNow) yang menimpa nama method, sehingga FireServer asli
+							-- (HarpoonFire = menembak) tidak terkirim dan player tidak bisa menembak.
+							task.defer(obs, self.Name, ...)
+							if setnamecallmethod then pcall(setnamecallmethod, m) end
+						end
+					end
+					return old(self, ...)
+				end))
+			end)
+			ENV.__REEL_HOOKED = ok
+		end
+
+		-- ---------- UI di dalam ReelGui ----------
+		local function trackObj(o: any)
+			if not o:IsA("GuiObject") or R.objs[o] then return end
+			R.nextId = R.nextId + 1
+			R.objs[o] = { id = R.nextId, last = "" }
+			local rel = o:GetFullName()
+			local at = string.find(rel, GUI_NAME, 1, true)
+			if at then rel = string.sub(rel, at) end
+			local extra = ""
+			if o:IsA("TextLabel") or o:IsA("TextButton") then
+				extra = " text=" .. string.format("%q", o.Text)
+			elseif o:IsA("ImageLabel") or o:IsA("ImageButton") then
+				extra = " image=" .. tostring(o.Image)
+			end
+			put(string.format("OBJ %d %s [%s] anchor=%s,%s bg=%s%s", R.nextId, rel, o.ClassName,
+				tostring(o.AnchorPoint.X), tostring(o.AnchorPoint.Y), tostring(o.BackgroundColor3), extra), true)
+		end
+
+		local function sampleOnce()
+			for o, info in pairs(R.objs) do
+				if o.Parent then
+					local p, s = o.AbsolutePosition, o.AbsoluteSize
+					local line = string.format("%.1f,%.1f,%.1f,%.1f,%.2f,%s,%.2f", p.X + s.X / 2, p.Y + s.Y / 2, s.X, s.Y,
+						o.Rotation, tostring(o.Visible), o.BackgroundTransparency)
+					if o:IsA("ImageLabel") or o:IsA("ImageButton") then
+						line = line .. string.format(",%.2f", o.ImageTransparency)
+					elseif o:IsA("TextLabel") or o:IsA("TextButton") then
+						line = line .. "," .. string.format("%q", o.Text)
+					end
+					if line ~= info.last then
+						info.last = line
+						put("UI " .. info.id .. " " .. line, true)
+					end
+				end
+			end
+		end
+
+		local function attachGui(gui: any)
+			R.gui = gui
+			R.prop = gui:IsA("LayerCollector") and "Enabled" or "Visible"
+			local function refresh()
+				for _, d in ipairs(gui:GetDescendants()) do trackObj(d) end
+			end
+			table.insert(R.conns, gui.DescendantAdded:Connect(trackObj))
+			table.insert(R.conns, gui:GetPropertyChangedSignal(R.prop):Connect(function()
+				R.sampling = gui[R.prop]
+				put("ReelGui." .. R.prop .. "=" .. tostring(gui[R.prop]))
+				if R.sampling then refresh() end
+			end))
+			refresh()
+			R.sampling = gui[R.prop]
+			put("ReelGui ditemukan, " .. R.prop .. "=" .. tostring(gui[R.prop]) .. ", objek=" .. R.nextId)
+		end
+
+		-- ---------- mulai / berhenti ----------
+		local function start()
+			if R.on then return end
+			R.out, R.objs, R.nextId, R.sampling, R.gui, R.conns = {}, {}, 0, false, nil, {}
+			R.t0 = os.clock()
+			R.on = true
+			put("START GameId=" .. tostring(game.GameId) .. " PlaceId=" .. tostring(game.PlaceId))
+
+			installHook()
+			ENV.__REEL_OUT = onOut
+			put("hook remote keluar: " .. tostring(ENV.__REEL_HOOKED == true))
+
+			for _, name in ipairs({ "ReelState", "SpearHooked" }) do
+				local r = RepStorage:FindFirstChild(name, true)
+				if r and r:IsA("RemoteEvent") then
+					table.insert(R.conns, r.OnClientEvent:Connect(function(...)
+						put("IN  " .. name .. "(" .. packArgs(...) .. ")")
+					end))
+				else
+					put("PERINGATAN: remote " .. name .. " tidak ditemukan")
+				end
+			end
+
+			table.insert(R.conns, InputService.InputBegan:Connect(function(input)
+				local ut = input.UserInputType
+				if ut == Enum.UserInputType.MouseButton1 or ut == Enum.UserInputType.Keyboard or ut == Enum.UserInputType.Touch then
+					put("INPUT " .. (input.KeyCode ~= Enum.KeyCode.Unknown and input.KeyCode.Name or ut.Name))
+				end
+			end))
+
+			local existing = playerGui:FindFirstChild(GUI_NAME)
+			if existing then
+				attachGui(existing)
+			else
+				put("ReelGui belum ada di PlayerGui; menunggu...")
+				table.insert(R.conns, playerGui.ChildAdded:Connect(function(c)
+					if c.Name == GUI_NAME and not R.gui then attachGui(c) end
+				end))
+			end
+
+			table.insert(R.conns, RunService.Heartbeat:Connect(function()
+				if R.on and R.sampling then sampleOnce() end
+			end))
+			toast("Rekam Reel: ON - tembak ikan, mainkan minigame, lalu matikan")
+		end
+
+		local function stop()
+			if not R.on then return end
+			R.on = false
+			ENV.__REEL_OUT = nil
+			for _, c in ipairs(R.conns) do
+				pcall(function() c:Disconnect() end)
+			end
+			R.conns = {}
+			local n = #R.out
+			local text = table.concat(R.out, "\n")
+			local clip = ENV.setclipboard or ENV.toclipboard
+			local copied = clip ~= nil and pcall(clip, text)
+			local name = "reel_" .. tostring(game.GameId) .. ".txt"
+			local okS, saved = pcall(settings.save, name, text)
+			R.out, R.objs, R.gui, R.sampling = {}, {}, nil, false
+			if copied then
+				toast(string.format("Rekam Reel: %d baris disalin ke clipboard", n))
+			elseif okS and saved then
+				toast("Clipboard tidak didukung: hasil ada di file " .. settings.path(name))
+			else
+				toast("Rekam Reel: gagal menyalin dan menyimpan hasil")
+			end
+		end
+
+		-- ---------- AUTO REEL (Harpoon Abyss) ----------
+		-- Murni event-driven: hanya bereaksi saat server mengirim ReelState "start" (ikan sudah kena tembakan).
+		-- TIDAK memasang hook dan TIDAK menyentuh HarpoonAim / HarpoonFire, jadi menembak tetap manual & normal.
+		-- Jumlah beat dibaca dari ReelState.beats, lalu tiap beat diklik seperti pemain (klik kiri di tengah layar).
+		-- Kalau terasa kecepatan/jedanya kurang pas, ubah dua angka AR_FIRST / AR_GAP di bawah (detik).
+		local AR: any = { token = 0, hooked = false, caught = 0, last = nil }
+		local AR_LEAD = 0.015   -- detik: klik dikirim sedikit lebih awal supaya tiba tepat di tengah busur (naikkan bila telat)
+		local AR_HOLD = 0.04    -- lama klik ditahan
+		local AR_GRACE = 0.03   -- jarak aman setelah graceUntil dari server
+		local AR_WATCH = 0.9    -- bila server tidak membalas klik dalam waktu ini, jadwalkan ulang
+		-- Mode kecepatan: cepat = klik begitu jarum pertama kali melewati tengah busur (perilaku awal);
+		-- sedang = sama, tetapi bila lintasan pertama terlalu cepat (< AR_MID_MIN detik lagi) tunggu satu putaran + sedikit jeda acak;
+		-- pelan  = selalu biarkan jarum muter satu putaran penuh dulu, lalu klik + sedikit jeda acak.
+		-- Jeda acak kecil (detik) aman karena jendela kena selebar sekitar +-40 derajat (+-0,08 detik).
+		local AR_MID_MIN = 0.25
+		local AR_MODES = { cepat = true, sedang = true, pelan = true }
+		AR.mode = "cepat"
+		do
+			local okL, saved = pcall(function() return settings.load("reel_mode.json") end)
+			if okL and type(saved) == "table" and AR_MODES[saved.mode] then AR.mode = saved.mode end
+		end
+		local arLbl: any = nil
+		local RunSvc = game:GetService("RunService")
+
+		local function arStatus(s: string)
+			if arLbl and arLbl.Parent and not unloaded then arLbl.Text = s end
+		end
+
+		local function arGuiHidden(): boolean
+			local g = playerGui:FindFirstChild(GUI_NAME)
+			return g ~= nil and g:IsA("ScreenGui") and not g.Enabled
+		end
+
+		local function arClick()
+			local VIM: any = nil
+			pcall(function() VIM = game:GetService("VirtualInputManager") end)
+			local cam = workspace.CurrentCamera
+			local vp = cam and cam.ViewportSize or Vector2.new(1920, 1080)
+			local x, y = vp.X / 2, vp.Y / 2
+			local downOk = false
+			if VIM then
+				downOk = pcall(function() VIM:SendMouseButtonEvent(x, y, 0, true, game, 1) end)
+			end
+			if downOk then
+				task.wait(AR_HOLD)
+				pcall(function() VIM:SendMouseButtonEvent(x, y, 0, false, game, 1) end) -- selalu dilepas
+				return
+			end
+			-- cadangan bila VirtualInputManager tidak ada: kirim beat langsung
+			local br = RepStorage:FindFirstChild("ReelBeat", true)
+			if br and br:IsA("RemoteEvent") then
+				pcall(function() br:FireServer(workspace:GetServerTimeNow()) end)
+			end
+		end
+
+		-- Waktu (server time) saat jarum tepat di tengah busur berikutnya.
+		-- Model dari record: sudut jarum = angle0 + v * (t - time0), diukur dalam derajat; busur di arcCenter.
+		local function arNextCenter(d: any, now: number): number?
+			local v = tonumber(d.v0) or tonumber(d.v1)
+			local a0, c, t0 = tonumber(d.angle0), tonumber(d.arcCenter), tonumber(d.time0)
+			if not v or not a0 or not c or not t0 or math.abs(v) < 1 then return nil end
+			local period = 360 / math.abs(v)
+			local dt = ((c - a0) / v) % period -- waktu dari time0 sampai lintasan pertama melewati tengah busur
+			local minT = now + 0.02
+			local g = tonumber(d.graceUntil)
+			if g and g + AR_GRACE > minT then minT = g + AR_GRACE end
+			local T = t0 + dt
+			if T < minT then T = T + math.ceil((minT - T) / period) * period end
+			local mode = AR.mode
+			if mode == "pelan" then
+				T = T + period + math.random() * 0.05
+			elseif mode == "sedang" then
+				if T - now < AR_MID_MIN then T = T + period end
+				T = T + 0.02 + math.random() * 0.03
+			end
+			return T
+		end
+
+		-- Jadwalkan satu klik tepat di tengah busur berdasarkan ReelState terbaru. Dipanggil ulang tiap state baru.
+		local function arSchedule(d: any)
+			AR.token += 1
+			local my = AR.token
+			local T = arNextCenter(d, workspace:GetServerTimeNow())
+			if not T then return end
+			local beats = tonumber(d.beats) or 0
+			local done = tonumber(d.beatsDone) or 0
+			arStatus(string.format("Beat %d/%d: menunggu jarum di tengah busur...", math.min(done + 1, math.max(beats, 1)), beats))
+			task.spawn(function()
+				local born = os.clock()
+				local function gone() return unloaded or my ~= AR.token or not state.autoReel or (os.clock() - born > 0.4 and arGuiHidden()) end
+				-- tunggu kasar, lalu rapatkan per frame supaya presisi
+				while true do
+					if gone() then return end
+					local left = (T - AR_LEAD) - workspace:GetServerTimeNow()
+					if left <= 0 then break end
+					if left > 0.05 then task.wait(left - 0.04) else RunSvc.Heartbeat:Wait() end
+				end
+				if gone() then return end
+				arClick()
+				arStatus(string.format("Beat %d/%d: klik terkirim", math.min(done + 1, math.max(beats, 1)), beats))
+				-- bila server tidak membalas, hitung ulang dari state terakhir (lintasan berikutnya)
+				task.delay(AR_WATCH, function()
+					if unloaded or my ~= AR.token or not state.autoReel or arGuiHidden() then return end
+					if AR.last then arSchedule(AR.last) end
+				end)
+			end)
+		end
+
+		local function arOnState(data: any)
+			if not state.autoReel or type(data) ~= "table" then return end
+			local action = data.action
+			if action == "start" or action == "beat" or action == "miss" or action == "sync" then
+				-- CATATAN: field "dead" di ReelState artinya Deadeye hilang (tag "DEADEYE LOST"), BUKAN nyawa habis;
+				-- ia bernilai true di ronde biasa yang sehat. Reel gagal hanya bila hearts <= 0.
+				if data.hearts ~= nil and (tonumber(data.hearts) or 1) <= 0 then
+					AR.token += 1
+					arStatus("Reel gagal (nyawa habis) - siap tembak lagi")
+					return
+				end
+				-- "beat" sesudah klik terakhir: server segera kirim "landing", jangan klik lagi
+				local beats = tonumber(data.beats) or 0
+				local done = tonumber(data.beatsDone) or 0
+				if action == "beat" and beats > 0 and done >= beats then
+					AR.token += 1
+					arStatus("Beat terakhir kena - menunggu pendaratan...")
+					return
+				end
+				-- simpan state lengkap; "sync" dan "miss" tidak selalu membawa semua field, jadi gabungkan dengan yang lama
+				local merged: any = {}
+				if AR.last and action ~= "start" then
+					for k, v in pairs(AR.last) do merged[k] = v end
+				end
+				for k, v in pairs(data) do merged[k] = v end
+				AR.last = merged
+				arSchedule(merged)
+			else
+				AR.token += 1 -- landing / caught / lainnya: batalkan klik yang tersisa
+				AR.last = nil
+				if action == "caught" then
+					AR.caught += 1
+					arStatus(string.format("Ikan tertangkap (%d sesi ini) - siap tembak lagi", AR.caught))
+				else
+					arStatus("Reel selesai - siap tembak lagi")
+				end
+			end
+		end
+
+		local function arHook()
+			if AR.hooked then return end
+			local function bind(inst: Instance)
+				if AR.hooked or inst.Name ~= "ReelState" or not inst:IsA("RemoteEvent") then return end
+				AR.hooked = true
+				track(inst.OnClientEvent:Connect(arOnState))
+			end
+			local ex = RepStorage:FindFirstChild("ReelState", true)
+			if ex then bind(ex) end
+			if not AR.hooked then track(RepStorage.DescendantAdded:Connect(bind)) end
+		end
+
+		effects.autoReel = function(on: boolean)
+			AR.token += 1
+			if on then
+				arHook()
+				arStatus("Aktif - tembak ikan seperti biasa, minigame diurus otomatis")
+				toast("Auto Reel: ON - tembak manual, beat diklik otomatis")
+			else
+				arStatus("Dimatikan.")
+				toast("Auto Reel: OFF")
+			end
+		end
+
+		effects.reelRec = function(on: boolean)
+			if on then start() else stop() end
+		end
+		-- dipanggil "Matikan Semua Fitur" & Unload: berhenti, salin hasil, lepas semua koneksi
+		settings.reelDisable = function()
+			AR.token += 1 -- hentikan klik Auto Reel yang sedang berjalan
+			if R.on then pcall(stop) end
+			ENV.__REEL_OUT = nil
+		end
+
+		local page = pages["Mini Game"]
+		if not page then return end
+		sectionLabel(page, 30, "Reel (Harpoon)")
+		addToggleCard(page, 31, "Rekam Reel",
+			"Rekam khusus minigame reel: ReelState lengkap, ReelBeat, dan isi ReelGui. ON sebelum menembak ikan, OFF setelah selesai.",
+			"reelRec")
+		arLbl = addToggleCard(page, 32, "Auto Reel",
+			"Klik beat otomatis setelah ikan kena. Menembak tetap manual.",
+			"autoReel")
+
+		-- ---------- Kartu mode kecepatan Auto Reel: Pelan / Sedang / Cepat ----------
+		do
+			local card = makeCard(page, 92, 33)
+			text(card, {
+				Text = "Kecepatan Auto Reel",
+				Font = Enum.Font.GothamBold,
+				TextSize = 14,
+				Position = UDim2.fromOffset(14, 10),
+				Size = UDim2.new(1, -28, 0, 18),
+			})
+			local modeDesc = text(card, {
+				TextSize = 11,
+				TextColor3 = T.sub,
+				TextWrapped = true,
+				TextYAlignment = Enum.TextYAlignment.Top,
+				Position = UDim2.fromOffset(14, 30),
+				Size = UDim2.new(1, -28, 0, 28),
+			})
+			local DESC = {
+				pelan = "Pelan: jarum dibiarkan muter satu putaran penuh dulu, baru diklik.",
+				sedang = "Sedang: sedikit lebih lambat dari Cepat; kadang menunggu satu putaran.",
+				cepat = "Cepat: diklik begitu jarum pertama kali lewat tengah busur.",
+			}
+			local order = { "pelan", "sedang", "cepat" }
+			local label = { pelan = "Pelan", sedang = "Sedang", cepat = "Cepat" }
+			local btns: any = {}
+			local function paint()
+				for _, m in ipairs(order) do
+					local b = btns[m]
+					local on = AR.mode == m
+					b.BackgroundColor3 = on and T.accent or T.off
+					b.TextColor3 = on and WHITE or T.sub
+				end
+				modeDesc.Text = DESC[AR.mode] or ""
+			end
+			for i, m in ipairs(order) do
+				local b = new("TextButton", {
+					Position = UDim2.new((i - 1) / 3, (i == 1) and 14 or 4, 0, 60),
+					Size = UDim2.new(1 / 3, (i == 1 or i == 3) and -18 or -8, 0, 26),
+					BackgroundColor3 = T.off,
+					Text = label[m],
+					TextColor3 = T.sub,
+					Font = Enum.Font.GothamBold,
+					TextSize = 12,
+					AutoButtonColor = false,
+				}, card)
+				round(b, 8)
+				btns[m] = b
+				b.MouseButton1Click:Connect(function()
+					AR.mode = m
+					paint()
+					toast("Auto Reel: mode " .. label[m])
+					pcall(function()
+						settings.save("reel_mode.json", game:GetService("HttpService"):JSONEncode({ mode = m }))
+					end)
+				end)
+			end
+			paint()
+		end
+	end
+
+	-- Rekam Reel hanya dibuat di game yang GameId-nya ada di settings.reelGameIds
+	if settings.reelOk then
+		buildReel()
 	end
 end
 
@@ -19896,6 +20386,10 @@ track(UIS.InputBegan:Connect(function(input, processed)
 	elseif kc == settings.ngamenRecKey and settings.ngamenOk then
 		setFeature("ngamenRec", not state.ngamenRec)
 		toast(state.ngamenRec and "Rekam Detail Ngamen: ON" or "Rekam Detail Ngamen: OFF")
+	elseif kc == settings.reelRecKey and settings.reelOk then
+		setFeature("reelRec", not state.reelRec) -- toast ditampilkan oleh Rekam Reel sendiri
+	elseif kc == settings.autoReelKey and settings.reelOk then
+		setFeature("autoReel", not state.autoReel) -- toast ditampilkan oleh Auto Reel sendiri
 	end
 end))
 
