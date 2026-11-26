@@ -1969,24 +1969,39 @@ minBtn.MouseButton1Click:Connect(function()
 	setUIState("mini") 
 end)
 
--- Tombol X harus DOUBLE TAP (dua klik dalam 0.8 detik) supaya tidak tertutup karena salah pencet.
+-- Tombol X harus DOUBLE TAP (dua klik dalam 1.5 detik) supaya tidak tertutup karena salah pencet.
 -- Klik pertama hanya "mengaktifkan" (tombol memerah + info); klik kedua baru menutup.
-local CLOSE_DOUBLE_TAP = 0.8
+local CLOSE_DOUBLE_TAP = 1.5
 local closeArmedAt = 0
 local closeOrigBg = hideBtn.BackgroundColor3
-hideBtn.MouseButton1Click:Connect(function()
+local lastCloseEvt = 0
+local function onCloseTap()
 	local now = os.clock()
+	-- [FIX] MouseButton1Click & Activated bisa terpicu bersamaan untuk SATU ketukan: abaikan duplikat
+	if now - lastCloseEvt < 0.12 then return end
+	lastCloseEvt = now
+
 	if closeArmedAt > 0 and now - closeArmedAt <= CLOSE_DOUBLE_TAP then
 		closeArmedAt = 0
 		hideBtn.BackgroundColor3 = closeOrigBg
+		-- [FIX] UI langsung disembunyikan SEKARANG juga (tidak menunggu proses unload yang bisa lama / macet)
+		pcall(function() main.Visible = false end)
+		pcall(function() bubble.Visible = false end)
 		-- Tombol X = tutup sepenuhnya (unload). Untuk sekadar menyembunyikan UI pakai keybind K
 		-- atau tombol "-" (minimize).
-		if unloadFn then
-			unloadFn()
-		else
-			disableAllFeatures()
-			setUIState("hidden")
-		end
+		task.spawn(function()
+			if unloadFn then
+				local okU, errU = pcall(unloadFn)
+				if not okU then warn("[R4MEN] unload gagal: " .. tostring(errU)) end
+			else
+				pcall(disableAllFeatures)
+			end
+		end)
+		-- Pengaman terakhir: apa pun yang terjadi di unload, GUI dihancurkan maksimal 3 detik kemudian
+		task.delay(3, function()
+			unloaded = true
+			pcall(function() gui:Destroy() end)
+		end)
 		return
 	end
 	closeArmedAt = now
@@ -1996,7 +2011,9 @@ hideBtn.MouseButton1Click:Connect(function()
 	task.delay(CLOSE_DOUBLE_TAP, function()
 		if closeArmedAt == now then closeArmedAt = 0 end
 	end)
-end)
+end
+hideBtn.MouseButton1Click:Connect(onCloseTap)
+hideBtn.Activated:Connect(onCloseTap)
 
 -- =====================================================
 -- TOAST
@@ -2107,7 +2124,7 @@ local function newPage(name: string): ScrollingFrame
 		Padding = UDim.new(0, 8),
 		SortOrder = Enum.SortOrder.LayoutOrder,
 	}, p)
-	new("UIPadding", { PaddingRight = UDim.new(0, 8), PaddingBottom = UDim.new(0, 14) }, p)
+	new("UIPadding", { PaddingLeft = UDim.new(0, 3), PaddingTop = UDim.new(0, 3), PaddingRight = UDim.new(0, 8), PaddingBottom = UDim.new(0, 14) }, p)
 	pages[name] = p
 	return p
 end
@@ -20616,37 +20633,61 @@ end, warn)
 -- =====================================================
 local function unload()
 	if unloaded then return end
-	pcall(settings.flush) -- [FIX] simpan semua dulu sebelum apa pun dimatikan
+	-- [FIX] simpan semua dulu sebelum apa pun dimatikan, tapi dibatasi waktu: kalau penyimpanan macet,
+	-- unload tetap lanjut (dulu inilah yang membuat tombol X terasa "tidak menutup")
+	do
+		local flushed = false
+		task.spawn(function()
+			pcall(settings.flush)
+			flushed = true
+		end)
+		local t0 = os.clock()
+		while not flushed and os.clock() - t0 < 1.5 do task.wait() end
+	end
+	if unloaded then return end
 	unloaded = true
 
-	if settings.scanShutdown then pcall(settings.scanShutdown) end
-	if settings.forgeShutdown then pcall(settings.forgeShutdown) end -- Forge: lepas logger, perekam, loop
-	disableAllFeatures()
-	destroyPlatform()
-	clearEsp()
-
-	modal.Modal = false
-	if mouseConn then
-		mouseConn:Disconnect()
-		mouseConn = nil
+	-- [FIX] Tiap langkah dibungkus pcall. Dulu satu error saja (mis. saat ada fitur yang sedang aktif)
+	-- menghentikan unload() sebelum gui:Destroy(), jadi tombol X "tidak menutup" dan hanya muncul toast.
+	local function safe(label: string, fn: () -> ())
+		local ok, err = pcall(fn)
+		if not ok then
+			warn("[R4MEN] unload (" .. label .. "): " .. tostring(err))
+		end
 	end
-	UIS.MouseBehavior = Enum.MouseBehavior.Default
 
-	for _, c in ipairs(conns) do
-		c:Disconnect()
-	end
-	table.clear(conns)
+	if settings.scanShutdown then safe("scanShutdown", settings.scanShutdown) end
+	if settings.forgeShutdown then safe("forgeShutdown", settings.forgeShutdown) end -- Forge: lepas logger, perekam, loop
+	safe("disableAllFeatures", disableAllFeatures)
+	safe("destroyPlatform", destroyPlatform)
+	safe("clearEsp", clearEsp)
 
-	do
+	safe("modal", function() modal.Modal = false end)
+	safe("mouse", function()
+		if mouseConn then
+			mouseConn:Disconnect()
+			mouseConn = nil
+		end
+		UIS.MouseBehavior = Enum.MouseBehavior.Default
+	end)
+
+	safe("conns", function()
+		for _, c in ipairs(conns) do
+			pcall(function() c:Disconnect() end)
+		end
+		table.clear(conns)
+	end)
+
+	safe("folders", function()
 		local hf = workspace:FindFirstChild("UU_NPC_HL")
 		if hf then hf:Destroy() end
-	end
-	for _, n in ipairs({ "UU_ITEMS", "UU_NPC", "UU_RARITY", "UU_ZONE", "UU_CHESS" }) do
-		local f = playerGui:FindFirstChild(n)
-		if f then f:Destroy() end
-	end
+		for _, n in ipairs({ "UU_ITEMS", "UU_NPC", "UU_RARITY", "UU_ZONE", "UU_CHESS" }) do
+			local f = playerGui:FindFirstChild(n)
+			if f then f:Destroy() end
+		end
+	end)
 
-	gui:Destroy()
+	safe("gui", function() gui:Destroy() end)
 end
 
 unloadFn = unload
