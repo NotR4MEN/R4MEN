@@ -149,6 +149,7 @@ local settings: { [string]: any } = {
 	chessGameIds = {}, -- opsional: GameId game catur (kartu Catur HANYA dibuat di game ini). Selain daftar ini, kartu Catur juga otomatis dibuat bila game punya GUI papan catur (ChessUI / 2DBoard). Di game lain tab Mini Game tidak berisi Catur.
 	ngamenGameIds = { 10773205357 }, -- GameId minigame Ngamen (osu!). Kartu Ngamen di tab Mini Game HANYA dibuat di game ini
 	reelGameIds = { 10764240948 }, -- GameId game fishing/harpoon (minigame Reel). Kartu Rekam Reel di tab Mini Game HANYA dibuat di game ini
+	vaultGameIds = { 10769813235 }, -- GameId Vaultbreak (minigame brankas / dial). Kartu Auto Vault di tab Mini Game HANYA dibuat di game ini
 	ngamenAutoMini = true, -- true = saat Auto Ngamen dinyalakan, panel diciutkan jadi bubble supaya tidak menutupi not. false = panel dibiarkan
 	saveKey = Enum.KeyCode.LeftBracket,
 	tpKey = Enum.KeyCode.RightBracket,
@@ -166,6 +167,7 @@ settings.miniGameOk = table.find(settings.miniGameIds, game.GameId) ~= nil
 		and ReplicatedStorage:FindFirstChild("RootData", true) ~= nil)
 
 settings.ngamenOk = table.find(settings.ngamenGameIds, game.GameId) ~= nil -- Auto Ngamen / Rekam Detail: khusus GameId di ngamenGameIds
+settings.vaultOk = table.find(settings.vaultGameIds, game.GameId) ~= nil -- Auto Vault: khusus GameId di vaultGameIds
 settings.reelOk = table.find(settings.reelGameIds, game.GameId) ~= nil -- Rekam Reel: khusus GameId di reelGameIds
 if settings.ngamenOk then
 	settings.ngamenKey = Enum.KeyCode.F6 -- Auto Ngamen ON / OFF (bisa diganti di Settings)
@@ -286,6 +288,8 @@ local state: { [string]: boolean } = {
 	ngamenRec = false, -- Mini Game: Rekam Detail Ngamen (mati saat script dijalankan)
 	reelRec = false, -- Mini Game: Rekam Reel (perekam khusus minigame reel/harpoon; mati saat script dijalankan)
 	autoReel = false, -- Mini Game: Auto Reel Harpoon Abyss (klik beat otomatis setelah ikan kena; mati saat script dijalankan)
+	autoVault = false, -- Mini Game: Auto Vault (Vaultbreak: ketukan dial brankas otomatis; mati saat script dijalankan)
+	autoTurkey = false, -- Mini Game: Auto Turkey (minigame lempar umpan: klik otomatis saat garis di tengah bar; mati saat script dijalankan)
 }
 
 local values: { [string]: number } = {
@@ -309,6 +313,8 @@ local values: { [string]: number } = {
 	vnStep = 25, -- Vinyl Spin: batas sudut per frame dalam 0.1 radian (25 = 2.5 rad, harus < pi = 3.14)
 	vnFps = 240, -- Vinyl Spin: FPS cap sementara saat memutar (0 = jangan ubah). Putaran/detik maksimum = langkah x FPS / 2pi
 	vnAuto = 1, -- Vinyl Spin: 1 = AUTO-TUNE (tiap fase coba rps berbeda, lalu pakai yang hitungannya tertinggi). 0 = pakai vnRps manual
+	vaultLead = 15, -- Auto Vault: LEAD ms (tekan Space segini lebih awal; disetel otomatis tiap ketukan)
+	tkLead = 25, -- Auto Turkey: LEAD dalam milidetik (klik dikirim segini lebih awal; naikkan bila telat)
 	vnSub = 3, -- Vinyl Spin: jumlah gerakan kursor per frame (1-6). Membantu bila game membaca event mouse, bukan posisi per frame
 }
 
@@ -542,6 +548,7 @@ local function ensurePlatform(): Part
 end
 
 local FLOAT_SPEED = 24
+local lastFloatPos: Vector3? = nil
 
 local function updateFloat(dt: number)
 	if state.freecam then return end
@@ -552,7 +559,13 @@ local function updateFloat(dt: number)
 	local feetOffset = (hum.RigType == Enum.HumanoidRigType.R6) and 3 or (hum.HipHeight + hrp.Size.Y / 2)
 	local pos = hrp.Position
 	local feetY = pos.Y - feetOffset
+	-- Sinkron ulang lantai: bila game memindahkan karakter (teleport / dive / zona baru tanpa respawn),
+	-- tinggi lantai lama (floatY) tertinggal dan fitur terasa "mati" walau toggle ON.
+	if lastFloatPos and (pos - lastFloatPos).Magnitude > 40 then floatY = nil end
+	lastFloatPos = pos
 	local fy: number = floatY or (feetY - 0.15)
+	-- lantai tidak mungkin jauh di atas kaki (tak bisa dipijak) -> pasti tertinggal, tarik ke kaki
+	if fy > feetY + 3 then fy = feetY - 0.15 end
 
 	local grounded = hum.FloorMaterial ~= Enum.Material.Air
 	local rising = hrp.AssemblyLinearVelocity.Y > 0.5
@@ -811,6 +824,8 @@ local effects: { [string]: (boolean) -> () } = {
 	ngamen = function() end, -- diisi blok GUI Ngamen
 	ngamenRec = function() end, -- diisi blok GUI Ngamen
 	autoReel = function() end, -- diisi blok GUI Reel (Harpoon)
+	autoTurkey = function() end, -- diisi blok GUI Reel (Harpoon): Auto Turkey
+	autoVault = function() end, -- diisi blok GUI Vault (Vaultbreak)
 	fullbright = function(on) ext.light(on) end,
 	noFog = function(on) ext.fog(on) end,
 	fov = function(on) ext.fov(on) end,
@@ -1969,39 +1984,24 @@ minBtn.MouseButton1Click:Connect(function()
 	setUIState("mini") 
 end)
 
--- Tombol X harus DOUBLE TAP (dua klik dalam 1.5 detik) supaya tidak tertutup karena salah pencet.
+-- Tombol X harus DOUBLE TAP (dua klik dalam 0.8 detik) supaya tidak tertutup karena salah pencet.
 -- Klik pertama hanya "mengaktifkan" (tombol memerah + info); klik kedua baru menutup.
-local CLOSE_DOUBLE_TAP = 1.5
+local CLOSE_DOUBLE_TAP = 0.8
 local closeArmedAt = 0
 local closeOrigBg = hideBtn.BackgroundColor3
-local lastCloseEvt = 0
-local function onCloseTap()
+hideBtn.MouseButton1Click:Connect(function()
 	local now = os.clock()
-	-- [FIX] MouseButton1Click & Activated bisa terpicu bersamaan untuk SATU ketukan: abaikan duplikat
-	if now - lastCloseEvt < 0.12 then return end
-	lastCloseEvt = now
-
 	if closeArmedAt > 0 and now - closeArmedAt <= CLOSE_DOUBLE_TAP then
 		closeArmedAt = 0
 		hideBtn.BackgroundColor3 = closeOrigBg
-		-- [FIX] UI langsung disembunyikan SEKARANG juga (tidak menunggu proses unload yang bisa lama / macet)
-		pcall(function() main.Visible = false end)
-		pcall(function() bubble.Visible = false end)
 		-- Tombol X = tutup sepenuhnya (unload). Untuk sekadar menyembunyikan UI pakai keybind K
 		-- atau tombol "-" (minimize).
-		task.spawn(function()
-			if unloadFn then
-				local okU, errU = pcall(unloadFn)
-				if not okU then warn("[R4MEN] unload gagal: " .. tostring(errU)) end
-			else
-				pcall(disableAllFeatures)
-			end
-		end)
-		-- Pengaman terakhir: apa pun yang terjadi di unload, GUI dihancurkan maksimal 3 detik kemudian
-		task.delay(3, function()
-			unloaded = true
-			pcall(function() gui:Destroy() end)
-		end)
+		if unloadFn then
+			unloadFn()
+		else
+			disableAllFeatures()
+			setUIState("hidden")
+		end
 		return
 	end
 	closeArmedAt = now
@@ -2011,9 +2011,7 @@ local function onCloseTap()
 	task.delay(CLOSE_DOUBLE_TAP, function()
 		if closeArmedAt == now then closeArmedAt = 0 end
 	end)
-end
-hideBtn.MouseButton1Click:Connect(onCloseTap)
-hideBtn.Activated:Connect(onCloseTap)
+end)
 
 -- =====================================================
 -- TOAST
@@ -2124,7 +2122,7 @@ local function newPage(name: string): ScrollingFrame
 		Padding = UDim.new(0, 8),
 		SortOrder = Enum.SortOrder.LayoutOrder,
 	}, p)
-	new("UIPadding", { PaddingLeft = UDim.new(0, 3), PaddingTop = UDim.new(0, 3), PaddingRight = UDim.new(0, 8), PaddingBottom = UDim.new(0, 14) }, p)
+	new("UIPadding", { PaddingRight = UDim.new(0, 8), PaddingBottom = UDim.new(0, 14) }, p)
 	pages[name] = p
 	return p
 end
@@ -11707,12 +11705,444 @@ do
 			end
 		end
 
+		-- ---------- AUTO TURKEY (minigame lempar umpan: garis bergerak di bar, klik saat tepat di tengah) ----------
+		-- Cara kerja: saat player attribute TurkeyPhase = "throw" (bar muncul), script mencari bar & garis penanda di
+		-- TurkeyBarGui, lalu tiap frame menghitung kapan garis (yang makin cepat) tiba di tengah bar dan mengklik tepat saat itu.
+		-- Klik = klik kiri di tengah layar (sama seperti Auto Reel). Lempar umpan (klik pertama) tetap manual.
+		-- Bila hasil terlalu cepat / telat: ubah slider "Lead Auto Turkey". Bila gagal total: tekan "Salin Debug Auto Turkey".
+		local TK: any = { token = 0, hooked = false, cache = nil, log = {}, rounds = 0, last = "-" }
+		local TK_HOLD = 0.04
+		local tkLbl: any = nil
+
+		local function tkStatus(s: string)
+			if tkLbl and tkLbl.Parent and not unloaded then tkLbl.Text = s end
+		end
+
+		local function tkLog(s: string)
+			TK.log[#TK.log + 1] = string.format("[%.3f] %s", os.clock(), s)
+			if #TK.log > 500 then table.remove(TK.log, 1) end
+		end
+
+		local function tkHex(c: Color3): string
+			return string.format("%02x%02x%02x", math.floor(c.R * 255 + 0.5), math.floor(c.G * 255 + 0.5), math.floor(c.B * 255 + 0.5))
+		end
+
+		local function tkShown(o: Instance): boolean
+			local cur: Instance? = o
+			while cur and cur ~= playerGui do
+				if cur:IsA("GuiObject") and not cur.Visible then return false end
+				if cur:IsA("ScreenGui") and not cur.Enabled then return false end
+				cur = cur.Parent
+			end
+			return true
+		end
+
+		local function tkC(o: GuiObject, ax: string): number
+			return o.AbsolutePosition[ax] + o.AbsoluteSize[ax] * 0.5
+		end
+
+		local function tkGui(): any
+			local g = playerGui:FindFirstChild("TurkeyBarGui") or playerGui:FindFirstChild("TurkeyBarGui", true)
+			return g
+		end
+
+		-- catat susunan GUI ke log supaya mudah dianalisis bila deteksi gagal
+		local function tkDump(gui: Instance)
+			tkLog("DUMP " .. gui:GetFullName())
+			local n = 0
+			for _, o in ipairs(gui:GetDescendants()) do
+				if o:IsA("GuiObject") then
+					n += 1
+					if n > 150 then tkLog("... (dipotong)") break end
+					local bg = o.BackgroundColor3
+					tkLog(string.format("  %s [%s] pos=%.0f,%.0f size=%.0f,%.0f bg=%s/%.2f vis=%s shown=%s",
+						o:GetFullName():gsub("^.-TurkeyBarGui", "TurkeyBarGui"), o.ClassName,
+						o.AbsolutePosition.X, o.AbsolutePosition.Y, o.AbsoluteSize.X, o.AbsoluteSize.Y,
+						tkHex(bg), o.BackgroundTransparency, tostring(o.Visible), tostring(tkShown(o))))
+				end
+			end
+		end
+
+		-- bar terpanjang (rasio panjang:tebal >= 3) = jalur bar
+		local function tkFindTrack(gui: Instance): (any, string?)
+			local list: any = {}
+			local bestLen = 0
+			for _, o in ipairs(gui:GetDescendants()) do
+				if o:IsA("GuiObject") and tkShown(o) then
+					local s = o.AbsoluteSize
+					local long, short = math.max(s.X, s.Y), math.min(s.X, s.Y)
+					if short >= 1 and long / short >= 3 then
+						list[#list + 1] = { o = o, len = long }
+						if long > bestLen then bestLen = long end
+					end
+				end
+			end
+			local best: any = nil
+			local bl = 0
+			for _, e in ipairs(list) do
+				-- utamakan yang punya warna latar nyata di antara kandidat terpanjang
+				if e.len >= bestLen * 0.85 and e.o.BackgroundTransparency < 0.95 and e.len > bl then best, bl = e.o, e.len end
+			end
+			if not best then
+				for _, e in ipairs(list) do
+					if e.len == bestLen then best = e.o break end
+				end
+			end
+			if not best then return nil, nil end
+			local ax = best.AbsoluteSize.X >= best.AbsoluteSize.Y and "X" or "Y"
+			return best, ax
+		end
+
+		-- penanda = objek kecil yang posisinya berubah paling banyak selama beberapa frame
+		local function tkFindMarker(gui: Instance, track: any, ax: string, my: number): any
+			local other = ax == "X" and "Y" or "X"
+			local tLen = track.AbsoluteSize[ax]
+			local oA, oLen = track.AbsolutePosition[other], track.AbsoluteSize[other]
+			local cands: any = {}
+			for _, o in ipairs(gui:GetDescendants()) do
+				if o ~= track and o:IsA("GuiObject") and tkShown(o) and #cands < 60 then
+					local sz = o.AbsoluteSize
+					if sz.X > 0 and sz.Y > 0 and sz[ax] <= tLen * 0.3 then
+						local oc = o.AbsolutePosition[other] + sz[other] * 0.5
+						if oc >= oA - oLen * 2 and oc <= oA + oLen * 3 then
+							cands[#cands + 1] = { o = o, lo = math.huge, hi = -math.huge, w = sz[ax] }
+						end
+					end
+				end
+			end
+			local t0 = os.clock()
+			local frames = 0
+			while os.clock() - t0 < 0.6 do
+				for _, e in ipairs(cands) do
+					if e.o.Parent then
+						local c = tkC(e.o, ax)
+						if c < e.lo then e.lo = c end
+						if c > e.hi then e.hi = c end
+					end
+				end
+				frames += 1
+				local best = 0
+				for _, e in ipairs(cands) do best = math.max(best, e.hi - e.lo) end
+				if frames >= 8 and best > 8 then break end
+				RunSvc.Heartbeat:Wait()
+				if unloaded or my ~= TK.token then return nil end
+			end
+			local pick: any = nil
+			local pr = 3
+			for _, e in ipairs(cands) do
+				local r = e.hi - e.lo
+				if r > pr + 2 or (r > pr - 2 and pick and e.w < pick.w and r > 3) then pick, pr = e, r end
+			end
+			return pick and pick.o or nil
+		end
+
+		-- zona hijau = zona "perfect". Ukurannya mengecil tiap ronde & posisinya bisa bergeser, jadi daftar objek zona
+		-- disimpan lalu posisi/lebarnya DIBACA ULANG tiap frame (bukan titik tetap).
+		local function tkIsGreen(c: Color3): boolean
+			return c.G > 0.4 and c.G > c.R * 1.2 and c.G > c.B * 1.2
+		end
+
+		local function tkGreenObj(o: GuiObject): boolean
+			if o.BackgroundTransparency < 0.9 and tkIsGreen(o.BackgroundColor3) then return true end
+			if (o:IsA("ImageLabel") or o:IsA("ImageButton")) and o.ImageTransparency < 0.9 and tkIsGreen(o.ImageColor3) then return true end
+			return false
+		end
+
+		local function tkZones(gui: Instance, track: any, marker: any, ax: string): any
+			local list: any = {}
+			local tA, tLen = track.AbsolutePosition[ax], track.AbsoluteSize[ax]
+			for _, d in ipairs(gui:GetDescendants()) do
+				if d:IsA("GuiObject") and d ~= marker and d ~= track and tkShown(d) then
+					local w = d.AbsoluteSize[ax]
+					local a = d.AbsolutePosition[ax]
+					if w > 1 and w < tLen * 0.95 and a + w > tA and a < tA + tLen and tkGreenObj(d) then
+						list[#list + 1] = d
+					end
+				end
+			end
+			return list
+		end
+
+		-- pusat zona hijau: ambil zona terlebar, gabung dengan zona hijau lain yang bertumpuk dengannya
+		local function tkZoneCenter(zones: any, ax: string): (number?, number, number)
+			local wide: any = nil
+			local ww = 0
+			for _, z in ipairs(zones) do
+				if z.Parent and tkShown(z) and z.AbsoluteSize[ax] > ww then wide, ww = z, z.AbsoluteSize[ax] end
+			end
+			if not wide then return nil, 0, 0 end
+			local lo = wide.AbsolutePosition[ax]
+			local hi = lo + ww
+			for _, z in ipairs(zones) do
+				if z ~= wide and z.Parent and tkShown(z) then
+					local a = z.AbsolutePosition[ax]
+					local b = a + z.AbsoluteSize[ax]
+					if b >= lo and a <= hi then
+						if a < lo then lo = a end
+						if b > hi then hi = b end
+					end
+				end
+			end
+			return (lo + hi) * 0.5, lo, hi
+		end
+
+		local function tkTarget(track: any, ax: string, zones: any): (number, string)
+			local tA, tLen = track.AbsolutePosition[ax], track.AbsoluteSize[ax]
+			local tc = tA + tLen * 0.5
+			local gc, lo, hi = tkZoneCenter(zones, ax)
+			if gc then
+				return gc, string.format("hijau %.1f..%.1f lebar=%.0fpx (tengah bar %.1f)", lo, hi, hi - lo, tc)
+			end
+			-- cadangan: zona hijau digambar lewat UIGradient di bar
+			local g = track:FindFirstChildOfClass("UIGradient")
+			if g then
+				local glo, ghi = math.huge, -math.huge
+				for _, kp in ipairs(g.Color.Keypoints) do
+					if tkIsGreen(kp.Value) then
+						if kp.Time < glo then glo = kp.Time end
+						if kp.Time > ghi then ghi = kp.Time end
+					end
+				end
+				if ghi >= glo and ghi > glo then
+					local c2 = tA + tLen * (glo + ghi) * 0.5
+					return c2, string.format("gradient hijau %.2f..%.2f -> %.1f", glo, ghi, c2)
+				end
+			end
+			return tc, string.format("tengah bar %.1f (zona hijau tidak terdeteksi)", tc)
+		end
+
+		-- kecepatan & percepatan garis dari buffer sampel {t, posisi}
+		local function tkKin(buf: any, now: number): (number?, number)
+			local n = #buf
+			if n < 3 then return nil, 0 end
+			local function slope(i: number, j: number): (number?, number)
+				local dt = buf[j][1] - buf[i][1]
+				if dt <= 0 then return nil, 0 end
+				return (buf[j][2] - buf[i][2]) / dt, (buf[i][1] + buf[j][1]) / 2
+			end
+			if n >= 8 then
+				local v1, m1 = slope(n - 7, n - 4)
+				local v2, m2 = slope(n - 3, n)
+				if v1 and v2 and m2 > m1 then
+					local a = (v2 - v1) / (m2 - m1)
+					return v2 + a * (now - m2), a
+				end
+			end
+			local v = slope(n - 2, n)
+			return v, 0
+		end
+
+		-- waktu (detik) sampai posisi mencapai target; nil bila menjauh
+		local function tkEta(d: number, v: number, a: number): number?
+			if math.abs(a) < 1e-3 then
+				if v ~= 0 and d / v > 0 then return d / v end
+				return nil
+			end
+			local disc = v * v + 2 * a * d
+			if disc < 0 then return nil end
+			local sq = math.sqrt(disc)
+			local best: number? = nil
+			for _, t in ipairs({ (-v + sq) / a, (-v - sq) / a }) do
+				if t >= 0 and (not best or t < best) then best = t end
+			end
+			return best
+		end
+
+		local function tkClick(): boolean
+			local VIM: any = nil
+			pcall(function() VIM = game:GetService("VirtualInputManager") end)
+			if not VIM then return false end
+			local cam = workspace.CurrentCamera
+			local vp = cam and cam.ViewportSize or Vector2.new(1920, 1080)
+			local x, y = vp.X / 2, vp.Y / 2
+			local okDown = pcall(function() VIM:SendMouseButtonEvent(x, y, 0, true, game, 1) end)
+			if not okDown then return false end
+			task.delay(TK_HOLD, function()
+				pcall(function() VIM:SendMouseButtonEvent(x, y, 0, false, game, 1) end) -- selalu dilepas
+			end)
+			return true
+		end
+
+		local function tkPlay(my: number, tries: number)
+			-- 1) tunggu TurkeyBarGui tampil
+			local t0 = os.clock()
+			local gui: any = nil
+			while os.clock() - t0 < 2 do
+				local g = tkGui()
+				if g and g:IsA("ScreenGui") and g.Enabled then gui = g break end
+				RunSvc.Heartbeat:Wait()
+				if unloaded or my ~= TK.token then return end
+			end
+			if not gui then tkStatus("TurkeyBarGui tidak muncul") tkLog("TurkeyBarGui tidak muncul") return end
+			RunSvc.Heartbeat:Wait() -- beri satu frame agar layout selesai
+
+			-- 2) bar + penanda (di-cache antar ronde)
+			local c = TK.cache
+			if not (c and c.track.Parent and c.marker.Parent and c.track:IsDescendantOf(gui) and c.marker:IsDescendantOf(gui)) then
+				TK.cache = nil
+				tkDump(gui)
+				local track, ax = tkFindTrack(gui)
+				if not track then tkStatus("Bar tidak ditemukan - tekan Salin Debug") tkLog("TRACK tidak ditemukan") return end
+				tkLog(string.format("TRACK %s axis=%s len=%.0f", track:GetFullName(), ax :: string, track.AbsoluteSize[ax :: string]))
+				local marker = tkFindMarker(gui, track, ax :: string, my)
+				if my ~= TK.token then return end
+				if not marker then tkStatus("Garis penanda tidak ketemu - tekan Salin Debug") tkLog("MARKER tidak ditemukan") return end
+				tkLog("MARKER " .. marker:GetFullName())
+				c = { track = track, marker = marker, ax = ax }
+				TK.cache = c
+			end
+			local track, marker, ax = c.track, c.marker, c.ax :: string
+
+			-- 3) pantau garis, klik saat tiba di target
+			local leadS = (values.tkLead or 25) / 1000
+			local zones = tkZones(gui, track, marker, ax)
+			local tgt, tgtInfo = tkTarget(track, ax, zones)
+			tkLog("ZONA hijau terdeteksi: " .. #zones .. " | " .. tgtInfo)
+			tkStatus("Menunggu garis tiba di tengah...")
+			local buf: any = {}
+			local prevT: number? = nil
+			local prevD: number? = nil
+			local startT = os.clock()
+			local lo, hi = math.huge, -math.huge
+			local frame = 0
+			local clicked = false
+			local cMark, cVel, cAcc, cEta, cTgt = 0, 0, 0, 0, 0
+			while true do
+				RunSvc.Heartbeat:Wait()
+				if unloaded or my ~= TK.token or not state.autoTurkey then return end
+				local now = os.clock()
+				if now - startT > 8 then tkLog("TIMEOUT tanpa klik") tkStatus("Timeout: garis tidak pernah melewati target") return end
+				if player:GetAttribute("TurkeyPhase") ~= "throw" or not tkShown(marker) then tkLog("fase selesai sebelum klik") return end
+				frame += 1
+				if frame % 30 == 0 then zones = tkZones(gui, track, marker, ax) end
+				tgt, tgtInfo = tkTarget(track, ax, zones) -- tiap frame: ikut mengecil / bergeser
+				local pos = tkC(marker, ax)
+				if pos < lo then lo = pos end
+				if pos > hi then hi = pos end
+				if now - startT > 0.7 and hi - lo < 2 then
+					-- penanda yang dipilih tidak bergerak: cari ulang sekali
+					TK.cache = nil
+					tkLog("MARKER tidak bergerak, cari ulang")
+					if tries < 1 then return tkPlay(my, tries + 1) end
+					tkStatus("Garis tidak bergerak - tekan Salin Debug")
+					return
+				end
+				buf[#buf + 1] = { now, pos }
+				if #buf > 8 then table.remove(buf, 1) end
+				local d = tgt - pos
+				local fire = false
+				local v, a = tkKin(buf, now)
+				local eta: number? = nil
+				if prevD and prevD ~= 0 and prevD * d <= 0 then
+					fire = true -- baru saja melewati target (jaga-jaga frame lambat)
+					eta = 0
+				elseif v then
+					eta = tkEta(d, v, a) or tkEta(d, v, 0)
+					local fdt = prevT and (now - prevT) or 0.008
+					if eta and eta < 3 and eta <= leadS + fdt * 0.5 then fire = true end
+				end
+				prevT, prevD = now, d
+				if fire then
+					cMark, cVel, cAcc, cEta, cTgt = pos, v or 0, a, eta or 0, tgt
+					clicked = tkClick()
+					if not clicked then tkStatus("VirtualInputManager tidak tersedia") tkLog("VIM tidak ada") return end
+					break
+				end
+			end
+
+			-- 4) baca hasil dari server (teks TurkeyHud.Words / TurkeyRound berubah)
+			local hud = playerGui:FindFirstChild("TurkeyHud")
+			local words: any = hud and hud:FindFirstChild("Words")
+			local before = words and words.Text or ""
+			local rBefore = player:GetAttribute("TurkeyRound")
+			local post: any = {}
+			local frozen: number? = nil
+			local t1 = os.clock()
+			local res = ""
+			while os.clock() - t1 < 2.5 and not unloaded do
+				RunSvc.Heartbeat:Wait()
+				if marker.Parent and not frozen then
+					post[#post + 1] = tkC(marker, ax)
+					if #post >= 4 then
+						local mn, mx = math.huge, -math.huge
+						for k = #post - 3, #post do
+							mn = math.min(mn, post[k])
+							mx = math.max(mx, post[k])
+						end
+						-- garis berhenti (membeku) = posisi yang dinilai game
+						if mx - mn < 1 and math.abs(cVel) > 80 then frozen = (mn + mx) * 0.5 end
+					end
+				end
+				local changed = (words and words.Text ~= before and words.Text ~= "") or player:GetAttribute("TurkeyRound") ~= rBefore
+				if changed then
+					RunSvc.Heartbeat:Wait()
+					res = words and words.Text or "?"
+					break
+				end
+			end
+			TK.rounds += 1
+			TK.last = res ~= "" and res or "(tidak ada respons)"
+			local trackLen = track.AbsoluteSize[ax]
+			local off = cMark - cTgt
+			local calib = ""
+			-- KALIBRASI OTOMATIS: bila garis membeku, selisihnya dari target dipakai untuk menyetel lead (diredam 70%)
+			if frozen then
+				local err = (frozen :: number) - cTgt
+				local sgn = cVel > 0 and 1 or -1
+				local lateMs = err * sgn / math.abs(cVel) * 1000 -- + = telat, - = terlalu cepat
+				calib = string.format(" | berhenti di %.1f selisih=%.1fpx (%+.0fms)", frozen :: number, err, lateMs)
+				if math.abs(lateMs) > 1.5 then
+					local newLead = math.clamp(leadS * 1000 + lateMs * 0.7, 1, 150)
+					local setter = sliderSetters.tkLead
+					if setter then setter(newLead) else values.tkLead = math.floor(newLead + 0.5) end
+					calib ..= string.format(" -> lead %d ms", values.tkLead)
+				end
+			end
+			tkLog(string.format("KLIK #%d hasil=%s | target=%s | garis=%.1f selisih=%.1fpx (%.1f%% bar) | v=%.0f px/s a=%.0f eta=%.4f lead=%.0fms%s | ronde=%s",
+				TK.rounds, TK.last, tgtInfo, cMark, off, off / math.max(trackLen, 1) * 100, cVel, cAcc, cEta, leadS * 1000, calib, tostring(player:GetAttribute("TurkeyRound"))))
+			tkStatus(string.format("Ronde %s: %s (selisih %.1fpx, lead %d ms)", tostring(player:GetAttribute("TurkeyRound") or "?"), TK.last, frozen and ((frozen :: number) - cTgt) or off, values.tkLead))
+		end
+
+		local function tkStart()
+			TK.token += 1
+			local my = TK.token
+			task.spawn(function()
+				local ok, err = pcall(tkPlay, my, 0)
+				if not ok then
+					tkLog("ERROR " .. tostring(err))
+					tkStatus("Error: " .. tostring(err))
+				end
+			end)
+		end
+
+		local function tkHook()
+			if TK.hooked then return end
+			TK.hooked = true
+			track(player:GetAttributeChangedSignal("TurkeyPhase"):Connect(function()
+				if state.autoTurkey and player:GetAttribute("TurkeyPhase") == "throw" then tkStart() end
+			end))
+		end
+
+		effects.autoTurkey = function(on: boolean)
+			TK.token += 1
+			if on then
+				tkHook()
+				tkStatus("Aktif - lempar umpan seperti biasa, bar diklik otomatis")
+				toast("Auto Turkey: ON - lempar umpan manual, klik bar otomatis")
+				if player:GetAttribute("TurkeyPhase") == "throw" then tkStart() end
+			else
+				tkStatus("Dimatikan.")
+				toast("Auto Turkey: OFF")
+			end
+		end
+
 		effects.reelRec = function(on: boolean)
 			if on then start() else stop() end
 		end
 		-- dipanggil "Matikan Semua Fitur" & Unload: berhenti, salin hasil, lepas semua koneksi
 		settings.reelDisable = function()
 			AR.token += 1 -- hentikan klik Auto Reel yang sedang berjalan
+			TK.token += 1 -- hentikan Auto Turkey
 			if R.on then pcall(stop) end
 			ENV.__REEL_OUT = nil
 		end
@@ -11726,6 +12156,22 @@ do
 		arLbl = addToggleCard(page, 32, "Auto Reel",
 			"Klik beat otomatis setelah ikan kena. Menembak tetap manual.",
 			"autoReel")
+		sectionLabel(page, 34, "Turkey (Lempar Umpan)")
+		tkLbl = addToggleCard(page, 35, "Auto Turkey",
+			"Klik otomatis saat garis tepat di tengah bar. Lempar umpan (klik pertama) tetap manual.",
+			"autoTurkey")
+		addSliderCard(page, 36, "Lead Auto Turkey (ms)", "Naik = klik lebih awal. Disetel otomatis tiap ronde; bisa diubah manual.", "tkLead", 1, 150, 300, true)
+		do
+			local dbg = makeButton(page, 37, "Salin Debug Auto Turkey", T.accent, 36)
+			dbg.MouseButton1Click:Connect(function()
+				local txt = table.concat(TK.log, "\n")
+				if txt == "" then txt = "(log kosong - nyalakan Auto Turkey lalu mainkan satu ronde)" end
+				local clip = ENV.setclipboard or ENV.toclipboard
+				local copied = clip ~= nil and pcall(clip, txt)
+				pcall(settings.save, "turkey_debug.txt", txt)
+				toast(copied and "Debug Auto Turkey disalin ke clipboard" or ("Debug disimpan: " .. settings.path("turkey_debug.txt")))
+			end)
+		end
 
 		-- ---------- Kartu mode kecepatan Auto Reel: Pelan / Sedang / Cepat ----------
 		do
@@ -11788,9 +12234,206 @@ do
 		end
 	end
 
+	-- =====================================================
+	-- AUTO VAULT (Vaultbreak: minigame buka brankas / dial) -- khusus GameId di settings.vaultGameIds
+	-- Model dial (diverifikasi dari rekaman): sudut(t) = DialPhase + DialSpeed*360*(t - DialT0)  (derajat, mod 360; t = server time)
+	-- Tiap ketukan: remote DialTap(waktuServer). Ketukan benar bila sudut(t) berada di DialZone. 9 ketukan = brankas terbuka.
+	-- Setelah ketukan, arah dial berbalik & zona baru dipilih server. Script menghitung kapan dial tiba di DialZone, lalu
+	-- menekan Space tepat saat itu (Space = tombol ketuk game). Buka brankas (tahan E) tetap manual.
+	-- =====================================================
+	local function buildVault()
+		local page = pages["Mini Game"]
+		if not page then return end
+		local VIMs: any = nil
+		pcall(function() VIMs = game:GetService("VirtualInputManager") end)
+		local ENV: any = (getgenv and getgenv()) or _G
+		local V: any = { token = 0, hooked = false, log = {}, taps = 0 }
+		local vLbl: any = nil
+		local HALF_LAT = 0.022 -- jeda klien->server rata-rata ~45 ms; dibidik titik tengahnya
+
+		local function vStatus(s: string)
+			if vLbl and vLbl.Parent and not unloaded then vLbl.Text = s end
+		end
+		local function vLog(s: string)
+			V.log[#V.log + 1] = string.format("[%.3f] %s", os.clock(), s)
+			if #V.log > 400 then table.remove(V.log, 1) end
+		end
+		local function wrap180(a: number): number
+			return (a + 180) % 360 - 180
+		end
+
+		local function vPress(): boolean
+			if not VIMs then return false end
+			local ok = pcall(function() VIMs:SendKeyEvent(true, Enum.KeyCode.Space, false, game) end)
+			if not ok then return false end
+			task.delay(0.06, function()
+				pcall(function() VIMs:SendKeyEvent(false, Enum.KeyCode.Space, false, game) end) -- selalu dilepas
+			end)
+			return true
+		end
+
+		-- cadangan bila VirtualInputManager tidak ada: kirim remote DialTap langsung dengan waktu server saat ini
+		local vRemote: any = nil
+		local function vFireRemote(): boolean
+			if not (vRemote and vRemote.Parent) then
+				vRemote = nil
+				local root = game:GetService("ReplicatedStorage")
+				local vb = root:FindFirstChild("Vaultbreak")
+				local rem = vb and vb:FindFirstChild("Remotes")
+				vRemote = rem and rem:FindFirstChild("DialTap")
+				if not vRemote then
+					for _, d in ipairs(root:GetDescendants()) do
+						if d.Name == "DialTap" and d:IsA("RemoteEvent") then vRemote = d break end
+					end
+				end
+			end
+			if not vRemote then return false end
+			return (pcall(function() vRemote:FireServer(workspace:GetServerTimeNow()) end))
+		end
+
+		local function vNum(name: string): number?
+			local v = player:GetAttribute(name)
+			if typeof(v) == "number" then return v end
+			return nil
+		end
+
+		local function vRun(my: number)
+			local startClock = os.clock()
+			local tapsDone = 0
+			vLog("MULAI dial")
+			while true do
+				if unloaded or my ~= V.token or not state.autoVault then return end
+				if player:GetAttribute("DialActive") ~= true then
+					vStatus(string.format("Selesai (%d ketukan)", tapsDone))
+					vLog("DialActive=false, selesai")
+					return
+				end
+				if os.clock() - startClock > 90 then vStatus("Timeout 90 dtk") vLog("TIMEOUT") return end
+				local ph, t0, sp, zn = vNum("DialPhase"), vNum("DialT0"), vNum("DialSpeed"), vNum("DialZone")
+				if not (ph and t0 and sp and zn) or sp == 0 then
+					RunService.Heartbeat:Wait()
+					continue
+				end
+				local w = sp * 360
+				local aw = math.abs(w)
+				local sgn = w > 0 and 1 or -1
+				local lead = (values.vaultLead or 15) / 1000
+				local useRemote = VIMs == nil
+				local now = workspace:GetServerTimeNow()
+				local aNow = ph + w * (now - t0)
+				local travel = ((zn - aNow) * sgn) % 360 -- derajat yang masih harus ditempuh searah gerak dial
+				local pressAt = now + travel / aw - HALF_LAT - lead
+				if useRemote then pressAt += lead end
+				if pressAt < now + 0.05 then pressAt += 360 / aw end -- terlalu dekat: tunggu putaran berikutnya
+				vStatus(string.format("Ketukan %d/9: zona %.0f°, tunggu %.2f dtk", (vNum("DialDone") or 0) + 1, zn, pressAt - now))
+
+				local pressed = false
+				local replan = false
+				while true do
+					local dt = RunService.Heartbeat:Wait()
+					if unloaded or my ~= V.token or not state.autoVault then return end
+					if player:GetAttribute("DialActive") ~= true then replan = true break end
+					if vNum("DialT0") ~= t0 or vNum("DialZone") ~= zn then replan = true break end -- state berubah (mis. ketukan manual)
+					if workspace:GetServerTimeNow() + dt * 0.5 >= pressAt then
+						pressed = useRemote and vFireRemote() or vPress()
+						break
+					end
+				end
+				if replan then continue end
+				if not pressed then vStatus("Gagal menekan Space / remote") vLog("PRESS gagal") return end
+
+				-- tunggu server memproses ketukan (DialT0 berubah / dial selesai)
+				local tt = os.clock()
+				local changed = false
+				while os.clock() - tt < 1.5 do
+					RunService.Heartbeat:Wait()
+					if unloaded or my ~= V.token then return end
+					if vNum("DialT0") ~= t0 or player:GetAttribute("DialActive") ~= true then changed = true break end
+				end
+				RunService.Heartbeat:Wait()
+				if not changed then
+					vLog("tidak ada respons server untuk ketukan; ulangi")
+					continue
+				end
+				tapsDone += 1
+				V.taps += 1
+				if player:GetAttribute("DialActive") == true then
+					-- DialPhase baru = sudut dial pada waktu server memproses ketukan => ukur seberapa meleset dari zona lama
+					local ph2 = vNum("DialPhase")
+					local devSec = ph2 and (wrap180(ph2 - zn) * sgn / aw) or 0 -- + = telat (detik)
+					local newLead = lead
+					if ph2 then
+						newLead = math.clamp(lead + (devSec - HALF_LAT) * 0.6, 0.001, 0.12)
+						local setter = sliderSetters.vaultLead
+						if setter then setter(newLead * 1000) else values.vaultLead = math.floor(newLead * 1000 + 0.5) end
+					end
+					vLog(string.format("KETUK #%d done=%s zona=%.1f spd=%+.2f meleset=%+.1f ms (server) lead %.0f->%.0f ms",
+						tapsDone, tostring(vNum("DialDone")), zn, sp, devSec * 1000, lead * 1000, newLead * 1000))
+				else
+					vLog(string.format("KETUK #%d terakhir; brankas selesai", tapsDone))
+				end
+			end
+		end
+
+		local function vStart()
+			V.token += 1
+			local my = V.token
+			task.spawn(function()
+				local ok, err = pcall(vRun, my)
+				if not ok then
+					vLog("ERROR " .. tostring(err))
+					vStatus("Error: " .. tostring(err))
+				end
+			end)
+		end
+
+		local function vHook()
+			if V.hooked then return end
+			V.hooked = true
+			track(player:GetAttributeChangedSignal("DialActive"):Connect(function()
+				if state.autoVault and player:GetAttribute("DialActive") == true then vStart() end
+			end))
+		end
+
+		effects.autoVault = function(on: boolean)
+			V.token += 1
+			if on then
+				vHook()
+				vStatus("Aktif - buka brankas (tahan E), ketukan Space otomatis")
+				toast("Auto Vault: ON - buka brankas, ketukan otomatis")
+				if player:GetAttribute("DialActive") == true then vStart() end
+			else
+				vStatus("Dimatikan.")
+				toast("Auto Vault: OFF")
+			end
+		end
+
+		sectionLabel(page, 40, "Vault (Brankas)")
+		vLbl = addToggleCard(page, 41, "Auto Vault",
+			"Ketukan dial brankas otomatis tepat di zona. Buka brankas (tahan E) tetap manual.",
+			"autoVault")
+		addSliderCard(page, 42, "Lead Auto Vault (ms)", "Naik = tekan lebih awal. Disetel otomatis tiap ketukan; bisa diubah manual.", "vaultLead", 1, 100, 200, true)
+		do
+			local dbg = makeButton(page, 43, "Salin Debug Auto Vault", T.accent, 36)
+			dbg.MouseButton1Click:Connect(function()
+				local txt = table.concat(V.log, "\n")
+				if txt == "" then txt = "(log kosong - nyalakan Auto Vault lalu buka satu brankas)" end
+				local clip = ENV.setclipboard or ENV.toclipboard
+				local copied = clip ~= nil and pcall(clip, txt)
+				pcall(settings.save, "vault_debug.txt", txt)
+				toast(copied and "Debug Auto Vault disalin ke clipboard" or ("Debug disimpan: " .. settings.path("vault_debug.txt")))
+			end)
+		end
+	end
+
 	-- Rekam Reel hanya dibuat di game yang GameId-nya ada di settings.reelGameIds
 	if settings.reelOk then
 		buildReel()
+	end
+
+	-- Auto Vault hanya dibuat di game yang GameId-nya ada di settings.vaultGameIds
+	if settings.vaultOk then
+		buildVault()
 	end
 end
 
@@ -20633,61 +21276,37 @@ end, warn)
 -- =====================================================
 local function unload()
 	if unloaded then return end
-	-- [FIX] simpan semua dulu sebelum apa pun dimatikan, tapi dibatasi waktu: kalau penyimpanan macet,
-	-- unload tetap lanjut (dulu inilah yang membuat tombol X terasa "tidak menutup")
-	do
-		local flushed = false
-		task.spawn(function()
-			pcall(settings.flush)
-			flushed = true
-		end)
-		local t0 = os.clock()
-		while not flushed and os.clock() - t0 < 1.5 do task.wait() end
-	end
-	if unloaded then return end
+	pcall(settings.flush) -- [FIX] simpan semua dulu sebelum apa pun dimatikan
 	unloaded = true
 
-	-- [FIX] Tiap langkah dibungkus pcall. Dulu satu error saja (mis. saat ada fitur yang sedang aktif)
-	-- menghentikan unload() sebelum gui:Destroy(), jadi tombol X "tidak menutup" dan hanya muncul toast.
-	local function safe(label: string, fn: () -> ())
-		local ok, err = pcall(fn)
-		if not ok then
-			warn("[R4MEN] unload (" .. label .. "): " .. tostring(err))
-		end
+	if settings.scanShutdown then pcall(settings.scanShutdown) end
+	if settings.forgeShutdown then pcall(settings.forgeShutdown) end -- Forge: lepas logger, perekam, loop
+	disableAllFeatures()
+	destroyPlatform()
+	clearEsp()
+
+	modal.Modal = false
+	if mouseConn then
+		mouseConn:Disconnect()
+		mouseConn = nil
 	end
+	UIS.MouseBehavior = Enum.MouseBehavior.Default
 
-	if settings.scanShutdown then safe("scanShutdown", settings.scanShutdown) end
-	if settings.forgeShutdown then safe("forgeShutdown", settings.forgeShutdown) end -- Forge: lepas logger, perekam, loop
-	safe("disableAllFeatures", disableAllFeatures)
-	safe("destroyPlatform", destroyPlatform)
-	safe("clearEsp", clearEsp)
+	for _, c in ipairs(conns) do
+		c:Disconnect()
+	end
+	table.clear(conns)
 
-	safe("modal", function() modal.Modal = false end)
-	safe("mouse", function()
-		if mouseConn then
-			mouseConn:Disconnect()
-			mouseConn = nil
-		end
-		UIS.MouseBehavior = Enum.MouseBehavior.Default
-	end)
-
-	safe("conns", function()
-		for _, c in ipairs(conns) do
-			pcall(function() c:Disconnect() end)
-		end
-		table.clear(conns)
-	end)
-
-	safe("folders", function()
+	do
 		local hf = workspace:FindFirstChild("UU_NPC_HL")
 		if hf then hf:Destroy() end
-		for _, n in ipairs({ "UU_ITEMS", "UU_NPC", "UU_RARITY", "UU_ZONE", "UU_CHESS" }) do
-			local f = playerGui:FindFirstChild(n)
-			if f then f:Destroy() end
-		end
-	end)
+	end
+	for _, n in ipairs({ "UU_ITEMS", "UU_NPC", "UU_RARITY", "UU_ZONE", "UU_CHESS" }) do
+		local f = playerGui:FindFirstChild(n)
+		if f then f:Destroy() end
+	end
 
-	safe("gui", function() gui:Destroy() end)
+	gui:Destroy()
 end
 
 unloadFn = unload
